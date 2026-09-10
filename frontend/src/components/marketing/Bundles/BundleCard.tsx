@@ -35,56 +35,60 @@ export default function BundleCard({
 
   return (
     <div
-      className={`relative flex h-full flex-col rounded-2xl bg-[var(--mk-raised)] p-8 ${
- featured ? "ring-2 ring-[var(--mk-brand)]" : ""
+      className={`relative flex h-full flex-col rounded-2xl p-8 sm:p-9 backdrop-blur-xl transition-all duration-300 ${
+        featured
+          ? "border-2 border-indigo-500/60 bg-gradient-to-b from-indigo-950/40 via-[var(--mk-raised)]/90 to-[var(--mk-raised)] shadow-[0_0_40px_rgba(99,102,241,0.25)] -translate-y-1"
+          : "border border-white/10 bg-[var(--mk-raised)]/70 hover:border-indigo-500/30 hover:-translate-y-0.5 hover:shadow-[0_12px_32px_-8px_rgba(99,102,241,0.15)]"
       }`}
     >
       {featured ? (
-        <span className="absolute right-6 top-6 rounded-full bg-[var(--mk-brand)] px-3 py-1 text-xs font-semibold text-white">
+        <span className="absolute -top-3.5 right-6 inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-600 px-3.5 py-1 text-xs font-bold text-white shadow-[0_0_15px_rgba(99,102,241,0.5)]">
+          <span className="size-1.5 rounded-full bg-white animate-pulse" />
           Most complete
         </span>
       ) : null}
 
-      <span className="mb-3 inline-flex w-fit rounded-full bg-[var(--mk-brand)]/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--mk-brand-lit)]">
+      <span className="mb-3 inline-flex w-fit items-center gap-1.5 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-indigo-300">
+        <span className="size-1 rounded-full bg-indigo-400" />
         {counted(plan.course_count, "course")}
       </span>
 
-      <h3 className="mb-2 pr-20 text-xl font-semibold text-[var(--mk-text)]">
+      <h3 className="mb-2 pr-12 text-xl font-bold text-white">
         {plan.name}
       </h3>
-      <p className="mb-6 text-base text-[var(--mk-muted)]">
+      <p className="mb-6 text-[14.5px] leading-relaxed text-[var(--mk-muted)]">
         {plan.description}
       </p>
 
-      <div className="mb-1 flex items-end gap-1">
-        <span className="text-4xl font-semibold text-[var(--mk-text)]">
+      <div className="mb-1 flex items-baseline gap-1.5">
+        <span className="text-4xl font-bold tracking-tight text-white">
           {money(plan.price_minor)}
         </span>
-        <span className="pb-1 text-base text-[var(--mk-muted)]">
+        <span className="text-sm font-medium text-slate-400">
           /{intervalLabel(plan.billing_interval)}
         </span>
       </div>
       {plan.separate_total_minor > 0 ? (
-        <p className="mb-6 text-sm text-[var(--mk-muted)]">
-          {money(plan.separate_total_minor)} to buy these courses separately
+        <p className="mb-6 text-[13px] text-slate-400">
+          <span className="line-through">{money(plan.separate_total_minor)}</span> if bought separately
         </p>
       ) : (
         <div className="mb-6" />
       )}
 
-      <div className="mb-8 border-t border-[var(--mk-line)] pt-6">
-        <h4 className="mb-3 text-sm font-semibold text-[var(--mk-text)]">
+      <div className="mb-8 border-t border-white/5 pt-6">
+        <h4 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-300">
           The stack
         </h4>
         <ul className="space-y-2.5">
           {plan.course_titles.map((title, index) => (
             <li
               key={title}
-              className="flex items-start gap-3 text-base text-[var(--mk-muted)]"
+              className="flex items-center gap-3 text-[14.5px] text-slate-200"
             >
               <span
                 aria-hidden="true"
-                className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--mk-brand)]/10 text-xs font-semibold text-[var(--mk-brand-lit)]"
+                className="flex size-5 shrink-0 items-center justify-center rounded-full bg-indigo-500/20 text-[11px] font-bold text-indigo-300 shadow-[0_0_8px_rgba(99,102,241,0.2)]"
               >
                 {index + 1}
               </span>
@@ -92,19 +96,20 @@ export default function BundleCard({
             </li>
           ))}
         </ul>
-        <p className="mt-4 text-sm text-[var(--mk-muted)]">
-          Voice tutor, quizzes, assignments and a certification exam on every
-          one.
+        <p className="mt-4 text-[12.5px] text-[var(--mk-muted)]">
+          Voice tutor, quizzes, assignments and certificate on every course.
         </p>
       </div>
 
-      <PlanPurchase
-        planId={plan.id}
-        priceMinor={plan.price_minor}
-        currency={plan.currency}
-        courseIds={plan.course_ids}
-        highlighted={featured}
-      />
+      <div className="mt-auto">
+        <PlanPurchase
+          planId={plan.id}
+          priceMinor={plan.price_minor}
+          currency={plan.currency}
+          courseIds={plan.course_ids}
+          highlighted={featured}
+        />
+      </div>
     </div>
   );
 }

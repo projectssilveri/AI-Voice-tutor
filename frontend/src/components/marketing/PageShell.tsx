@@ -27,15 +27,18 @@ export function PageHeader({
   intro?: string;
 }) {
   return (
-    <section className="relative isolate overflow-hidden pb-6 pt-14 sm:pt-20">
+    <section className="relative isolate overflow-hidden pb-8 pt-14 sm:pt-20">
       <GlowBackdrop />
+      <div className="pointer-events-none absolute -top-20 left-1/2 -translate-x-1/2 h-64 w-3/4 rounded-full bg-indigo-500/15 blur-[100px]" />
       <Container size="narrow">
         {eyebrow ? <Eyebrow>{eyebrow}</Eyebrow> : null}
-        <h1 className="text-[clamp(2.1rem,4.6vw,3.4rem)] font-semibold leading-[1.06] tracking-[-0.03em] text-[var(--mk-text)]">
-          {title}
+        <h1 className="text-[clamp(2.3rem,4.8vw,3.6rem)] font-bold leading-[1.06] tracking-[-0.03em] text-white">
+          <span className="bg-gradient-to-r from-white via-slate-100 to-indigo-200 bg-clip-text text-transparent">
+            {title}
+          </span>
         </h1>
         {intro ? (
-          <p className="mt-5 text-lg leading-relaxed text-[var(--mk-muted)]">
+          <p className="mt-5 text-lg leading-relaxed text-slate-300">
             {intro}
           </p>
         ) : null}

@@ -39,8 +39,8 @@ type PriceFilter = "All" | "Free" | "Paid";
 // their own input has to be the brightest thing in the control. The
 // placeholder is muted separately by the rule in globals.css.
 const CONTROL =
-  "h-11 rounded-xl border border-[var(--mk-line)] bg-[var(--mk-inset)] px-4 text-sm text-[var(--mk-text)] " +
-  "outline-hidden transition focus:border-[var(--mk-brand)] focus:ring-3 focus:ring-[var(--mk-brand)]/20";
+  "h-11 rounded-xl border border-white/10 bg-[var(--mk-canvas)]/80 px-4 text-sm text-white backdrop-blur-md " +
+  "outline-hidden transition-all duration-200 focus:border-indigo-500/60 focus:bg-white/[0.06] focus:ring-3 focus:ring-indigo-500/20";
 
 export default function CourseBrowser({ courses }: { courses: Course[] }) {
   const [query, setQuery] = useState("");
@@ -82,19 +82,30 @@ export default function CourseBrowser({ courses }: { courses: Course[] }) {
 
   return (
     <>
-      <div className="mb-10">
+      <div className="mb-10 rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.25)]">
         <div className="flex flex-wrap items-center gap-3">
-          <label className="sr-only" htmlFor="course-search">
-            Search courses
-          </label>
-          <input
-            id="course-search"
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search courses"
-            className={`${CONTROL} min-w-0 flex-1 sm:max-w-xs`}
-          />
+          <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            <label className="sr-only" htmlFor="course-search">
+              Search courses
+            </label>
+            <input
+              id="course-search"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search courses..."
+              className={`${CONTROL} w-full pl-10`}
+            />
+            <svg
+              className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
 
           <label className="sr-only" htmlFor="course-topic">
             Topic
@@ -106,7 +117,7 @@ export default function CourseBrowser({ courses }: { courses: Course[] }) {
             className={CONTROL}
           >
             {topics.map((value) => (
-              <option key={value} value={value}>
+              <option key={value} value={value} className="bg-slate-900 text-white">
                 {value === ALL ? "All topics" : value}
               </option>
             ))}
@@ -124,7 +135,7 @@ export default function CourseBrowser({ courses }: { courses: Course[] }) {
             className={CONTROL}
           >
             {levels.map((value) => (
-              <option key={value} value={value}>
+              <option key={value} value={value} className="bg-slate-900 text-white">
                 {value === ALL ? "All levels" : value}
               </option>
             ))}
@@ -139,9 +150,9 @@ export default function CourseBrowser({ courses }: { courses: Course[] }) {
             onChange={(event) => setPrice(event.target.value as PriceFilter)}
             className={CONTROL}
           >
-            <option value="All">Any price</option>
-            <option value="Free">Free</option>
-            <option value="Paid">Paid</option>
+            <option value="All" className="bg-slate-900 text-white">Any price</option>
+            <option value="Free" className="bg-slate-900 text-white">Free</option>
+            <option value="Paid" className="bg-slate-900 text-white">Paid</option>
           </select>
 
           {filtering ? (
@@ -153,7 +164,7 @@ export default function CourseBrowser({ courses }: { courses: Course[] }) {
                 setLevel(ALL);
                 setPrice(ALL);
               }}
-              className="h-11 rounded-lg px-4 text-sm font-medium text-[var(--mk-brand-lit)] transition hover:bg-[var(--mk-brand)]/10"
+              className="h-11 rounded-xl border border-white/10 px-4 text-sm font-semibold text-indigo-300 transition hover:bg-white/5 hover:text-white"
             >
               Clear
             </button>
@@ -165,13 +176,13 @@ export default function CourseBrowser({ courses }: { courses: Course[] }) {
             two out of forty. */}
         <p
           aria-live="polite"
-          className="mt-3 text-sm text-[var(--mk-muted)]"
+          className="mt-3 text-xs font-medium text-slate-400"
         >
           {filtering
-            ? `${visible.length} of ${courses.length} ${
+            ? `Showing ${visible.length} of ${courses.length} ${
                 courses.length === 1 ? "course" : "courses"
               }`
-            : `${courses.length} ${courses.length === 1 ? "course" : "courses"}`}
+            : `${courses.length} total ${courses.length === 1 ? "course" : "courses"}`}
         </p>
       </div>
 

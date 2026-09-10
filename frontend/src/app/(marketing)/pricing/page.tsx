@@ -81,52 +81,69 @@ export default async function PricingPage() {
                 return (
                   <div
                     key={plan.id}
-                    className={`relative flex flex-col rounded-xl bg-[var(--mk-raised)] p-8 sm:p-10 ${
- highlighted ?"ring-2 ring-[var(--mk-brand)]" : ""
+                    className={`relative flex flex-col rounded-2xl p-8 sm:p-9 transition-all duration-300 backdrop-blur-xl ${
+                      highlighted
+                        ? "border-2 border-indigo-500/60 bg-gradient-to-b from-indigo-950/40 via-[var(--mk-raised)]/90 to-[var(--mk-raised)] shadow-[0_0_40px_rgba(99,102,241,0.25)] -translate-y-1"
+                        : "border border-white/10 bg-[var(--mk-raised)]/70 hover:border-indigo-500/30 hover:-translate-y-0.5 hover:shadow-[0_12px_32px_-8px_rgba(99,102,241,0.15)]"
                     }`}
                   >
                     {highlighted ? (
-                      <span className="absolute right-6 top-6 rounded-full bg-[var(--mk-brand)] px-3 py-1 text-xs font-semibold text-white">
+                      <span className="absolute -top-3.5 right-6 inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-600 px-3.5 py-1 text-xs font-bold text-white shadow-[0_0_15px_rgba(99,102,241,0.5)]">
+                        <span className="size-1.5 rounded-full bg-white animate-pulse" />
                         Best value
                       </span>
                     ) : null}
 
-                    <h3 className="mb-2 text-xl font-semibold text-[var(--mk-text)]">
+                    <h3 className="mb-2 text-xl font-bold text-white">
                       {plan.name}
                     </h3>
-                    <p className="mb-6 text-base text-[var(--mk-muted)]">
+                    <p className="mb-6 text-[14.5px] leading-relaxed text-[var(--mk-muted)]">
                       {plan.description}
                     </p>
 
-                    <div className="mb-6 flex items-end gap-1">
-                      <span className="text-4xl font-semibold text-[var(--mk-text)]">
+                    <div className="mb-6 flex items-baseline gap-1.5">
+                      <span className="text-4xl font-bold tracking-tight text-white">
                         {money(plan.price_minor, plan.currency)}
                       </span>
-                      <span className="pb-1 text-base text-[var(--mk-muted)]">
+                      <span className="text-sm font-medium text-slate-400">
                         /{interval(plan.billing_interval)}
                       </span>
                     </div>
 
-                    <ul className="mb-8 space-y-3 border-t border-[var(--mk-line)] pt-6 text-base text-[var(--mk-muted)]">
-                      <li>{plan.course_titles.length} courses included</li>
-                      <li>Voice tutor on every module</li>
-                      <li>Quizzes and assignments, marked instantly</li>
-                      <li>Certification exam and certificate</li>
-                      <li>Unlimited re-reads and retakes</li>
+                    <ul className="mb-8 space-y-3 border-t border-white/5 pt-6 text-[14.5px] text-slate-300">
+                      {[
+                        `${plan.course_titles.length} courses included`,
+                        "Voice tutor on every module",
+                        "Quizzes and assignments, marked instantly",
+                        "Certification exam and certificate",
+                        "Unlimited re-reads and retakes",
+                      ].map((feature, i) => (
+                        <li key={i} className="flex items-center gap-2.5">
+                          <svg
+                            className="size-4 shrink-0 text-emerald-400"
+                            viewBox="0 0 20 20"
+                            fill="currentColor"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          <span>{feature}</span>
+                        </li>
+                      ))}
                     </ul>
 
-                    {/* Was `/signup?plan={id}`, and NOTHING read `?plan=` —
-                        so picking a plan, signing up and arriving at the
-                        dashboard left the visitor with no subscription and no
-                        record of what they chose. `startPlanCheckout` existed,
-                        wired to Razorpay, called by nobody. */}
-                    <PlanPurchase
-                      planId={plan.id}
-                      priceMinor={plan.price_minor}
-                      currency={plan.currency}
-                      courseIds={plan.course_ids}
-                      highlighted={highlighted}
-                    />
+                    <div className="mt-auto">
+                      <PlanPurchase
+                        planId={plan.id}
+                        priceMinor={plan.price_minor}
+                        currency={plan.currency}
+                        courseIds={plan.course_ids}
+                        highlighted={highlighted}
+                      />
+                    </div>
                   </div>
                 );
               })}
