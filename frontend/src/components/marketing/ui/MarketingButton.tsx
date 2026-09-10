@@ -31,16 +31,17 @@ export const buttonClasses = ({
     size === "default" && "px-5 py-3 text-[15px]",
     size === "large" && "px-7 py-4 text-base",
     variant === "primary" && [
-      // White on this blue measures 4.84:1, so the label passes AA. Do not
-      // lighten the fill without re-measuring it.
-      "bg-[var(--mk-brand)] text-white hover:bg-[#5a71ff]",
-      "shadow-[0_8px_24px_-8px_rgb(70_95_255/70%)]",
+      "bg-gradient-to-r from-indigo-500 via-indigo-600 to-purple-600",
+      "hover:from-indigo-400 hover:via-indigo-500 hover:to-purple-500",
+      "text-white shadow-[0_4px_20px_rgba(99,102,241,0.4)]",
+      "hover:shadow-[0_6px_28px_rgba(99,102,241,0.6)]",
+      "border border-indigo-400/30",
     ],
     variant === "secondary" && [
-      "border border-[var(--mk-line)] bg-[var(--mk-raised)]",
-      "text-[var(--mk-text)] hover:border-[var(--mk-line-lift)]",
-      "hover:bg-[var(--mk-inset)]",
-      "shadow-[inset_0_1px_0_0_var(--mk-line-lift)]",
+      "border border-white/10 bg-white/[0.04] backdrop-blur-md",
+      "text-[var(--mk-text)] hover:border-white/20",
+      "hover:bg-white/[0.08] hover:text-white",
+      "shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]",
     ],
     variant === "ghost" && [
       "px-0 text-[var(--mk-brand-lit)] hover:text-white",

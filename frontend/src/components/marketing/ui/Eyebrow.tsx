@@ -21,14 +21,11 @@ export default function Eyebrow({
   className?: string;
 }) {
   return (
-    <p
-      className={cn(
-        "mb-4 text-xs font-semibold uppercase tracking-[0.16em]",
-        "text-[var(--mk-brand-lit)]",
-        className,
-      )}
-    >
-      {children}
-    </p>
+    <div className={cn("mb-4 inline-flex items-center", className)}>
+      <span className="inline-flex items-center gap-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-indigo-300 shadow-[0_0_12px_rgba(99,102,241,0.15)] backdrop-blur-sm">
+        <span className="inline-block size-1.5 rounded-full bg-indigo-400 shadow-[0_0_8px_currentColor] animate-pulse" />
+        {children}
+      </span>
+    </div>
   );
 }

@@ -63,22 +63,21 @@ export default function Header() {
       <nav
         className={cn(
           "mx-auto flex max-w-[1200px] items-center gap-4 rounded-2xl px-4 sm:px-5",
-          "border transition-[background-color,border-color,padding] duration-300",
-          "ease-[var(--ease-out-soft)]",
+          "border transition-all duration-300 ease-[var(--ease-out-soft)]",
           scrolled
-            ? "border-[var(--mk-line)] bg-[var(--mk-canvas)]/80 py-2.5 backdrop-blur-xl"
-            : "border-transparent py-4",
+            ? "border-white/15 bg-[var(--mk-canvas)]/80 py-2.5 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)]"
+            : "border-white/5 bg-white/[0.02] py-3.5 backdrop-blur-md",
         )}
       >
         <Link
           href="/"
           aria-label="Voice Tutor, home"
-          className="rounded-lg transition-opacity hover:opacity-80"
+          className="rounded-lg transition-transform hover:scale-105"
         >
           <Logo />
         </Link>
 
-        <ul className="ml-6 hidden items-center gap-1 lg:flex">
+        <ul className="ml-6 hidden items-center gap-1.5 lg:flex">
           {visibleMenu.map((item) => {
             const active =
               item.path === "/"
@@ -90,10 +89,10 @@ export default function Header() {
                   href={item.path}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "rounded-lg px-3 py-2 text-[15px] transition-colors",
+                    "rounded-xl px-3.5 py-1.5 text-[14.5px] font-medium transition-all duration-200",
                     active
-                      ? "text-[var(--mk-text)]"
-                      : "text-[var(--mk-muted)] hover:text-[var(--mk-text)]",
+                      ? "border border-white/10 bg-white/[0.08] text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)]"
+                      : "text-slate-400 hover:bg-white/[0.04] hover:text-white",
                   )}
                 >
                   {item.title}

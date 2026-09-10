@@ -48,13 +48,12 @@ export default function Panel({
       data-spotlight={spotlight ? "" : undefined}
       className={cn(
         "relative isolate rounded-2xl border border-[var(--mk-line)]",
-        "shadow-[inset_0_1px_0_0_var(--mk-line-lift)]",
-        inset ? "bg-[var(--mk-inset)]" : "bg-[var(--mk-raised)]",
+        "shadow-[inset_0_1px_0_0_var(--mk-line-lift)] backdrop-blur-md",
+        inset ? "bg-[var(--mk-inset)]/85" : "bg-[var(--mk-raised)]/75",
         interactive && [
-          "transition-[transform,border-color,background-color]",
-          "duration-200 ease-[var(--ease-out-soft)]",
-          "hover:-translate-y-0.5 hover:border-[var(--mk-line-lift)]",
-          "hover:bg-[var(--mk-inset)]",
+          "transition-all duration-300 ease-[var(--ease-out-soft)]",
+          "hover:-translate-y-1 hover:border-indigo-500/40 hover:shadow-[0_12px_32px_-8px_rgba(99,102,241,0.2)]",
+          "hover:bg-[var(--mk-inset)]/90",
           "motion-reduce:hover:translate-y-0",
         ],
         className,

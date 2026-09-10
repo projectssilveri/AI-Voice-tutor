@@ -68,12 +68,19 @@ export default function CourseCard({
   const window = accessLabel(accessDays);
 
   return (
-    <Panel className="group flex h-full flex-col" interactive spotlight>
+    <Panel className="group relative flex h-full flex-col overflow-hidden border-white/10 bg-[var(--mk-raised)]/70 transition-all duration-300 hover:border-indigo-500/50 hover:shadow-[0_16px_36px_-8px_rgba(99,102,241,0.22)]" interactive spotlight>
       <span
         aria-hidden="true"
-        className="relative block aspect-[37/20] w-full overflow-hidden rounded-t-2xl"
+        className="relative block aspect-[37/20] w-full overflow-hidden"
       >
-        <span className="absolute right-4 top-4 z-20 inline-flex items-center rounded-full bg-black/50 px-3 py-1 text-xs font-semibold capitalize text-white backdrop-blur-sm">
+        <span
+          className={`absolute right-3.5 top-3.5 z-20 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold capitalize backdrop-blur-md ${
+            free
+              ? "border border-emerald-500/40 bg-emerald-950/70 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
+              : "border border-white/15 bg-black/60 text-white/90 shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
+          }`}
+        >
+          {free && <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />}
           {tag}
         </span>
         {/* Drawn from the course's own title rather than pulled from a pool
@@ -88,7 +95,7 @@ export default function CourseCard({
         <Heading className="text-[17px] font-semibold leading-snug">
           <Link
             href={`/courses/${course.id}`}
-            className="text-[var(--mk-text)] transition-colors group-hover:text-[var(--mk-brand-lit)]"
+            className="text-white transition-colors duration-200 group-hover:text-indigo-300"
           >
             {/* Stretches the link over the whole card, so the entire panel is
                 clickable while the accessible name stays just the title. The
@@ -99,38 +106,40 @@ export default function CourseCard({
           </Link>
         </Heading>
 
-        <p className="mt-2 line-clamp-3 text-[14.5px] leading-relaxed text-[var(--mk-muted)]">
+        <p className="mt-2 line-clamp-3 text-[14px] leading-relaxed text-[var(--mk-muted)]">
           {paragraph}
         </p>
 
-        <div className="mt-5 flex items-end justify-between gap-4 border-t border-[var(--mk-line)] pt-4">
-          <p className="text-[13px] text-[var(--mk-muted)]">
-            {moduleCount} modules
-            <span aria-hidden="true" className="mx-1.5 text-white/25">·</span>
-            {level}
-          </p>
+        <div className="mt-auto pt-5">
+          <div className="flex items-end justify-between gap-4 border-t border-white/5 pt-4">
+            <p className="text-[12.5px] font-medium text-slate-400">
+              {moduleCount} modules
+              <span aria-hidden="true" className="mx-1.5 text-white/20">·</span>
+              {level}
+            </p>
 
-          <div className="shrink-0 text-right">
-            {wasMore ? (
-              <span className="mr-1.5 text-[13px] text-[var(--mk-muted)] line-through">
-                {money(listPriceMinor, currency)}
+            <div className="shrink-0 text-right">
+              {wasMore ? (
+                <span className="mr-1.5 text-[12.5px] text-[var(--mk-muted)] line-through">
+                  {money(listPriceMinor, currency)}
+                </span>
+              ) : null}
+              <span
+                className={
+                  free
+                    ? "text-[16px] font-bold text-emerald-400"
+                    : "text-[16px] font-bold text-white"
+                }
+              >
+                {money(priceMinor, currency)}
               </span>
-            ) : null}
-            <span
-              className={
-                free
-                  ? "text-[17px] font-semibold text-[var(--mk-brand-lit)]"
-                  : "text-[17px] font-semibold text-[var(--mk-text)]"
-              }
-            >
-              {money(priceMinor, currency)}
-            </span>
-            <span className="block text-[12px] text-[var(--mk-muted)]">
-              {/* Not "pay once, keep it" any more — a purchase expires now,
-                  and repeating the old claim would promise something the
-                  product no longer does. */}
-              {free ? "no card needed" : (window ?? "yours to keep")}
-            </span>
+              <span className="block text-[11.5px] text-[var(--mk-muted)]">
+                {/* Not "pay once, keep it" any more — a purchase expires now,
+                    and repeating the old claim would promise something the
+                    product no longer does. */}
+                {free ? "no card needed" : (window ?? "yours to keep")}
+              </span>
+            </div>
           </div>
         </div>
       </div>

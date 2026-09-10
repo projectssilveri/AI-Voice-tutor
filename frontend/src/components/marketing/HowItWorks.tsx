@@ -44,22 +44,27 @@ export default function HowItWorks() {
         paragraph="A tutor that talks first and stops when you do. Here is the whole of it."
       />
 
-      <SpotlightGroup as="ol" className="grid gap-4 md:grid-cols-3">
+      <SpotlightGroup as="ol" className="grid gap-6 md:grid-cols-3">
         {STEPS.map((step, index) => (
           <Reveal
             key={step.title}
             as="li"
-            delay={index * 80}
+            delay={index * 100}
             className="h-full list-none"
           >
-            <Panel className="h-full p-6" spotlight>
-              <span
-                aria-hidden="true"
-                className="mb-5 grid size-9 place-items-center rounded-lg border border-[var(--mk-line)] text-sm font-semibold text-[var(--mk-brand-lit)]"
-              >
-                {index + 1}
-              </span>
-              <h3 className="mb-2 text-[17px] font-semibold text-[var(--mk-text)]">
+            <Panel className="group/step relative h-full p-7 transition-all duration-300 hover:border-indigo-500/40 hover:shadow-[0_12px_32px_-8px_rgba(99,102,241,0.25)]" interactive spotlight>
+              <div className="mb-6 flex items-center justify-between">
+                <span
+                  aria-hidden="true"
+                  className="grid size-10 place-items-center rounded-xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/20 to-purple-500/10 text-base font-bold text-indigo-300 shadow-[0_0_15px_rgba(99,102,241,0.25)] transition-transform duration-300 group-hover/step:scale-110"
+                >
+                  0{index + 1}
+                </span>
+                <span className="text-xs font-semibold uppercase tracking-widest text-white/20 group-hover/step:text-indigo-400/60 transition-colors">
+                  Step {index + 1}
+                </span>
+              </div>
+              <h3 className="mb-3 text-[18px] font-semibold text-white group-hover/step:text-indigo-200 transition-colors">
                 {step.title}
               </h3>
               <p className="text-[15px] leading-relaxed text-[var(--mk-muted)]">

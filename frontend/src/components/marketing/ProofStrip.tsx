@@ -59,26 +59,34 @@ export default async function ProofStrip() {
     ];
 
   return (
-    <Container size="wide">
+    <Container size="wide" className="my-10">
       {/* A grid of divs rather than a <dl>. In a description list the label is
           the term and the number is the description, which is the reverse of
           the reading order here, and inverting it with flex to satisfy the
           markup would put the two out of step for a screen reader. */}
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-[var(--mk-line)] bg-[var(--mk-line)] sm:grid-cols-4">
-        {facts.map((fact) => (
-          <div key={fact.label} className="bg-[var(--mk-canvas)] px-5 py-6">
-            <p className="text-[26px] font-semibold tabular-nums tracking-[-0.02em] text-[var(--mk-text)]">
-              <CountUp
-                value={fact.count}
-                prefix={fact.prefix}
-                suffix={fact.suffix}
-              />
-            </p>
-            <p className="mt-1 text-[13.5px] leading-snug text-[var(--mk-muted)]">
-              {fact.label}
-            </p>
-          </div>
-        ))}
+      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] p-2 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.37)]">
+        {/* Subtle top glow line */}
+        <div className="pointer-events-none absolute -top-px left-1/2 -translate-x-1/2 h-px w-3/4 bg-gradient-to-r from-transparent via-indigo-500/50 to-transparent" />
+        
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {facts.map((fact) => (
+            <div
+              key={fact.label}
+              className="group relative overflow-hidden rounded-xl border border-white/5 bg-[var(--mk-canvas)]/60 px-5 py-6 transition-all duration-300 hover:-translate-y-0.5 hover:border-indigo-500/30 hover:bg-white/[0.04]"
+            >
+              <p className="text-[28px] font-bold tabular-nums tracking-[-0.02em] text-white group-hover:bg-gradient-to-r group-hover:from-indigo-300 group-hover:to-violet-300 group-hover:bg-clip-text group-hover:text-transparent transition-all">
+                <CountUp
+                  value={fact.count}
+                  prefix={fact.prefix}
+                  suffix={fact.suffix}
+                />
+              </p>
+              <p className="mt-1.5 text-[13px] font-medium leading-snug text-[var(--mk-muted)] group-hover:text-slate-300 transition-colors">
+                {fact.label}
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
     </Container>
   );

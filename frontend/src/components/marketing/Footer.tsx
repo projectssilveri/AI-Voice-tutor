@@ -55,27 +55,30 @@ const COLUMNS: { heading: string; links: { href: string; label: string }[] }[] =
 
 export default function Footer() {
   return (
-    <footer className="relative mt-auto border-t border-[var(--mk-line)]">
+    <footer className="relative mt-auto border-t border-white/10 bg-[var(--mk-canvas)]">
+      {/* Subtle top edge gradient highlight */}
+      <div className="pointer-events-none absolute -top-px left-1/2 -translate-x-1/2 h-px w-2/3 bg-gradient-to-r from-transparent via-indigo-500/40 to-transparent" />
+
       {/* Business band. The one thing a footer on a learning platform is
           reliably used for that is not navigation. */}
-      <Container className="flex flex-wrap items-center justify-between gap-6 border-b border-[var(--mk-line)] py-10">
-        <div className="max-w-xl">
-          {/* Was "Training a team, not just yourself?" — the not-just-X-but-Y
-              shape, which is the tell the copy pass removed everywhere else. */}
-          <p className="text-lg font-semibold text-[var(--mk-text)]">
-            Training a whole team?
-          </p>
-          <p className="mt-1 text-[15px] text-[var(--mk-muted)]">
-            Voice Tutor for Business covers 2 to 50 people on one plan, and
-            loads your own material in above that.
-          </p>
+      <Container className="py-10">
+        <div className="flex flex-wrap items-center justify-between gap-6 rounded-2xl border border-white/10 bg-white/[0.02] p-6 sm:p-8 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.2)]">
+          <div className="max-w-xl">
+            <p className="text-lg font-semibold text-white">
+              Training a whole team?
+            </p>
+            <p className="mt-1 text-[14.5px] text-[var(--mk-muted)]">
+              Voice Tutor for Business covers 2 to 50 people on one plan, and
+              loads your own curriculum and knowledge base.
+            </p>
+          </div>
+          <MarketingButton href="/business" variant="secondary">
+            For business
+          </MarketingButton>
         </div>
-        <MarketingButton href="/business" variant="secondary">
-          For business
-        </MarketingButton>
       </Container>
 
-      <Container className="py-14">
+      <Container className="py-12">
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-5">
           <div className="lg:col-span-2 lg:max-w-[320px]">
             <Logo className="mb-4" />
@@ -87,15 +90,15 @@ export default function Footer() {
 
           {COLUMNS.map((column) => (
             <div key={column.heading}>
-              <h2 className="mb-4 text-sm font-semibold text-[var(--mk-text)]">
+              <h2 className="mb-4 text-xs font-semibold uppercase tracking-wider text-slate-300">
                 {column.heading}
               </h2>
-              <ul className="space-y-3">
+              <ul className="space-y-2.5">
                 {column.links.map((link) => (
                   <li key={link.label}>
                     <Link
                       href={link.href}
-                      className="text-sm text-[var(--mk-muted)] transition-colors hover:text-[var(--mk-text)]"
+                      className="text-sm text-[var(--mk-muted)] transition-colors duration-150 hover:text-white"
                     >
                       {link.label}
                     </Link>
@@ -106,11 +109,11 @@ export default function Footer() {
           ))}
         </div>
 
-        <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-[var(--mk-line)] pt-7">
-          <p className="text-sm text-[var(--mk-muted)]">
-            &copy; {new Date().getFullYear()} Voice Tutor LMS
+        <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-white/5 pt-7">
+          <p className="text-xs text-[var(--mk-muted)]">
+            &copy; {new Date().getFullYear()} Voice Tutor LMS. All rights reserved.
           </p>
-          <p className="text-sm text-[var(--mk-muted)]">
+          <p className="text-xs text-[var(--mk-muted)]">
             Built for people who learn by listening.
           </p>
         </div>

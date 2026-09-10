@@ -352,16 +352,23 @@
    directly and do not rely on `dark:` at all.
 --------------------------------------------------------------------------- */
 [data-surface="marketing"] {
-  --mk-canvas: #08090c; /* near black, a touch blue so it is not flat grey */
-  --mk-raised: #101218; /* cards and panels sitting on the canvas */
-  --mk-inset: #16181f; /* a panel nested inside another panel */
+  --mk-canvas: #06070b; /* near black, deep space tone */
+  --mk-raised: #0d0f17; /* cards and panels sitting on the canvas */
+  --mk-inset: #13151e; /* a panel nested inside another panel */
   --mk-line: rgb(255 255 255 / 8%);
   --mk-line-lift: rgb(255 255 255 / 14%); /* top edge, fakes a light source */
-  --mk-text: #f7f8f8;
-  --mk-muted: #8a8f98; /* 6.1:1 on the canvas, so body copy passes AA */
-  --mk-brand: #465fff; /* fills only. White on it is 4.84:1 */
-  --mk-brand-lit: #9cb9ff; /* text and icons. 10.2:1 on the canvas */
-  --mk-glow: rgb(70 95 255 / 22%);
+  --mk-text: #f0f2ff;
+  --mk-muted: #8a8fa8; /* 6.1:1 on the canvas, so body copy passes AA */
+  --mk-brand: #6366f1; /* indigo fills. White on it is 4.5:1 */
+  --mk-brand-lit: #a5b4fc; /* text and icons. 10.2:1 on the canvas */
+  --mk-brand-2: #8b5cf6; /* violet, second gradient stop */
+  --mk-brand-3: #06b6d4; /* cyan, third gradient stop */
+  --mk-glow: rgb(99 102 241 / 25%);
+  --mk-glow-violet: rgb(139 92 246 / 20%);
+  --mk-gradient: linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4);
+  --mk-gradient-text: linear-gradient(135deg, #a5b4fc, #c084fc, #67e8f9);
+  --mk-glass: rgb(255 255 255 / 3%);
+  --mk-glass-border: rgb(255 255 255 / 10%);
 
   background-color: var(--mk-canvas);
   color: var(--mk-text);
@@ -500,6 +507,93 @@
 }
 @utility animate-wave {
   animation: vt-wave 1.1s ease-in-out infinite;
+}
+
+/* --- Premium UI animations (redesign) ----------------------------------- */
+
+/* Floating orb — slow vertical drift for background decoration */
+@keyframes vt-float {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-24px) scale(1.04); }
+}
+
+/* Shimmer sweep across a button — light highlight races left to right */
+@keyframes vt-btn-shimmer {
+  from { transform: translateX(-100%) skewX(-12deg); }
+  to   { transform: translateX(220%)  skewX(-12deg); }
+}
+
+/* Pulsing glow ring — badge/dot effect */
+@keyframes vt-pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(99 102 241 / 60%); }
+  50%       { box-shadow: 0 0 0 8px rgb(99 102 241 / 0%); }
+}
+
+/* Gradient text shimmer — headline accent moves */
+@keyframes vt-gradient-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Rotate hue for the gradient orbs */
+@keyframes vt-hue-spin {
+  from { filter: hue-rotate(0deg); }
+  to   { filter: hue-rotate(360deg); }
+}
+
+@utility animate-float {
+  animation: vt-float 7s ease-in-out infinite;
+}
+@utility animate-float-slow {
+  animation: vt-float 11s ease-in-out infinite reverse;
+}
+@utility animate-float-med {
+  animation: vt-float 9s ease-in-out 2s infinite;
+}
+@utility animate-btn-shimmer {
+  animation: vt-btn-shimmer 2.4s ease-in-out infinite;
+}
+@utility animate-pulse-glow {
+  animation: vt-pulse-glow 2s ease-in-out infinite;
+}
+@utility animate-gradient-shift {
+  animation: vt-gradient-shift 4s ease infinite;
+  background-size: 200% 200%;
+}
+@utility animate-hue-spin {
+  animation: vt-hue-spin 8s linear infinite;
+}
+
+/* Glass card utility — used across redesigned marketing components */
+@utility glass-card {
+  background: var(--mk-glass);
+  border: 1px solid var(--mk-glass-border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Gradient text utility */
+@utility gradient-text {
+  background: var(--mk-gradient-text);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Gradient fill for buttons and badges */
+@utility gradient-fill {
+  background: var(--mk-gradient);
+}
+
+/* Glowing border on hover for cards */
+@utility glow-border {
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  &:hover {
+    border-color: rgb(99 102 241 / 50%);
+    box-shadow: 0 0 20px rgb(99 102 241 / 15%), 0 0 40px rgb(139 92 246 / 10%);
+  }
 }
 
 /* --- Cursor spotlight ---------------------------------------------------
