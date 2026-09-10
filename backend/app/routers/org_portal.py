@@ -1,0 +1,846 @@
+"""The organization portal: /org/{slug}/...
+
+Everything here is behind `require_org_scope`, which asserts the caller belongs
+to the organization named in the URL. That check is the tenant boundary, and it
+is deliberately not a role check: a perfectly valid org admin of Acme reaching
+Globex's URL is the leak that matters, and "is this person an admin" would let
+it straight through.
+
+Roles inside an organization:
+
+    ORG_ADMIN        the whole organization — people, structure, reports
+    BRANCH_MANAGER   their own branch only
+    TEACHER          authors content (phase 4)
+    STUDENT          learns
+
+A platform SUPER_ADMIN may enter any tenant for support, and every such request
+is recorded — see `AuditAction.PLATFORM_ACCESSED_ORG`.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func, select
+
+from app.core import passwords
+from app.core.users import password_helper
+from app.deps import (
+    CurrentUser,
+    DbSession,
+    OrgAdminScope,
+    OrgManagerScope,
+    OrgScope,
+)
+from app.models.audit import AuditAction, AuditEvent
+from app.models.organization import Branch, Department, Organization
+from app.models.user import User, UserRole
+from app.services import accounts, audit, limits
+from app.services import organizations as org_service
+
+router = APIRouter(prefix="/org/{slug}", tags=["organization portal"])
+
+# Not under the {slug} prefix: this one answers "which organization am I in",
+# so requiring the slug would be circular.
+mine_router = APIRouter(prefix="/org", tags=["organization portal"])
+
+
+class MyOrganization(BaseModel):
+    id: uuid.UUID
+    name: str
+    slug: str
+
+
+@mine_router.get("/mine", response_model=MyOrganization | None)
+async def my_organization(
+    session: DbSession, user: CurrentUser
+) -> MyOrganization | None:
+    """The caller's own organization, or null for a public B2C user.
+
+    Returns null rather than 404 for the public case, the same shape as
+    `/users/session` (decision 13): "nobody has one" is a normal answer here,
+    not an error, and the sidebar asks on every load.
+    """
+    if user.organization_id is None:
+        return None
+    organization = await session.get(Organization, user.organization_id)
+    if organization is None:
+        return None
+    return MyOrganization(
+        id=organization.id, name=organization.name, slug=organization.slug
+    )
+
+
+# The roles an organization may hand out. Deliberately excludes ADMIN and
+# SUPER_ADMIN: those are platform roles, and letting a customer mint one would
+# hand them the whole product. Enforced by the schema below, not by a comment.
+ORG_ASSIGNABLE_ROLES = (
+    UserRole.STUDENT,
+    UserRole.TEACHER,
+    UserRole.DEPT_ADMIN,
+    UserRole.BRANCH_MANAGER,
+    UserRole.ORG_ADMIN,
+)
+
+# NOBODY HANDS OUT MORE POWER THAN THEY HOLD.
+#
+# An org admin may create users and managers, and other admins — their own
+# level and everything under it. A branch manager runs the people in their
+# branch, so they may create learners and teachers, and not another manager or
+# an admin. Without a rank, "assignable inside an organization" would let a
+# branch manager promote themselves to org admin in one request.
+ROLE_RANK = {
+    # Platform staff, doing support inside a customer's tenant. Absent from
+    # this table, `ROLE_RANK.get(SUPER_ADMIN, -1)` was -1 — BELOW a learner —
+    # so `_assignable` told a platform super admin that "student" was a role
+    # above their own and refused every member they tried to create or
+    # re-role. Above ORG_ADMIN, because they can already do everything an org
+    # admin can (`OrgContext.is_org_admin` returns True for them).
+    UserRole.SUPER_ADMIN: 5,
+    UserRole.STUDENT: 0,
+    UserRole.TEACHER: 1,
+    # A department admin sits under a branch manager because a branch contains
+    # departments: a branch manager may appoint the HR admin inside their site,
+    # and the HR admin may never appoint the branch's manager.
+    UserRole.DEPT_ADMIN: 2,
+    UserRole.BRANCH_MANAGER: 3,
+    UserRole.ORG_ADMIN: 4,
+}
+
+
+class OrgProfile(BaseModel):
+    """What the portal shell needs to render itself."""
+
+    id: uuid.UUID
+    name: str
+    slug: str
+    is_active: bool
+    # What the signed-in person may do here, so the UI can hide what they
+    # cannot reach. Presentation only — every route re-checks server-side.
+    my_role: str
+    is_org_admin: bool
+    is_platform_staff: bool
+    branch_id: uuid.UUID | None
+    branch_name: str | None
+
+    # WHICH DEPARTMENT THEY RUN, and whether they run one at all. The portal
+    # shell needs this to decide what to show a department admin: their nav,
+    # and the name of the team every screen is scoped to, so "People" is
+    # visibly "Sales" and not a company directory they are missing most of.
+    is_dept_admin: bool = False
+    department_id: uuid.UUID | None = None
+    department_name: str | None = None
+
+    # Two capabilities rather than a role test in the browser. `can_author`
+    # covers an org admin and a department admin; `can_manage_people` adds a
+    # branch manager. Presentation only — every route re-checks server-side —
+    # but keeping the rule in one place stops the UI drifting from the API.
+    can_manage_people: bool = False
+    can_author: bool = False
+
+
+class OrgMember(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: EmailStr
+    role: str
+    # Sees training scoped to OTHER departments. For the HR or IT manager who
+    # sits inside one department and has to see everyone's — a flag rather than
+    # a role, per decision 223.
+    sees_all_departments: bool = False
+    is_active: bool
+    branch_id: uuid.UUID | None
+    branch_name: str | None
+    department_id: uuid.UUID | None
+    department_name: str | None
+    created_at: datetime
+
+
+class MemberCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
+    # Set by the admin because there is no email transport to send an invite
+    # through (password reset and verification are not mounted).
+    # The person changes it from their profile afterwards.
+    password: str = Field(min_length=8, max_length=128)
+    role: UserRole = UserRole.STUDENT
+    branch_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None
+
+
+class MemberUpdate(BaseModel):
+    # Not on MemberCreate: giving somebody sight of every department is a
+    # decision worth making deliberately about somebody who already exists, not
+    # a checkbox passed while typing their name.
+    sees_all_departments: bool | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    role: UserRole | None = None
+    is_active: bool | None = None
+    branch_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None
+    # `email` is absent: it is the sign-in identifier, globally unique, and
+    # changing it silently locks someone out of an account they still hold.
+
+
+class MemberList(BaseModel):
+    members: list[OrgMember]
+    total: int
+    admin_count: int
+    min_admins: int
+
+
+class OrgStructure(BaseModel):
+    branches: list[dict]
+    departments: list[dict]
+
+
+def _assignable(role: UserRole, by: UserRole | None = None) -> None:
+    """Refuse a platform role, and any role above the caller's own.
+
+    Two separate rules, both needed. The first stops a tenant minting platform
+    power (decision 149). The second stops a branch manager writing
+    `role: "org_admin"` into a request body and taking over the organization —
+    the schema accepts the field, so the service has to decide what is legal.
+    """
+    if role not in ORG_ASSIGNABLE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="That role cannot be assigned inside an organization.",
+        )
+    if by is not None and ROLE_RANK.get(role, 99) > ROLE_RANK.get(by, -1):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot give someone a role above your own.",
+        )
+
+
+def _manageable(scope, member: User) -> None:
+    """Whether this caller may act on this person at all.
+
+    A branch manager runs THEIR branch; a department admin runs THEIR
+    department. Someone outside it, or an admin sitting above them, is not
+    theirs to edit — and each check is on the member's own placement rather
+    than on the request, so it cannot be sidestepped by sending a different
+    branch_id or department_id in the body.
+    """
+    if scope.is_org_admin:
+        return
+
+    if scope.is_dept_admin:
+        # THE WALL. The sales admin does not edit, deactivate or read HR's
+        # people. Their own department, and nothing else.
+        scoped = scope.scoped_department_id()
+        if scoped is None or member.department_id != scoped:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only manage people in your own department.",
+            )
+    else:
+        scoped = scope.scoped_branch_id()
+        if scoped is None or member.branch_id != scoped:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only manage people in your own branch.",
+            )
+
+    if ROLE_RANK.get(member.role, 99) > ROLE_RANK.get(scope.user.role, -1):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot manage someone senior to you.",
+        )
+
+
+async def _member_row(session: DbSession, user: User) -> OrgMember:
+    branch = await session.get(Branch, user.branch_id) if user.branch_id else None
+    department = (
+        await session.get(Department, user.department_id)
+        if user.department_id
+        else None
+    )
+    return OrgMember(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role.value,
+        sees_all_departments=user.sees_all_departments,
+        is_active=user.is_active,
+        branch_id=user.branch_id,
+        branch_name=branch.name if branch else None,
+        department_id=user.department_id,
+        department_name=department.name if department else None,
+        created_at=user.created_at,
+    )
+
+
+async def _validate_placement(
+    session: DbSession,
+    organization_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    department_id: uuid.UUID | None,
+) -> None:
+    """A person may only be placed in THIS organization's structure.
+
+    Without this, knowing a branch or department id would be enough to attach
+    one tenant's staff to another tenant's structure — a cross-tenant write
+    dressed up as an ordinary edit.
+    """
+    if branch_id is not None:
+        branch = await session.get(Branch, branch_id)
+        if branch is None or branch.organization_id != organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Branch not found in this organization.",
+            )
+    if department_id is not None:
+        department = await session.get(Department, department_id)
+        if department is None or department.organization_id != organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Department not found in this organization.",
+            )
+
+
+# ---------------------------------------------------------------------------
+# The shell
+# ---------------------------------------------------------------------------
+
+
+@router.get("", response_model=OrgProfile)
+async def get_profile(session: DbSession, scope: OrgScope) -> OrgProfile:
+    branch = (
+        await session.get(Branch, scope.user.branch_id)
+        if scope.user.branch_id
+        else None
+    )
+    department = (
+        await session.get(Department, scope.user.department_id)
+        if scope.user.department_id
+        else None
+    )
+    return OrgProfile(
+        id=scope.organization.id,
+        name=scope.organization.name,
+        slug=scope.organization.slug,
+        is_active=scope.organization.is_active,
+        my_role=scope.user.role.value,
+        is_org_admin=scope.is_org_admin,
+        is_platform_staff=scope.is_platform_staff,
+        branch_id=scope.user.branch_id,
+        branch_name=branch.name if branch else None,
+        is_dept_admin=scope.is_dept_admin,
+        department_id=scope.user.department_id,
+        department_name=department.name if department else None,
+        can_manage_people=scope.can_manage_people,
+        can_author=scope.can_author,
+    )
+
+
+@router.get("/structure", response_model=OrgStructure)
+async def get_structure(session: DbSession, scope: OrgScope) -> OrgStructure:
+    """Branches and departments, for the forms that assign people to them."""
+    branches = (
+        await session.scalars(
+            select(Branch)
+            .where(Branch.organization_id == scope.organization.id)
+            .order_by(Branch.name)
+        )
+    ).all()
+    departments = (
+        await session.execute(
+            select(Department, Branch.name)
+            .outerjoin(Branch, Branch.id == Department.branch_id)
+            .where(Department.organization_id == scope.organization.id)
+            .order_by(Department.name)
+        )
+    ).all()
+    return OrgStructure(
+        branches=[
+            {"id": str(b.id), "name": b.name, "is_active": b.is_active}
+            for b in branches
+        ],
+        departments=[
+            {
+                "id": str(d.id),
+                "name": d.name,
+                "branch_id": str(d.branch_id) if d.branch_id else None,
+                "branch_name": branch_name,
+            }
+            for d, branch_name in departments
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# People
+# ---------------------------------------------------------------------------
+
+
+@router.get("/members", response_model=MemberList)
+async def list_members(session: DbSession, scope: OrgScope) -> MemberList:
+    """The organization's people. Staff only.
+
+    A learner has no business enumerating their colleagues — their names,
+    addresses, roles and branch are a staff directory, not course material.
+    The first version of this gated on `OrgScope` alone, which let any student
+    read their whole branch's roster. Caught by signing in as one.
+
+    A branch manager sees their own branch and nobody else's, applied as a
+    query filter rather than by hiding rows in the UI: the rows must never
+    reach the browser in the first place.
+    """
+    if not scope.can_manage_people:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view the member list.",
+        )
+
+    filters = [User.organization_id == scope.organization.id]
+
+    if scope.is_dept_admin:
+        # THE WALL BETWEEN HR AND SALES, as a query filter. The sales admin's
+        # member list contains their own department and nothing else — HR's
+        # people never reach the browser to be hidden there.
+        scoped_department = scope.scoped_department_id()
+        if scoped_department is None:
+            # No department to be the admin of. Sees only themselves, rather
+            # than everybody: failing closed is the only safe direction.
+            filters.append(User.id == scope.user.id)
+        else:
+            filters.append(User.department_id == scoped_department)
+    else:
+        scoped_branch = scope.scoped_branch_id()
+        if scoped_branch is not None:
+            filters.append(User.branch_id == scoped_branch)
+        elif not scope.is_org_admin:
+            # A branch manager with no branch assigned sees nobody, rather than
+            # everybody. Failing closed is the only safe direction here.
+            filters.append(User.id == scope.user.id)
+
+    users = (
+        await session.scalars(select(User).where(*filters).order_by(User.name))
+    ).all()
+
+    # The admin count is organization-wide even for a branch manager: it is
+    # what the lockout warning is about, and scoping it to a branch would make
+    # it wrong rather than private.
+    admin_count = await org_service.count_org_admins(session, scope.organization.id)
+
+    return MemberList(
+        members=[await _member_row(session, u) for u in users],
+        total=len(users),
+        admin_count=admin_count,
+        min_admins=org_service.MIN_ORG_ADMINS,
+    )
+
+
+@router.post("/members", response_model=OrgMember, status_code=status.HTTP_201_CREATED)
+async def create_member(
+    payload: MemberCreate, session: DbSession, scope: OrgManagerScope
+) -> OrgMember:
+    """Create a person inside this organization.
+
+    There is no public signup into an organization, by design: membership is
+    granted by an admin, not claimed by anyone who knows the URL.
+
+    Open to branch managers as well as org admins — running the people in a
+    branch is what that role is for — but a manager may only create into their
+    own branch, and only at or below their own level.
+    """
+    _assignable(payload.role, by=scope.user.role)
+
+    # THE SEAT LIMIT. Recomputed from the database here rather than trusted
+    # from the screen, which may have been open while a colleague filled the
+    # last seat. 409 rather than 403: they are allowed to add people, the
+    # organization's current state is what refuses.
+    try:
+        await limits.assert_can_add_member(session, scope.organization)
+    except limits.LimitReached as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+
+    branch_id = payload.branch_id
+    department_id = payload.department_id
+
+    if scope.is_dept_admin:
+        scoped = scope.scoped_department_id()
+        if scoped is None:
+            # Fails closed, as the member list does: no department to be the
+            # admin of means no department to add anyone to.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You have no department assigned, so you cannot add people.",
+            )
+        # FORCED, NOT VALIDATED. A department admin does not choose which
+        # department, so a department_id in the body is overridden rather than
+        # rejected — otherwise the sales admin could file a new account into
+        # HR and, from the next request, manage them.
+        department_id = scoped
+        # The branch follows the department: it is where that department sits,
+        # not something a department admin picks.
+        scoped_department = await session.get(Department, scoped)
+        branch_id = scoped_department.branch_id if scoped_department else None
+    elif not scope.is_org_admin:
+        scoped = scope.scoped_branch_id()
+        if scoped is None:
+            # Fails closed, as the member list does: a manager with no branch
+            # assigned has no branch to add anyone to.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You have no branch assigned, so you cannot add people.",
+            )
+        # Forced, not validated: a manager does not choose which branch, so a
+        # branch_id in the body is overridden rather than rejected.
+        branch_id = scoped
+
+    await _validate_placement(
+        session, scope.organization.id, branch_id, department_id
+    )
+
+    email = payload.email.lower().strip()
+    existing = await session.scalar(select(User).where(User.email == email))
+    if existing is not None:
+        # Deliberately does not say whether the address belongs to this
+        # organization or another one — that would make this endpoint a way to
+        # probe our whole customer base for a given person.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with that email already exists.",
+        )
+
+    # THE SAME RULE AS PUBLIC SIGN-UP. `validate_password` on `UserManager`
+    # only runs on the fastapi-users routes; this one builds the User itself,
+    # so without this an org admin could set a one-character password on a
+    # colleague's account, and that colleague has no way to know.
+    try:
+        passwords.check(payload.password, email=email, name=payload.name)
+    except passwords.WeakPassword as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from None
+
+    member = User(
+        name=payload.name.strip(),
+        email=email,
+        hashed_password=password_helper.hash(payload.password),
+        role=payload.role,
+        organization_id=scope.organization.id,
+        branch_id=branch_id,
+        department_id=department_id,
+        is_active=True,
+        is_verified=True,  # an admin vouched for them; there is no email to verify through
+    )
+    session.add(member)
+
+    # `record`, not `record_safely`: creating an account with a role is the
+    # class of event this trail exists for, and it shares the transaction so
+    # the account and its record commit together or not at all.
+    await audit.record(
+        session,
+        action=AuditAction.ORG_USER_CREATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="user",
+        target_id=member.id,
+        metadata={"role": member.role.value},
+    )
+    await session.commit()
+    await session.refresh(member)
+    return await _member_row(session, member)
+
+
+@router.patch("/members/{member_id}", response_model=OrgMember)
+async def update_member(
+    member_id: uuid.UUID,
+    payload: MemberUpdate,
+    session: DbSession,
+    scope: OrgManagerScope,
+) -> OrgMember:
+    """Edit a person: their name, role, placement or whether they can sign in."""
+    member = await session.get(User, member_id)
+    # The organization is checked as well as the id. Without it, knowing a user
+    # id would be enough to edit somebody in another tenant.
+    if member is None or member.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found."
+        )
+
+    _manageable(scope, member)
+    if payload.role is not None:
+        _assignable(payload.role, by=scope.user.role)
+
+    # NOBODY LOCKS THEMSELVES OUT WITH ONE CLICK.
+    #
+    # The admin floor protects the organization from losing its last admins; it
+    # does nothing for the person doing the demoting. With three admins, Ada
+    # could deactivate herself, be 401'd on the next request, and be unable to
+    # sign back in — only another admin could restore her. Verified: that is
+    # exactly what happened.
+    #
+    # Refused rather than confirmed, because there is no legitimate reason to
+    # remove your own access from this screen: someone leaving is deactivated
+    # by a colleague, which also leaves an audit record naming who did it.
+    if member.id == scope.user.id:
+        # Compared against the role they CURRENTLY hold, not against ORG_ADMIN.
+        # The old test read "any role but org admin is a demotion", which was
+        # true when org admin was the only role that could reach this screen
+        # and became wrong the moment branch managers and department admins
+        # could: saving your own row with your own unchanged role tripped it,
+        # and a 409 for a change that removes nothing is a refusal nobody can
+        # act on.
+        losing_own_access = payload.is_active is False or (
+            payload.role is not None
+            and ROLE_RANK.get(payload.role, 99) < ROLE_RANK.get(member.role, -1)
+        )
+        if losing_own_access:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "You cannot remove your own administrator access. "
+                    "Ask another administrator to do it."
+                ),
+            )
+
+    # A DEPARTMENT ADMIN CANNOT MOVE PEOPLE OUT OF THEIR DEPARTMENT.
+    #
+    # `_manageable` decides who they may touch, and it reads the member's
+    # CURRENT department — so without this the sales admin could edit one of
+    # their own people and set `department_id` to HR, pushing an account across
+    # the wall and out of their own reach in a single request. Refused rather
+    # than silently ignored: they meant to move somebody, and being told it did
+    # not happen is better than believing it did.
+    if scope.is_dept_admin and "department_id" in payload.model_fields_set:
+        if payload.department_id != scope.scoped_department_id():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot move somebody out of your own department.",
+            )
+
+    # Nor hand one of their people sight of every other department. That flag
+    # is how an HR or IT manager sees across the whole company (decision 223),
+    # and letting a department admin set it would make the wall optional from
+    # inside.
+    if payload.sees_all_departments is not None and not scope.is_org_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only an organization administrator can give somebody sight of "
+                "every department."
+            ),
+        )
+
+    await _validate_placement(
+        session, scope.organization.id, payload.branch_id, payload.department_id
+    )
+
+    losing_admin = (
+        payload.role is not None and payload.role is not UserRole.ORG_ADMIN
+    ) or payload.is_active is False
+
+    # THE ADMIN FLOOR. Recomputed from the database on every attempt rather
+    # than trusted from the caller, exactly as the certification allowance is.
+    if losing_admin:
+        try:
+            await org_service.assert_admin_floor_after_change(
+                session, member, still_admin=False
+            )
+        except org_service.AdminFloorError as exc:
+            # 409, not 403: the caller has the right to do this in principle,
+            # the organization's current state is what forbids it.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+    changed: dict[str, object] = {}
+    previous_role = member.role
+
+    if payload.name is not None:
+        member.name = payload.name.strip()
+        changed["name"] = member.name
+    if payload.role is not None and payload.role is not member.role:
+        member.role = payload.role
+        changed["role"] = f"{previous_role.value} -> {member.role.value}"
+    if payload.sees_all_departments is not None:
+        member.sees_all_departments = payload.sees_all_departments
+        changed["sees_all_departments"] = payload.sees_all_departments
+    if payload.is_active is not None:
+        member.is_active = payload.is_active
+        changed["is_active"] = payload.is_active
+    if payload.branch_id is not None or "branch_id" in payload.model_fields_set:
+        member.branch_id = payload.branch_id
+        changed["branch_id"] = str(payload.branch_id or "")
+    if payload.department_id is not None or "department_id" in payload.model_fields_set:
+        member.department_id = payload.department_id
+        changed["department_id"] = str(payload.department_id or "")
+
+    if changed:
+        await audit.record(
+            session,
+            action=(
+                AuditAction.ORG_ROLE_CHANGED
+                if "role" in changed
+                else AuditAction.ORG_USER_UPDATED
+            ),
+            actor=scope.user,
+            organization_id=scope.organization.id,
+            target_type="user",
+            target_id=member.id,
+            metadata=changed,
+        )
+    await session.commit()
+    await session.refresh(member)
+    return await _member_row(session, member)
+
+
+class MemberRemoval(BaseModel):
+    """What actually happened, so the screen can say so."""
+
+    outcome: str
+    explanation: str
+
+
+@router.delete("/members/{member_id}", response_model=MemberRemoval)
+async def remove_member(
+    member_id: uuid.UUID, session: DbSession, scope: OrgManagerScope
+) -> MemberRemoval:
+    """Remove someone from the organization.
+
+    Deletes the account outright when it has no history, and closes it when it
+    does — see `services/accounts.py` for why those are different operations
+    and why the caller is told which one ran.
+
+    Same guards as editing: a branch manager may only remove their own branch's
+    people, nobody senior to them, and nobody may remove themselves.
+    """
+    member = await session.get(User, member_id)
+    if member is None or member.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found."
+        )
+
+    # Decision 165, applied to the stronger action: removing yourself here has
+    # no legitimate use, and it locks you out on the very next request.
+    if member.id == scope.user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "You cannot remove your own account. "
+                "Ask another administrator to do it."
+            ),
+        )
+
+    _manageable(scope, member)
+
+    # THE ADMIN FLOOR applies to removal exactly as it does to demotion and
+    # deactivation — an organization stranded with one admin does not care
+    # which of the three routes got it there.
+    if member.role is UserRole.ORG_ADMIN:
+        try:
+            await org_service.assert_admin_floor_after_change(
+                session, member, still_admin=False
+            )
+        except org_service.AdminFloorError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+    removal = await accounts.remove_account(session, member)
+
+    # Recorded BEFORE the commit and with `record`, not `record_safely`:
+    # removing a person is the class of event this trail exists for, so a
+    # failed write must fail the removal rather than quietly complete it.
+    await audit.record(
+        session,
+        action=AuditAction.ORG_USER_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="user",
+        target_id=member_id,
+        metadata={"removed": removal.outcome, "role": member.role.value},
+    )
+    await session.commit()
+
+    return MemberRemoval(outcome=removal.outcome, explanation=removal.explanation)
+
+
+# ---------------------------------------------------------------------------
+# The organization's own audit trail
+# ---------------------------------------------------------------------------
+
+
+class OrgAuditRow(BaseModel):
+    id: uuid.UUID
+    action: str
+    created_at: datetime
+    actor_name: str | None
+    actor_email: str | None
+    target_type: str | None
+    ip_address: str | None
+    metadata: dict | None
+
+
+class OrgAuditPage(BaseModel):
+    events: list[OrgAuditRow]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/audit", response_model=OrgAuditPage)
+async def org_audit(
+    session: DbSession,
+    scope: OrgAdminScope,
+    limit: int = 50,
+    offset: int = 0,
+    action: str | None = None,
+) -> OrgAuditPage:
+    """This organization's activity, and nothing else.
+
+    The `organization_id` filter is the whole point: an org admin reading their
+    own trail must never see another tenant's, and platform-level events (which
+    have no organization) are not theirs to read either.
+    """
+    limit = max(1, min(limit, 200))
+    filters = [AuditEvent.organization_id == scope.organization.id]
+    if action:
+        filters.append(
+            AuditEvent.action.like(action)
+            if action.endswith("%")
+            else AuditEvent.action == action
+        )
+
+    total = await session.scalar(
+        select(func.count()).select_from(AuditEvent).where(*filters)
+    )
+    rows = (
+        await session.execute(
+            select(AuditEvent, User)
+            .outerjoin(User, User.id == AuditEvent.actor_user_id)
+            .where(*filters)
+            .order_by(AuditEvent.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    return OrgAuditPage(
+        events=[
+            OrgAuditRow(
+                id=event.id,
+                action=event.action,
+                created_at=event.created_at,
+                actor_name=actor.name if actor else None,
+                actor_email=actor.email if actor else None,
+                target_type=event.target_type,
+                ip_address=event.ip_address,
+                metadata=event.meta,
+            )
+            for event, actor in rows
+        ],
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )

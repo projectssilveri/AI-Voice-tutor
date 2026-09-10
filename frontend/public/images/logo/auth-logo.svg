@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="168" height="32" viewBox="0 0 168 32" fill="none">
+  <!--
+    Full lockup for DARK backgrounds. Only the wordmark changes — the badge is
+    identical, so the brand reads the same in both themes.
+  -->
+  <title>VoiceTutor</title>
+  <rect width="32" height="32" rx="8" fill="url(#vt-d)"/>
+  <g fill="#fff">
+    <rect x="4.8" y="11.5" width="3.2" height="9" rx="1.6"/>
+    <rect x="9.6" y="8" width="3.2" height="16" rx="1.6"/>
+    <rect x="14.4" y="5" width="3.2" height="22" rx="1.6"/>
+    <rect x="19.2" y="9" width="3.2" height="14" rx="1.6"/>
+    <rect x="24" y="11" width="3.2" height="10" rx="1.6"/>
+  </g>
+  <text x="44" y="21.5" font-family="Outfit, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="19" letter-spacing="-0.4">
+    <tspan fill="#FFFFFF" font-weight="700">Voice</tspan><tspan fill="#94A0FF" font-weight="600">Tutor</tspan>
+  </text>
+  <defs>
+    <linearGradient id="vt-d" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5A6BFF"/>
+      <stop offset="1" stop-color="#3B34D8"/>
+    </linearGradient>
+  </defs>
+</svg>

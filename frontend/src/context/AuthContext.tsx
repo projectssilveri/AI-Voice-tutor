@@ -1,0 +1,81 @@
+"use client";
+
+/**
+ * Session state for the signed-in user.
+ *
+ * The session itself lives in an httpOnly cookie the backend owns; this only
+ * caches who that cookie belongs to so the UI does not refetch on every render.
+ * `refresh()` re-reads it after login, registration, or sign-out.
+ */
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import { type AuthUser, fetchSession, logout as apiLogout } from "@/lib/auth";
+
+interface AuthContextValue {
+  user: AuthUser | null;
+  /** True until the first session check completes. */
+  loading: boolean;
+  refresh: () => Promise<AuthUser | null>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    const next = await fetchSession();
+    setUser(next);
+    setLoading(false);
+    return next;
+  }, []);
+
+  const signOut = useCallback(async () => {
+    // `apiLogout` is a bare fetch, so it REJECTS when the backend is
+    // unreachable. Unguarded, that rejection propagated out of every caller —
+    // the header dropdown awaits this inside an async handler with no catch —
+    // so a sign-out during a blip did nothing at all: no navigation, no
+    // message, an unhandled rejection in the console, and the user left
+    // looking at a page that still says they are signed in.
+    try {
+      await apiLogout();
+    } catch {
+      // Nothing useful to do about it here. The session cookie is httpOnly, so
+      // the browser cannot clear it; the next session check will reveal the
+      // truth either way.
+    }
+    // Cleared regardless, so the UI is never stuck. If the server never got
+    // the request the cookie survives, and the next `refresh()` restores the
+    // session — which is the honest outcome rather than a UI that pretends.
+    setUser(null);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const value = useMemo(
+    () => ({ user, loading, refresh, signOut }),
+    [user, loading, refresh, signOut],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+}

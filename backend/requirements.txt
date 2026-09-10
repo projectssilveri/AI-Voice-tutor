@@ -1,0 +1,40 @@
+# Voice Tutor LMS — backend dependencies
+# Installed into the local Python environment.
+#   pip install -r requirements.txt
+
+# --- Web framework ---
+fastapi>=0.127.0
+uvicorn[standard]>=0.52.0
+python-multipart>=0.0.32          # form parsing for login endpoints
+
+# --- Database ---
+sqlalchemy[asyncio]>=2.0.45
+asyncpg>=0.31.0
+greenlet>=3.5.0                   # required by SQLAlchemy's async bridge
+alembic>=1.19.0
+pgvector>=0.5.0                   # Vector column type for RAG (build-order step 6+)
+
+# --- Config & validation ---
+pydantic>=2.12.0
+pydantic-settings>=2.12.0
+python-dotenv>=1.2.0
+
+# --- Auth ---
+fastapi-users[sqlalchemy]>=15.0.5
+pwdlib[argon2]>=0.3.0
+pyjwt>=2.10.0
+
+# --- AI providers ---
+google-genai>=1.72.0              # Gemini Live (voice). Live sessions only.
+
+# --- Documents ---
+# reportlab was imported by services/certificate_pdf.py without ever being
+# pinned here: it happened to be present in the shared venv, so a fresh clone
+# would have installed cleanly and then failed at the first certificate
+# download. pypdf reads text out of uploaded course PDFs.
+reportlab>=4.5.0                  # renders certificate PDFs
+pypdf>=6.0                        # extracts text from uploaded course material
+
+# --- HTTP ---
+httpx>=0.28.0
+anthropic>=0.120.0   # Anthropic API, non-live text steps only.

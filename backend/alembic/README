@@ -1,0 +1,20 @@
+Alembic migrations for the Voice Tutor LMS backend.
+
+Create a migration after changing models in app/models/:
+
+    alembic revision --autogenerate -m "add courses and modules"
+
+Apply migrations:
+
+    alembic upgrade head
+
+Roll back one:
+
+    alembic downgrade -1
+
+env.py reads DATABASE_URL from backend/.env via app.core.config, so
+alembic.ini holds no connection string.
+
+Note: pgvector needs `CREATE EXTENSION IF NOT EXISTS vector;` before any
+Vector column is used. On Neon/Supabase run it once from their SQL console, or
+put it in the first migration's upgrade().

@@ -1,0 +1,31 @@
+# Local development database only.
+#
+# Production runs on hosted Postgres (Neon/Supabase) — this exists so the
+# schema, migrations, and auth can be exercised for real on a machine with no
+# database installed. The pgvector image ships the extension preinstalled,
+# which the initial migration needs.
+#
+#   docker compose up -d
+#   docker compose down          # stop, keep data
+#   docker compose down -v       # stop and destroy data
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: voice-tutor-lms-db
+    environment:
+      POSTGRES_USER: vtlms
+      POSTGRES_PASSWORD: vtlms_dev_password
+      POSTGRES_DB: vtlms
+    ports:
+      # 55432 on the host so it cannot collide with a local Postgres on 5432.
+      - "55432:5432"
+    volumes:
+      - vtlms_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vtlms -d vtlms"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  vtlms_pgdata:

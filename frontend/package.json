@@ -1,0 +1,39 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "apexcharts": "^4.7.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^13.1.0",
+    "next": "^15.5.25",
+    "react": "^19.2.8",
+    "react-apexcharts": "^1.9.0",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^2.6.1"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.6",
+    "@svgr/webpack": "^8.1.0",
+    "@tailwindcss/forms": "^0.5.11",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^15.5.25",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "//overrides": "Next 15.5 pins a vulnerable transitive postcss (<=8.5.22, sourceMappingURL path traversal). Forced to a patched version here. Next itself is held at 15.5.25 rather than 15.5.22: the range up to 15.5.23 carries two unauthenticated RCE advisories (GHSA-p293-qw3h-jr36 on Windows hosts, GHSA-2xp9-vwfh-vxw4 in the image optimizer). 15.5.25 is a patch on the same minor, so it clears both without the move to Next 16 that `npm audit fix --force` wanted and that we still avoid, so the TailAdmin components stay on their known-good version. sharp is at 0.35.4 for GHSA-rgj7-g3m4-5g8c in libheif.",
+  "overrides": {
+    "postcss": "^8.5.25",
+    "sharp": "^0.35.4"
+  }
+}

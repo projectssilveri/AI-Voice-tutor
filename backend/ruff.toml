@@ -1,0 +1,55 @@
+# Lint configuration.
+#
+# Pinned rather than left to ruff's defaults so that `ruff check` means the
+# same thing on every machine and in CI. Without this, upgrading ruff silently
+# changes which rules run, and a build starts failing on code nobody touched.
+
+line-length = 88
+target-version = "py312"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes — undefined names, unused imports. The one that catches
+            # real bugs; `logger` used without being defined was found by this.
+    "I",    # import sorting
+    "UP",   # pyupgrade — modern syntax for the Python we target
+    "B",    # bugbear — mutable defaults, loop-variable capture, and friends
+    "C4",   # comprehension and literal simplifications
+    "ISC",  # implicit string concatenation, where a missing comma hides
+    "RUF",  # ruff's own checks
+]
+
+ignore = [
+    # Line length is reported by the formatter's own wrapping; failing a build
+    # over a long URL in a comment is noise.
+    "E501",
+    # `class UserRole(str, Enum)` is deliberate throughout the models, not an
+    # oversight. Every one of these is persisted as a VARCHAR + CHECK with
+    # `values_callable`, and the `str` base is what makes the member compare
+    # equal to its stored value. StrEnum changes `str()` behaviour, and
+    # swapping it under columns that decide who reaches admin data is not a
+    # style change.
+    "UP042",
+]
+
+[lint.per-file-ignores]
+# Both scripts bootstrap `sys.path` so they can be run directly from the
+# backend directory, which necessarily happens before the app imports.
+"scripts/seed.py" = ["E402"]
+"scripts/verify_migration.py" = ["E402"]
+
+# The catalogue is hand-written course content: prompts and descriptions are
+# deliberately split across lines inside tuples, which ISC004 flags because a
+# MISSING COMMA looks identical. That risk is real, so it is guarded by
+# tests/test_catalogue.py — which checks tuple arity, answer-key ranges, and
+# that a prompt has not swallowed its accepted answers — rather than by
+# parenthesising two hundred strings.
+"scripts/catalogue.py" = ["ISC"]
+
+# Alembic migrations are generated-shaped: long literal column definitions and
+# imports that exist for the autogenerate machinery.
+"alembic/versions/*" = ["E402"]
+
+# Tests may shadow names and build throwaway structures freely.
+"tests/*" = ["C408"]
