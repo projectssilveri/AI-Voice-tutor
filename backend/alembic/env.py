@@ -83,10 +83,17 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    try:
+        asyncio.run(run_async_migrations())
+    except Exception as exc:
+        print(f"\n==========================================", flush=True)
+        print(f"FAILED TO RUN MIGRATIONS ON DATABASE: {type(exc).__name__}: {exc}", flush=True)
+        print(f"==========================================\n", flush=True)
+        raise
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
+
