@@ -44,16 +44,19 @@ def normalise_database_url(url: str) -> tuple[str, dict[str, object]]:
 
     connect_args: dict[str, object] = {}
     sslmode = dropped.get("sslmode")
-    if sslmode in _SSL_REQUIRED_MODES:
+    is_remote = not any(h in parts.netloc for h in ("localhost", "127.0.0.1", "db:5432"))
+
+    if sslmode in _SSL_REQUIRED_MODES or (is_remote and sslmode != "disable"):
         context = ssl.create_default_context()
-        if sslmode == "require":
-            # `require` encrypts but does not verify — mirror libpq semantics
-            # rather than silently upgrading to full verification.
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         connect_args["ssl"] = context
     elif sslmode == "disable":
         connect_args["ssl"] = False
+
+    # Disable statement cache for PgBouncer / Supabase pooler compatibility
+    if is_remote or "pooler" in parts.netloc:
+        connect_args["statement_cache_size"] = 0
 
     normalised = urlunsplit(
         (scheme, parts.netloc, parts.path, urlencode(kept), parts.fragment)
