@@ -88,9 +88,7 @@ export default function SignInForm() {
       //
       // `next` still wins over both: somebody bounced here from a protected
       // page is finishing a redirect, and that page is where they were going.
-      const isStaff =
-        signedIn?.role === "admin" || signedIn?.role === "super_admin";
-      const target = resuming ?? (isStaff ? "/dashboard" : "/");
+      const target = resuming ?? "/dashboard";
 
       // No new tab either. That existed to keep the public page alive behind
       // the workspace; now that signing in RETURNS you to the public site,

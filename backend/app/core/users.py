@@ -149,9 +149,9 @@ cookie_transport = CookieTransport(
     cookie_httponly=True,
     # Only sent over HTTPS in production; localhost is plain HTTP in dev.
     cookie_secure=settings.is_production,
-    # "lax" still sends the cookie on top-level navigation, so following a link
-    # into the app keeps you signed in, while blocking cross-site POSTs.
-    cookie_samesite="lax",
+    # "none" is required when frontend (Vercel) and backend (Render) are on
+    # different domains, so modern browsers accept and send the cross-site session cookie.
+    cookie_samesite="none" if settings.is_production else "lax",
 )
 
 auth_backend = AuthenticationBackend(

@@ -104,7 +104,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 audit.new_device_id(),
                 max_age=_DEVICE_COOKIE_MAX_AGE,
                 httponly=True,
-                samesite="lax",
+                samesite="none" if settings.environment == "production" else "lax",
                 secure=settings.environment == "production",
                 path="/",
             )

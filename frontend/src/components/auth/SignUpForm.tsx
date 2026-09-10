@@ -100,10 +100,7 @@ export default function SignUpForm() {
       // otherwise a new account lands on the sign-in page.
       await login(email, password);
       await refresh();
-      // The site, not the dashboard — same reasoning as sign-in. Somebody who
-      // has just created an account is still deciding, and the catalogue is a
-      // better place to keep deciding than an empty workspace.
-      router.push("/");
+      router.push("/dashboard");
       router.refresh();
     } catch (caught) {
       setError(
