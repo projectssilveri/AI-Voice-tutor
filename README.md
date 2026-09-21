@@ -178,14 +178,6 @@ npm run dev
 
 Open **http://localhost:3000**.
 
-### Seeded accounts
-
-| Role | Email | Password |
-|---|---|---|
-| Student | `learner@example.com` | `LearnerPass123!` |
-| Admin | `admin@example.com` | `AdminPass123!` |
-| Super admin | `owner@example.com` | `OwnerPass123!` |
-
 ### Gotchas
 
 - **Don't run `npm run build` while `npm run dev` is running.** They share
