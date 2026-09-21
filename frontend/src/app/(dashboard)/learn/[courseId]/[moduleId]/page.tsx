@@ -9,10 +9,12 @@ import VoiceAvatar from "@/components/voice-session/VoiceAvatar";
 import { useVoiceSession } from "@/components/voice-session/useVoiceSession";
 import {
   type ModuleDetail,
+  type ModuleRequirements,
   type ModuleSummary,
   type ProgressStatus,
   getCourse,
   getModule,
+  getModuleRequirements,
   setModuleProgress,
 } from "@/lib/student";
 import ModuleMaterials from "@/components/assessments/ModuleMaterials";
@@ -34,6 +36,8 @@ export default function ModuleVoicePage() {
   const [module, setModule] = useState<ModuleDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressStatus>("not_started");
+  const [requirements, setRequirements] =
+    useState<ModuleRequirements | null>(null);
   const [savingProgress, setSavingProgress] = useState(false);
   // The whole course's modules, in order — so this page can offer the next one
   // instead of sending the student back to the course list every time.
@@ -61,6 +65,17 @@ export default function ModuleVoicePage() {
   } = useVoiceSession({ moduleId });
 
   const loadProgress = useCallback(async () => {
+    // What this module still needs before it can be completed. Read alongside
+    // the status rather than after it, so the button and the reason for it
+    // never disagree on screen.
+    getModuleRequirements(moduleId)
+      .then(setRequirements)
+      .catch(() => {
+        // No checklist rather than a broken one. The server is the thing that
+        // actually enforces the rule.
+        setRequirements(null);
+      });
+
     // The module endpoint returns the content, not this student's progress;
     // the course listing is where per-module status lives — and where the
     // neighbouring modules come from, at no extra request.
@@ -132,6 +147,8 @@ export default function ModuleVoicePage() {
     state !== "idle" && state !== "error" && state !== "superseded";
 
   const position = siblings.findIndex((m) => m.id === moduleId);
+  const currentRow = position >= 0 ? siblings[position] : null;
+  const estimatedMinutes = currentRow?.estimated_minutes ?? 0;
   const previousModule = position > 0 ? siblings[position - 1] : null;
   const nextModule =
     position >= 0 && position < siblings.length - 1
@@ -195,6 +212,21 @@ export default function ModuleVoicePage() {
             <p className="text-sm text-gray-500 dark:text-gray-400">
               The tutor lectures on this module. Talk over it whenever you have
               a question.
+              {/* HOW LONG IT TAKES, said before they commit to starting. The
+                  figure has existed on the API all along (`estimated_minutes`,
+                  from the lecture's word count at speaking pace) and this
+                  screen never showed it, so a student pressed start with no
+                  idea whether they were beginning four minutes or forty.
+                  Issue 20. */}
+              {estimatedMinutes > 0 ? (
+                <>
+                  {" "}
+                  <span className="font-medium text-gray-700 dark:text-gray-300">
+                    About {counted(estimatedMinutes, "minute")} of speech
+                  </span>
+                  , longer if you interrupt.
+                </>
+              ) : null}
             </p>
           </div>
           {/* The only control up here. Quiz and assignment are reached from
@@ -207,7 +239,21 @@ export default function ModuleVoicePage() {
             <button
               type="button"
               onClick={toggleComplete}
-              disabled={savingProgress}
+              // Re-opening is always allowed; only completing is gated, and
+              // the title says which requirement is holding it.
+              disabled={
+                savingProgress ||
+                (progress !== "completed" &&
+                  requirements !== null &&
+                  !requirements.ready_to_complete)
+              }
+              title={
+                progress !== "completed" &&
+                requirements !== null &&
+                !requirements.ready_to_complete
+                  ? `Still to do: ${requirements.outstanding.join(", ")}`
+                  : undefined
+              }
               className={`rounded-lg px-5 py-2.5 text-sm font-medium transition disabled:opacity-50 ${
                 progress === "completed"
                   ? "border border-gray-300 text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/[0.03]"
@@ -223,6 +269,111 @@ export default function ModuleVoicePage() {
           </div>
         </div>
       </div>
+
+      {/* WHAT FINISHING THIS MODULE MEANS, said before it is asked for.
+          Completion used to be the lesson alone, so the quiz and the
+          assignment sat in the curriculum dropdown looking optional. They are
+          not optional any more, and a rule nobody can see is a rule that
+          reads as a bug. */}
+      {requirements !== null &&
+      (requirements.needs_quiz || requirements.needs_assignment) &&
+      progress !== "completed" ? (
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
+          <p className="mb-3 text-sm font-medium text-gray-800 dark:text-white/90">
+            To finish this module
+          </p>
+          <ul className="space-y-2 text-sm">
+            <li className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+              <span aria-hidden="true">🎧</span>
+              Go through the lesson
+            </li>
+            {requirements.needs_quiz ? (
+              <li
+                className={
+                  requirements.quiz_passed
+                    ? "flex items-center gap-2 text-success-700 dark:text-success-400"
+                    : "flex items-center gap-2 text-gray-600 dark:text-gray-400"
+                }
+              >
+                <span aria-hidden="true">
+                  {requirements.quiz_passed ? "✓" : "○"}
+                </span>
+                Pass the practice quiz (70% or better)
+                {requirements.best_quiz_score !== null ? (
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    · best so far {requirements.best_quiz_score}%
+                  </span>
+                ) : null}
+              </li>
+            ) : null}
+            {requirements.needs_assignment ? (
+              <li
+                className={
+                  requirements.assignment_submitted
+                    ? "flex items-center gap-2 text-success-700 dark:text-success-400"
+                    : "flex items-center gap-2 text-gray-600 dark:text-gray-400"
+                }
+              >
+                <span aria-hidden="true">
+                  {requirements.assignment_submitted ? "✓" : "○"}
+                </span>
+                Submit the assignment
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* WHAT HAPPENS NEXT, which nothing said. The lesson ended and the
+          student was left on a page with no indication that a quiz existed, no
+          route to the assignment, and no push towards the following module —
+          issues 21, 22 and 23. This is a signpost rather than an automatic
+          jump: being moved somewhere you did not ask to go, mid-thought, is
+          worse than being told where to go. */}
+      {requirements !== null && progress !== "not_started" ? (
+        <div className="rounded-2xl border border-brand-200 bg-brand-50 p-4 dark:border-brand-500/30 dark:bg-brand-500/10">
+          <p className="mb-2 text-sm font-medium text-gray-800 dark:text-white/90">
+            {requirements.ready_to_complete
+              ? "You have done everything in this module."
+              : "Next in this module"}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {requirements.needs_quiz && !requirements.quiz_passed ? (
+              <Link
+                href={`/learn/${courseId}/${moduleId}/quiz`}
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-600"
+              >
+                Take the practice quiz
+              </Link>
+            ) : null}
+            {requirements.needs_assignment &&
+            !requirements.assignment_submitted ? (
+              <Link
+                href={`/learn/${courseId}/${moduleId}/assignment`}
+                className="rounded-lg border border-brand-300 px-4 py-2 text-sm font-medium text-brand-600 transition hover:bg-white dark:border-brand-500/40 dark:text-brand-400 dark:hover:bg-white/5"
+              >
+                Do the assignment
+              </Link>
+            ) : null}
+            {requirements.ready_to_complete && nextModule ? (
+              <Link
+                href={`/learn/${courseId}/${nextModule.id}`}
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-600"
+              >
+                Start the next module: {nextModule.title}
+              </Link>
+            ) : null}
+            {requirements.ready_to_complete && !nextModule ? (
+              <Link
+                href="/certification"
+                className="rounded-lg bg-success-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-success-800"
+              >
+                That was the last module. Go to certification
+              </Link>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {loadError ? (
         <div className="rounded-2xl border border-error-500 bg-error-50 p-4 text-sm text-error-700 dark:bg-error-500/10 dark:text-error-400">

@@ -1,8 +1,10 @@
 import Link from "next/link";
 
+import AddToCartButton from "@/components/cart/AddToCartButton";
 import CourseCover from "@/components/marketing/Courses/CourseCover";
 import Panel from "@/components/marketing/ui/Panel";
 import { accessLabel } from "@/lib/catalogue";
+import { priceLabel as money } from "@/lib/money";
 import { Course } from "@/types/course";
 
 /**
@@ -18,18 +20,9 @@ import { Course } from "@/types/course";
  * against the border.
  */
 
-/**
- * Price, or "Free".
- *
- * A free course renders the word rather than ₹0 — nobody reads "₹0" as an
- * invitation, and it is the one card we most want someone to click.
- */
-function money(minor: number, currency: string): string {
-  if (minor === 0) return "Free";
-  const symbol = currency === "INR" ? "₹" : `${currency} `;
-  return `${symbol}${(minor / 100).toLocaleString("en-IN")}`;
-}
-
+// `priceLabel` is the shared "Free" rule. This card had its own copy of it,
+// and two other screens had a third and a fourth written as ternaries — so a
+// free course read "Free" here and "₹0" elsewhere.
 export default function CourseCard({
   course,
   headingLevel = "h3",
@@ -111,7 +104,7 @@ export default function CourseCard({
         </p>
 
         <div className="mt-auto pt-5">
-          <div className="flex items-end justify-between gap-4 border-t border-white/5 pt-4">
+          <div className="flex items-end justify-between gap-3 border-t border-white/5 pt-4">
             <p className="text-[12.5px] font-medium text-slate-400">
               {moduleCount} modules
               <span aria-hidden="true" className="mx-1.5 text-white/20">·</span>
@@ -140,6 +133,13 @@ export default function CourseCard({
                 {free ? "no card needed" : (window ?? "yours to keep")}
               </span>
             </div>
+
+            {/* Filling a basket from the listing is how a cart actually gets
+                used — nobody opens six course pages first. A free course has
+                no basket to go in, so it does not get one. */}
+            {free ? null : (
+              <AddToCartButton courseId={course.id} variant="icon" />
+            )}
           </div>
         </div>
       </div>

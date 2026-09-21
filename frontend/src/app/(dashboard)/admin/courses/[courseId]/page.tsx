@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import CertificationPanel from "@/components/admin/CertificationPanel";
 import RequireAuth from "@/components/auth/RequireAuth";
 import ModuleEditor from "@/components/admin/ModuleEditor";
 import CourseReviewPanel from "@/components/admin/CourseReviewPanel";
@@ -220,6 +221,15 @@ function CourseDetailAuthoring() {
           </div>
         </div>
       ) : null}
+
+      {/* Whether this course ends in a certificate. Nothing on the authoring
+          side mentioned certification at all, so an author could not tell
+          whether one existed or add one — issues 72, 73 and 74. */}
+      <CertificationPanel
+        courseId={courseId}
+        courseTitle={course?.title ?? "Course"}
+        moduleCount={modules.length}
+      />
 
       <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4 dark:border-gray-800">

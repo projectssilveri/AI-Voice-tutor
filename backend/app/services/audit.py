@@ -48,6 +48,70 @@ def _clip(value: str | None, limit: int) -> str | None:
     return trimmed[:limit]
 
 
+#: Fields never written into a change record, whatever a caller passes.
+#: Decision 88 holds that no payload is logged, and a diff is a payload with a
+#: better haircut — a password or an answer is exactly as sensitive inside
+#: `{"from": ..., "to": ...}` as it is anywhere else.
+_NEVER_DIFFED = frozenset(
+    {
+        "password",
+        "hashed_password",
+        "new_password",
+        "current_password",
+        "token",
+        "secret",
+        "answer",
+        "answers",
+        "accepted_answers",
+        "resumption_handle",
+    }
+)
+
+#: A long text field is recorded as "changed", not quoted. A course
+#: description or a lecture script would bury the trail in prose and is
+#: readable from the object itself; the useful fact is that it moved.
+_DIFF_VALUE_LIMIT = 120
+
+
+def _diff_value(value: Any) -> Any:
+    """One side of a change, trimmed to something a trail can hold."""
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    text = str(value)
+    if len(text) > _DIFF_VALUE_LIMIT:
+        return f"({len(text)} characters)"
+    return text
+
+
+def changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """What actually moved, as `{field: {"from": x, "to": y}}`.
+
+    WHY THIS EXISTS. The trail recorded that a thing had been changed and never
+    what it changed to. Most mutating routes recorded nothing explicit at all,
+    so the middleware's catch-all filed them as `http.request` and the console
+    rendered every one of them as "Changed something" — which is the single
+    complaint behind issues 41, 59, 60 and 66. An auditor asking "who dropped
+    the price, and from what" had nowhere to look.
+
+    Only fields that genuinely differ appear. A PATCH that resends nine
+    unchanged fields and one new one should read as one change, not ten.
+    """
+    moved: dict[str, Any] = {}
+    for key, new in after.items():
+        if key in _NEVER_DIFFED:
+            continue
+        old = before.get(key)
+        if old == new:
+            continue
+        moved[key] = {"from": _diff_value(old), "to": _diff_value(new)}
+    return moved
+
+
+def snapshot(obj: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    """Read `fields` off an object, for comparing before and after."""
+    return {name: getattr(obj, name, None) for name in fields}
+
+
 async def record(
     session: AsyncSession,
     *,

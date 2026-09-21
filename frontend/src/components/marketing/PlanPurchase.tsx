@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/context/AuthContext";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { errorText } from "@/lib/api";
 import {
+  CHECKOUT_FAILED,
   getEntitlements,
   payWithRazorpay,
   startPlanCheckout,
@@ -110,9 +111,7 @@ export default function PlanPurchase({
       });
     } catch (caught) {
       setBusy(false);
-      setError(
-        errorText(caught, "Could not start the checkout. Please try again."),
-      );
+      setError(errorText(caught, CHECKOUT_FAILED));
     }
   }
 

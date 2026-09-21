@@ -39,7 +39,10 @@ from app.models.subscription import PlanCourse, Subscription, SubscriptionStatus
 from app.models.user import User, UserRole
 from app.services import limits
 
-STAFF_ROLES = {UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.TEACHER}
+#: Platform staff. THIS SET BYPASSES THE PAYWALL, which is why TEACHER being
+#: in it mattered: a retired role nobody could see on any screen was handing
+#: out every paid course for nothing. Migration 0025 took it away.
+STAFF_ROLES = {UserRole.ADMIN, UserRole.SUPER_ADMIN}
 
 #: Roles that run an ORGANIZATION, as opposed to the platform. Deliberately a
 #: separate set from STAFF_ROLES: that one means "platform staff" and is what
@@ -177,9 +180,9 @@ async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
     payment rules below decide it.
 
     This runs BEFORE the staff check, and that ordering is the whole point.
-    `STAFF_ROLES` contains TEACHER, so an organization's own teacher would
-    otherwise be handed `AccessDecision(True, "staff")` for every course on the
-    platform — including other customers' private training. Tenancy is not a
+    Anybody in `STAFF_ROLES` would otherwise be handed
+    `AccessDecision(True, "staff")` for every course on the platform —
+    including other customers' private training. Tenancy is not a
     permission that a role can outrank; it is a boundary.
 
     Two directions, and the second is the one that leaks:
@@ -376,7 +379,7 @@ async def require_assignment_in_tenant(
     THE SAME GAP `require_material_in_tenant` WAS WRITTEN FOR, in a router
     nobody came back to. Creating an assignment is addressed by module and
     therefore checked; EDITING and DELETING one are addressed by assignment id
-    and reached no check at all. So a platform admin or teacher could not
+    and reached no check at all. So a platform admin could not
     rename a customer's course, but could rewrite and delete the assignments
     inside it — which is the same content through a different door.
 
@@ -453,7 +456,7 @@ async def accessible_course_ids(
     # Tenancy first, for the same reason as in `can_access_course`.
     if user.organization_id is not None:
         # Exactly their own organization's courses. Nothing public, nothing
-        # anyone else's — regardless of role, including an org teacher.
+        # anyone else's — regardless of role.
         filters = [Course.organization_id == user.organization_id]
 
         # AND THE SAME DEPARTMENT WALL THE DETAIL ROUTE APPLIES.

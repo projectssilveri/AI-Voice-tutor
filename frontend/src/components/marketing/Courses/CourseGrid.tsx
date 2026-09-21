@@ -72,7 +72,7 @@ export default async function CourseGrid({
         {total === 0 ? (
           <p className="text-[15px] text-[var(--mk-muted)]">
             {failed
-              ? "Course list is unavailable right now. Please try again shortly."
+              ? "We could not load the courses. That is our end, not yours. Reload in a moment."
               : "New courses are on the way. Check back soon."}
           </p>
         ) : browsable ? (

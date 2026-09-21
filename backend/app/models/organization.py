@@ -75,7 +75,7 @@ class Organization(TimestampMixin, Base):
     max_ai_minutes_per_month: Mapped[int | None] = mapped_column(Integer)
     # Overrides the platform default (settings.max_modules_per_course).
     max_modules_per_course: Mapped[int | None] = mapped_column(Integer)
-    # What the platform owner agreed when a customer negotiated something off
+    # What the super admin agreed when a customer negotiated something off
     # the standard plans. Free text, because the point of custom pricing is
     # that it does not fit the columns.
     plan_note: Mapped[str | None] = mapped_column(String(500))

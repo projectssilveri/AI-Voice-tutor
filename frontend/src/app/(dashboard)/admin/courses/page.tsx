@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import RequireAuth from "@/components/auth/RequireAuth";
+import ExamBadge from "@/components/admin/ExamBadge";
 import ReviewBadge from "@/components/admin/ReviewBadge";
 import { useAuth } from "@/context/AuthContext";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import {
   type CourseRow,
   createCourse,
@@ -26,7 +28,7 @@ import { counted } from "@/lib/plural";
 function CourseAuthoring() {
   // DELETING IS THE OWNER'S. An ordinary admin authors courses; destroying one
   // — with its modules, quizzes, assignments and every student's progress —
-  // sits with the platform owner beside publishing and pricing. The server
+  // sits with the super admin beside publishing and pricing. The server
   // agrees: `DELETE /courses/{id}` is behind `RequireSuperAdmin`, so hiding
   // the button only saves an admin a refusal they cannot act on.
   const { user } = useAuth();
@@ -34,6 +36,7 @@ function CourseAuthoring() {
 
   const [courses, setCourses] = useState<CourseRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,13 +72,21 @@ function CourseAuthoring() {
     setSaving(true);
     setError(null);
     try {
-      await createCourse({
+      const created = await createCourse({
         title: title.trim(),
         description: description.trim() || null,
       });
       setTitle("");
       setDescription("");
-      await load();
+      // STRAIGHT INTO THE COURSE, rather than back to a list with a new empty
+      // row on it. Creating used to leave the author looking at the catalogue
+      // with a Free, Draft, 0-module entry that nothing had asked them to
+      // finish, and the tester read that as the course having been created
+      // without a setup step (issue 32). The row is still created here — a
+      // course has to exist before it can have modules hung off it — but the
+      // next thing on screen is now the thing that needs filling in.
+      router.push(`/admin/courses/${created.id}`);
+      return;
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -218,6 +229,7 @@ function CourseAuthoring() {
                       : formatMoney(course.price_minor, course.currency)}
                   </span>
                   <ReviewBadge course={course} />
+                  <ExamBadge course={course} />
                   <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
                     {counted(course.module_count ?? 0, "module")}
                   </span>
@@ -269,7 +281,7 @@ function CourseAuthoring() {
 
 export default function AdminCoursesPage() {
   return (
-    <RequireAuth roles={["admin"]}>
+    <RequireAuth roles={["super_admin"]}>
       <CourseAuthoring />
     </RequireAuth>
   );

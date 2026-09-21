@@ -12,6 +12,7 @@ import { useAuth } from "@/context/AuthContext";
 import { type Organization, listOrganizations } from "@/lib/organizations";
 import { counted } from "@/lib/plural";
 import {
+  PUBLIC_SCOPE,
   type ReportCourse,
   type ReportQuery,
   STATUS_LABEL,
@@ -31,7 +32,9 @@ import {
  * that list, filterable, with a spreadsheet button on it.
  *
  * The three status counts are clickable, because "47 not started" is a number
- * whose only useful next action is seeing which 47.
+ * whose only useful next action is seeing which 47. There is a plain dropdown
+ * for the same thing in the filter row, because a clickable number is a
+ * shortcut and a shortcut is not a control.
  */
 
 const CELL = "px-4 py-3 align-middle text-sm";
@@ -70,10 +73,10 @@ function Kpi({
 }) {
   const inner = (
     <>
-      <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+      <p className="truncate text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
         {label}
       </p>
-      <p className="mt-1 text-2xl font-bold text-gray-800 dark:text-white/90">
+      <p className="mt-1 text-xl font-bold text-gray-800 sm:text-2xl dark:text-white/90">
         {value}
       </p>
       {hint ? (
@@ -84,7 +87,7 @@ function Kpi({
     </>
   );
 
-  const shell = `rounded-2xl border bg-white p-4 text-left shadow-raised transition dark:bg-white/[0.03] ${
+  const shell = `rounded-2xl border bg-white p-3 text-left shadow-raised transition sm:p-4 dark:bg-white/[0.03] ${
     active
       ? "border-brand-500 ring-2 ring-brand-500/20"
       : "border-gray-200 dark:border-gray-800"
@@ -141,13 +144,15 @@ function Reports() {
   }, [load]);
 
   useEffect(() => {
-    listReportCourses(filters.organization_id)
+    // Same scope as the table. A course dropdown built from everybody would
+    // offer courses that produce an empty report once the scope narrows.
+    listReportCourses(filters.organization_id, filters.public_only)
       .then(setCourses)
       .catch(() => {
         // The course filter is a convenience. Losing it must not take the
         // report down with it.
       });
-  }, [filters.organization_id]);
+  }, [filters.organization_id, filters.public_only]);
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -177,8 +182,11 @@ function Reports() {
             Training report
           </h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Who has finished, who is part-way through, and who has not started.
-            {isSuperAdmin ? " Every organisation, unless you narrow it." : ""}
+            Who has finished, who is part-way through, and who has not
+            started.
+            {isSuperAdmin
+              ? " Our learners and our customers' are mixed together until you pick a side."
+              : ""}
           </p>
         </div>
         <a
@@ -209,14 +217,53 @@ function Reports() {
             </option>
           ))}
         </select>
+        {/* THE STATUS FILTER, where filters live. It was only reachable by
+            spotting that the count tiles below are buttons — a shortcut worth
+            keeping, but not a thing to make people discover before they can
+            narrow a list of four hundred people to the eleven who have not
+            started. Both routes write the same state, so they never disagree. */}
+        <select
+          value={filters.status ?? ""}
+          onChange={(event) =>
+            set("status", (event.target.value || undefined) as TrainingStatus)
+          }
+          aria-label="Filter by status"
+          className={FIELD}
+        >
+          <option value="">Any status</option>
+          {(Object.keys(STATUS_LABEL) as TrainingStatus[]).map((status) => (
+            <option key={status} value={status}>
+              {STATUS_LABEL[status]}
+            </option>
+          ))}
+        </select>
+        {/* THREE ANSWERS, not two. This offered every organisation or one
+            named customer, so our own B2C learners — the people the company
+            sells to directly — had no option of their own and could only be
+            read out of a mixed table by eye. Keeping ours and theirs apart is
+            the same rule that walled the customer portals off in the first
+            place. */}
         {isSuperAdmin && organizations.length > 0 ? (
           <select
-            value={filters.organization_id ?? ""}
-            onChange={(event) => set("organization_id", event.target.value)}
+            value={
+              filters.public_only
+                ? PUBLIC_SCOPE
+                : (filters.organization_id ?? "")
+            }
+            onChange={(event) => {
+              const choice = event.target.value;
+              setFilters((current) => ({
+                ...current,
+                organization_id:
+                  choice && choice !== PUBLIC_SCOPE ? choice : undefined,
+                public_only: choice === PUBLIC_SCOPE || undefined,
+              }));
+            }}
             aria-label="Filter by organisation"
             className={FIELD}
           >
-            <option value="">Every organisation</option>
+            <option value="">Everyone, ours and customers&apos;</option>
+            <option value={PUBLIC_SCOPE}>Our own learners only</option>
             {organizations.map((organization) => (
               <option key={organization.id} value={organization.id}>
                 {organization.name}
@@ -236,26 +283,26 @@ function Reports() {
       </div>
 
       {summary ? (
-        <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        // Five across at every width. They stacked two-up on a laptop, so
+        // the summary of a page took four rows before the table started. The
+        // numbers are short; they fit.
+        <div className="mb-6 grid grid-cols-5 gap-2 sm:gap-3">
           <Kpi label="People" value={summary.people} />
           <Kpi
             label="Completed"
             value={summary.completed}
-            hint="Show only these"
             active={filters.status === "completed"}
             onClick={() => toggleStatus("completed")}
           />
           <Kpi
             label="In progress"
             value={summary.in_progress}
-            hint="Show only these"
             active={filters.status === "in_progress"}
             onClick={() => toggleStatus("in_progress")}
           />
           <Kpi
             label="Not started"
             value={summary.not_started}
-            hint="Show only these"
             active={filters.status === "not_started"}
             onClick={() => toggleStatus("not_started")}
           />
@@ -292,7 +339,7 @@ function Reports() {
         <>
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[76rem]">
+              <table className="table-wide w-full min-w-[76rem]">
                 <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:border-gray-800 dark:bg-white/[0.02] dark:text-gray-400">
                   <tr>
                     <th className="px-4 py-3">Person</th>
@@ -395,7 +442,7 @@ function Reports() {
                       <td className={`${CELL} whitespace-nowrap`}>
                         {row.exam_attempts === 0 ? (
                           <span className="text-gray-500 dark:text-gray-400">
-                            Not sat
+                            Not taken
                           </span>
                         ) : row.exam_passed ? (
                           <span className="text-success-800 dark:text-success-400">
@@ -438,7 +485,7 @@ function Reports() {
 
 export default function AdminReportsPage() {
   return (
-    <RequireAuth roles={["admin", "teacher"]}>
+    <RequireAuth roles={["admin"]}>
       <Reports />
     </RequireAuth>
   );

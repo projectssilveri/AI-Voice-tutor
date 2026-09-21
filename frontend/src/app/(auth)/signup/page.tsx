@@ -9,8 +9,6 @@ export const metadata: Metadata = {
   description: "Create a Voice Tutor LMS account.",
 };
 
-// The form is presentational for now; it is wired to the FastAPI auth routes
-// in build-order step 4.
 export default function SignUpPage() {
   return (
     <>
@@ -18,12 +16,15 @@ export default function SignUpPage() {
           account or fails with "that email is taken", which confirms to
           whoever is at the keyboard that the address is registered.
 
-          `Suspense` because RedirectIfSignedIn reads `?next=`, and
-          `useSearchParams` opts its subtree into client rendering. */}
+          `Suspense` because both of these read `?next=`, and
+          `useSearchParams` opts its subtree into client rendering. The FORM is
+          inside it now as well — it reads `next` so that signing up from a
+          plan returns to that plan, and without the boundary the build cannot
+          prerender this page at all. */}
       <Suspense fallback={null}>
         <RedirectIfSignedIn />
+        <SignUpForm />
       </Suspense>
-      <SignUpForm />
     </>
   );
 }

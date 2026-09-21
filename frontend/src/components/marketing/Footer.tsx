@@ -81,7 +81,10 @@ export default function Footer() {
       <Container className="py-12">
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-5">
           <div className="lg:col-span-2 lg:max-w-[320px]">
-            <Logo className="mb-4" />
+            {/* The colour is stated here rather than left to the Logo,
+                which now inherits. This column's own text is muted, and
+                the wordmark should not be. */}
+            <Logo className="mb-4 text-[var(--mk-text)]" />
             <p className="text-sm leading-relaxed text-[var(--mk-muted)]">
               A learning platform where the teaching happens out loud, and you
               can interrupt the lecture whenever something stops making sense.
@@ -110,8 +113,13 @@ export default function Footer() {
         </div>
 
         <div className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-white/5 pt-7">
+          {/* The real trading names, not the product's working title.
+              The year stays generated rather than typed: it renders exactly
+              what it says on the tin today, and nobody has to remember to
+              change a legal line every January. */}
           <p className="text-xs text-[var(--mk-muted)]">
-            &copy; {new Date().getFullYear()} Voice Tutor LMS. All rights reserved.
+            &copy; {new Date().getFullYear()} AI Voice Tutor Platform Inc -
+            Silveri Consulting Services Pvt Ltd. All rights reserved.
           </p>
           <p className="text-xs text-[var(--mk-muted)]">
             Built for people who learn by listening.

@@ -21,9 +21,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.assignment import Assignment, AssignmentSubmission
 from app.models.course import Course, Module
 from app.models.enrollment import Enrollment, ModuleProgress, ProgressStatus
 from app.models.order import Order, OrderStatus
+from app.models.quiz import QuizAttempt, QuizQuestion
 from app.models.subscription import PlanCourse, Subscription, SubscriptionStatus
 from app.services import extensions as extension_service
 
@@ -276,6 +278,129 @@ async def mark_module_started(
     return progress
 
 
+#: A quiz attempt at or above this counts as passed. The same number the
+#: certification exam uses, deliberately: a student should learn once what
+#: "passing" means on this platform rather than keeping two figures in their
+#: head. Retries are unlimited, so this gates on understanding the material and
+#: not on one bad afternoon.
+QUIZ_PASS_MARK = 70.0
+
+
+@dataclass(frozen=True)
+class ModuleRequirements:
+    """What this module asks of a student, and how much of it they have done.
+
+    NONE OF THIS WAS CHECKED BEFORE. A module completed on the strength of a
+    voice session alone, or on the student pressing "mark complete", and the
+    quiz and assignment attached to it counted for nothing at all — so a course
+    could read 100% with every quiz untouched. Reported as issues 24 to 28.
+
+    Each requirement is conditional on the module actually HAVING one. A module
+    with no quiz is not held back by a quiz nobody wrote.
+    """
+
+    lesson_done: bool
+    needs_quiz: bool
+    quiz_passed: bool
+    best_quiz_score: float | None
+    needs_assignment: bool
+    assignment_submitted: bool
+
+    @property
+    def met(self) -> bool:
+        if not self.lesson_done:
+            return False
+        if self.needs_quiz and not self.quiz_passed:
+            return False
+        return not (self.needs_assignment and not self.assignment_submitted)
+
+    @property
+    def outstanding(self) -> list[str]:
+        """What is left, in the words the student sees."""
+        left: list[str] = []
+        if not self.lesson_done:
+            left.append("the lesson")
+        if self.needs_quiz and not self.quiz_passed:
+            left.append(f"the practice quiz ({QUIZ_PASS_MARK:g}% to pass)")
+        if self.needs_assignment and not self.assignment_submitted:
+            left.append("the assignment")
+        return left
+
+
+async def module_requirements(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    module_id: uuid.UUID,
+    *,
+    lesson_done: bool,
+) -> ModuleRequirements:
+    """Measure one module against the completion rule.
+
+    `lesson_done` is passed in rather than derived: the voice route knows it
+    from the session that just ended, and the student's own "mark complete"
+    button IS the claim that they went through the material. Neither is
+    something this function can see for itself.
+    """
+    quiz_questions = await session.scalar(
+        select(func.count())
+        .select_from(QuizQuestion)
+        .where(QuizQuestion.module_id == module_id)
+    ) or 0
+
+    best_score = None
+    if quiz_questions:
+        best_score = await session.scalar(
+            select(func.max(QuizAttempt.score)).where(
+                QuizAttempt.user_id == user_id,
+                QuizAttempt.module_id == module_id,
+            )
+        )
+
+    assignment_count = await session.scalar(
+        select(func.count())
+        .select_from(Assignment)
+        .where(Assignment.module_id == module_id)
+    ) or 0
+
+    submitted = 0
+    if assignment_count:
+        # SUBMITTED, not correct. Marking is strict — an answer can be right in
+        # substance and still score zero against the accepted wording — so
+        # holding a module hostage to a passing grade would trap students on a
+        # grader rather than on the material.
+        submitted = await session.scalar(
+            select(func.count(func.distinct(AssignmentSubmission.assignment_id)))
+            .select_from(AssignmentSubmission)
+            .join(Assignment, Assignment.id == AssignmentSubmission.assignment_id)
+            .where(
+                Assignment.module_id == module_id,
+                AssignmentSubmission.user_id == user_id,
+            )
+        ) or 0
+
+    return ModuleRequirements(
+        lesson_done=lesson_done,
+        needs_quiz=quiz_questions > 0,
+        quiz_passed=best_score is not None and float(best_score) >= QUIZ_PASS_MARK,
+        best_quiz_score=float(best_score) if best_score is not None else None,
+        needs_assignment=assignment_count > 0,
+        assignment_submitted=submitted >= assignment_count,
+    )
+
+
+class RequirementsNotMetError(PermissionError):
+    """The module cannot be completed yet, and this says what is left."""
+
+    def __init__(self, requirements: ModuleRequirements) -> None:
+        left = requirements.outstanding
+        super().__init__(
+            "Not finished yet. Still to do: " + ", ".join(left) + "."
+            if left
+            else "Not finished yet."
+        )
+        self.requirements = requirements
+
+
 async def set_module_status(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -340,6 +465,21 @@ async def complete_module_if_earned(
     )
     progress = result.scalar_one_or_none()
     if progress is not None and progress.status is ProgressStatus.COMPLETED:
+        return False
+
+    # AND THE REST OF THE MODULE. Listening was the whole bar before this, so a
+    # student could sit through the lecture, skip the quiz and the assignment,
+    # and watch the course tick to 100%. The lesson is now one requirement of
+    # three rather than the only one.
+    requirements = await module_requirements(
+        session, user_id, module_id, lesson_done=True
+    )
+    if not requirements.met:
+        # Started, not finished. Leaving it at IN_PROGRESS is the honest state
+        # and is what puts it back on the student's list.
+        await set_module_status(
+            session, user_id, module_id, ProgressStatus.IN_PROGRESS
+        )
         return False
 
     await set_module_status(session, user_id, module_id, ProgressStatus.COMPLETED)

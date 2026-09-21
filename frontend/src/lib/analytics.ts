@@ -111,18 +111,6 @@ export function getRevenueAnalytics(days = 30): Promise<RevenueAnalytics> {
   return apiFetch<RevenueAnalytics>(`/analytics/revenue?days=${days}`, authed);
 }
 
-/** Minor units to a readable amount: 149900 -> "₹1,499". */
-export function formatMoney(minor: number, currency = "INR"): string {
-  const symbol = currency === "INR" ? "₹" : `${currency} `;
-  const major = minor / 100;
-  // No decimals when the amount is whole — "₹1,499" reads better than
-  // "₹1,499.00" on a tile.
-  return `${symbol}${major.toLocaleString("en-IN", {
-    minimumFractionDigits: Number.isInteger(major) ? 0 : 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 /** "2026-08-11" -> "11 Aug", for chart axes. */
 export function shortDay(iso: string): string {
   const date = new Date(iso);

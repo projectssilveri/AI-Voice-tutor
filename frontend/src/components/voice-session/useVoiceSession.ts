@@ -264,8 +264,26 @@ export function useVoiceSession({ moduleId }: VoiceSessionOptions = {}) {
     analysersRef.current.ai = null;
     analysersRef.current.mic = null;
 
-    await mic?.stop();
-    await player?.close();
+    // BEST EFFORT, BOTH HALVES. These were awaited bare, and this function
+    // is called as `void releaseDevices()` in three places — so a rejection
+    // here had nobody listening AND skipped everything after it, leaving
+    // `stop()` short of its `setState("idle")` and the session stuck.
+    //
+    // An AudioContext the browser has already closed, or a device revoked
+    // mid-session, both reject. Neither matters: the page is going away and
+    // the browser reclaims the hardware either way. What matters is that the
+    // rest of the teardown still runs.
+    try {
+      await mic?.stop();
+    } catch {
+      // The microphone is already gone. Nothing to do and nothing to say.
+    }
+    try {
+      await player?.close();
+    } catch {
+      // Same for the output side. Wrapped separately so a failure on one
+      // does not skip the other.
+    }
   }, []);
 
   const stop = useCallback(async () => {
@@ -552,7 +570,7 @@ export function useVoiceSession({ moduleId }: VoiceSessionOptions = {}) {
       reportError(
         caught instanceof Error
           ? caught.message
-          : "Failed to start the session",
+          : "The lesson would not start. Check your microphone is allowed, then press start again.",
       );
       await stop();
       // stop() resets to idle; the error state is what the user needs to see.

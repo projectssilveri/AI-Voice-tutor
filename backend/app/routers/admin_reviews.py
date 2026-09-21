@@ -1,4 +1,4 @@
-"""Courses waiting for the platform owner.
+"""Courses waiting for the super admin.
 
 An ordinary admin writes a course and submits it; this is where the owner sees
 the queue and says yes or sends it back. Super admin only — approving is the

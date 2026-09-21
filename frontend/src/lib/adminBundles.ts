@@ -1,5 +1,5 @@
 /**
- * Bundles and packages, for the platform owner.
+ * Bundles and packages, for the super admin.
  *
  * Super admin only on both sides — the routes 403 anyone else, and this screen
  * shows revenue per bundle and names the customers on it.

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import BundleStrip from "@/components/marketing/Bundles/BundleStrip";
 import CourseGrid from "@/components/marketing/Courses/CourseGrid";
 import Breadcrumb from "@/components/marketing/common/Breadcrumb";
 import RefundPolicyNote from "@/components/marketing/RefundPolicyNote";
@@ -19,6 +20,11 @@ export default function CoursesPage() {
       />
       <OrgRedirectNotice context="catalogue" />
       <CourseGrid browsable />
+      {/* Somebody buying courses one at a time is the exact person a bundle is
+          for, and this row is the only thing on the site that tells them so.
+          It was written for this page and imported by nothing — the same
+          half-finished split that left bundle prices on /pricing. */}
+      <BundleStrip />
       {/* Same reason as /pricing: every course on this page has a price
           on it, so the refund terms belong where the prices are. */}
       <RefundPolicyNote />

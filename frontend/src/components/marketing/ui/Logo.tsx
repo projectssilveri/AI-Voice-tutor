@@ -82,10 +82,16 @@ export default function Logo({
     <span className={cn("inline-flex items-center gap-2.5", className)}>
       <Mark className="size-8" />
       {!markOnly && (
-        // `currentColor`, not a marketing token. The org portal uses this too
-        // and has its own light and dark themes; a `--mk-*` colour there would
-        // resolve to nothing and the wordmark would inherit an unrelated one.
-        <span className="text-[19px] font-semibold tracking-[-0.02em] text-gray-900 dark:text-white">
+        // INHERITS, like the mark above it. This used to paint itself
+        // `text-gray-900 dark:text-white`, which follows the app-wide theme
+        // toggle. The marketing site does not follow that toggle: it is dark
+        // at all times, from its own `--mk-*` tokens. So with the theme set to
+        // light the wordmark came out rgb(16, 24, 40) on a background of
+        // rgb(16, 24, 40) — the same colour, in the header and the footer.
+        //
+        // Every caller sits inside something that has a colour, and the two
+        // that need a specific one say so at the call site.
+        <span className="text-[19px] font-semibold tracking-[-0.02em]">
           Voice Tutor
         </span>
       )}

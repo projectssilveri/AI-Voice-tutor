@@ -155,6 +155,31 @@ class _BridgeState:
         self.failures = 0
         #: Why the lesson ended, when it was not the student's doing.
         self.ended_because: str = ""
+        #: Monotonic time the student was last heard — an interruption, or any
+        #: speech Gemini transcribed. A turn that ends after this is the tutor
+        #: reaching a natural pause; a turn that ends before it is the student
+        #: taking over, and must not be nudged past.
+        self.student_spoke_at: float = 0.0
+        #: The tutor said the module was finished. Stops the nudging.
+        self.lecture_finished = False
+        #: Consecutive nudges with no student speech. A runaway guard only —
+        #: the real limit on a lesson is the time allowance.
+        self.nudges = 0
+
+
+#: How long to wait after the tutor stops before pushing it onward.
+#:
+#: THE STUDENT GETS THIS GAP. The moment the tutor stops talking is exactly
+#: when somebody draws breath to ask something, and nudging into that would
+#: talk over them. Long enough for a person to start a sentence, short enough
+#: that a lecture does not feel like it keeps stalling.
+NUDGE_GRACE_SECONDS = 1.5
+
+#: Hard stop on consecutive nudges, in case the tutor never says the closing
+#: line. Comfortably more turns than the longest allowance can fit, so it never
+#: cuts a real lesson short — it exists so a failure is bounded rather than
+#: billed.
+MAX_CONSECUTIVE_NUDGES = 300
 
 
 async def _run_bridge(
@@ -197,6 +222,50 @@ async def _run_bridge(
     #: variable so `read_from_browser`, created before the first leg exists,
     #: can still reach whichever session is live when a `start` arrives.
     current: list[object] = [None]
+    #: Live nudge tasks, held so they are not garbage collected mid-await.
+    #: `create_task` keeps only a weak reference, and a dropped task is a
+    #: lecture that silently stops again.
+    _nudge_tasks: set[asyncio.Task] = set()
+
+    async def nudge_onward(session) -> None:
+        """Push the tutor into its next turn, unless the student has the floor.
+
+        Runs OFF the relay loop, because it sleeps. Blocking the loop for the
+        grace window would hold up the student's own audio, which is the one
+        thing that must never wait.
+
+        The checks are all made AFTER the sleep, deliberately: the whole point
+        of the pause is to let the student change the answer by speaking into
+        it.
+        """
+        stopped_at = asyncio.get_running_loop().time()
+        await asyncio.sleep(NUDGE_GRACE_SECONDS)
+
+        if state.lecture_finished or state.student_stopped:
+            return
+        if state.student_spoke_at >= stopped_at:
+            # They spoke in the gap. Their turn now; Gemini will answer, and
+            # the turn that ends THAT answer gets its own nudge.
+            return
+        if state.nudges >= MAX_CONSECUTIVE_NUDGES:
+            logger.warning(
+                "Stopped nudging the tutor after %s consecutive turns with no "
+                "student speech and no closing line",
+                state.nudges,
+            )
+            return
+        if current[0] is not session:
+            # The leg was swapped while we slept. The new one resumes from the
+            # handle and will produce its own turn boundaries.
+            return
+
+        state.nudges += 1
+        try:
+            await gemini_live.continue_lecture(session)
+        except Exception:
+            # A dead leg. `_run_bridge` is already reconnecting; a failed nudge
+            # is not a reason to take the lesson down.
+            logger.debug("Could not nudge the tutor onward", exc_info=True)
 
     async def next_mic_chunk() -> bytes | None:
         return await mic_queue.get()
@@ -289,14 +358,50 @@ async def _run_bridge(
                                     break
                                 continue
 
-                            if event.type == "interrupted" and on_interrupted is not None:
-                                await on_interrupted()
+                            if event.type == "interrupted":
+                                # The student talked over the tutor. Whatever
+                                # ends this turn, it is theirs, not a pause to
+                                # be pushed past.
+                                state.student_spoke_at = (
+                                    asyncio.get_running_loop().time()
+                                )
+                                state.nudges = 0
+                                if on_interrupted is not None:
+                                    await on_interrupted()
 
-                            if event.type == "transcript" and on_transcript is not None:
-                                await on_transcript(event.payload)
+                            if event.type == "transcript":
+                                if event.payload.get("role") == "user":
+                                    # Speech Gemini heard, including the kind
+                                    # that does not register as an
+                                    # interruption — a question asked into the
+                                    # gap after the tutor stopped.
+                                    state.student_spoke_at = (
+                                        asyncio.get_running_loop().time()
+                                    )
+                                    state.nudges = 0
+                                elif gemini_live.sounds_finished(
+                                    str(event.payload.get("text", ""))
+                                ):
+                                    # The tutor said its closing line. Stop
+                                    # pushing it — there is nothing left to
+                                    # teach and the rest would be padding.
+                                    state.lecture_finished = True
+                                if on_transcript is not None:
+                                    await on_transcript(event.payload)
 
-                            if event.type == "turn_complete" and on_turn_complete is not None:
-                                await on_turn_complete()
+                            if event.type == "turn_complete":
+                                if on_turn_complete is not None:
+                                    await on_turn_complete()
+                                # KEEP THE LECTURE GOING. Gemini ends a turn
+                                # after a paragraph, like any chat model, and
+                                # until now the lesson stopped dead there and
+                                # waited to be told to carry on. See
+                                # `gemini_live.LECTURE_CONTINUE`.
+                                task = asyncio.create_task(
+                                    nudge_onward(session)
+                                )
+                                _nudge_tasks.add(task)
+                                task.add_done_callback(_nudge_tasks.discard)
 
                             if event.type == "resumption_handle":
                                 # A credential, not content: kept, never
@@ -411,6 +516,12 @@ async def _run_bridge(
                 )
             finally:
                 current[0] = None
+                # A nudge sleeping through the handover would wake holding a
+                # session that is gone. `nudge_onward` checks `current[0]` for
+                # exactly that, but cancelling is cheaper than waiting for it.
+                for pending in list(_nudge_tasks):
+                    pending.cancel()
+                _nudge_tasks.clear()
 
             decision = gemini_live.should_resume(
                 handle=state.handle,
@@ -856,10 +967,26 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
             # remove the claim belonging to the tab that displaced it.
             await live_sessions.release(user.id, websocket)
 
-            # Flush whatever was mid-turn when the call dropped, so an
-            # interrupted lecture still leaves a record.
-            await flush()
-            await voice_sessions.end_session(db, record.id)
+            # EVERY STEP OF TEARDOWN STANDS ALONE. These two ran bare, one after
+            # the other, so a failure in `flush` — a transcript write against a
+            # session already in a failed transaction, which is exactly the
+            # state an aborted lesson leaves behind — skipped `end_session`
+            # entirely. The row stayed open, the next session swept it to zero
+            # duration, and the AI-minute totals read 0 forever. That is issues
+            # 30 and 50, and it is why the usage screen showed sessions as
+            # "open" long after the student had gone.
+            #
+            # Recording a partial transcript matters; recording WHEN THE LESSON
+            # ENDED matters more, because it is what a customer is billed on.
+            try:
+                await flush()
+            except Exception:
+                logger.exception("Could not flush the last turn (session=%s)", record.id)
+
+            try:
+                await voice_sessions.end_session(db, record.id)
+            except Exception:
+                logger.exception("Could not close the session row (session=%s)", record.id)
 
             # Nothing used to move a module past "in progress", so every module
             # a student ever opened stayed there and course percentages never

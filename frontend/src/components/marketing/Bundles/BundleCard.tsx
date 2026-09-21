@@ -1,5 +1,6 @@
 import PlanPurchase from "@/components/marketing/PlanPurchase";
 import { type PublicPlan, intervalLabel } from "@/lib/catalogue";
+import { formatMoney } from "@/lib/money";
 import { counted } from "@/lib/plural";
 
 /**
@@ -28,10 +29,7 @@ export default function BundleCard({
   /** The one card the page leads with. Styling only; it buys the same thing. */
   featured?: boolean;
 }) {
-  const money = (minor: number) => {
-    const symbol = plan.currency === "INR" ? "₹" : `${plan.currency} `;
-    return `${symbol}${(minor / 100).toLocaleString("en-IN")}`;
-  };
+  const money = (minor: number) => formatMoney(minor, plan.currency);
 
   return (
     <div

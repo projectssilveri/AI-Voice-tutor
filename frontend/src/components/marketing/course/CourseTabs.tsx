@@ -42,7 +42,16 @@ export default function CourseTabs({
   return (
     <nav
       aria-label="Course sections"
-      className="sticky top-0 z-40 border-b border-[var(--mk-line)] bg-white/95 backdrop-blur"
+      /* WHITE, ON A SITE THAT IS BLACK. `bg-white/95` over the dark canvas
+         rendered as a dull grey slab with `--mk-muted` grey text on it — a
+         colour meant to sit on the near-black canvas, and close to unreadable
+         on light. It is the only surface on the marketing site that was not
+         built from the `--mk-*` tokens.
+
+         `top` parks it under the floating header instead of at 0, where it
+         sat BEHIND the header pill (z-40 against the header's z-50) and
+         showed through the 16px gap above it. */
+      className="sticky top-[var(--mk-header-h)] z-40 border-y border-[var(--mk-line)] bg-[var(--mk-canvas)]/85 backdrop-blur-xl"
     >
       <div className="container">
         <ul className="-mb-px flex gap-8 overflow-x-auto">
@@ -54,8 +63,8 @@ export default function CourseTabs({
                   href={`#${section.id}`}
                   aria-current={current ? "true" : undefined}
                   className={`inline-block whitespace-nowrap border-b-2 px-1 py-4 text-base font-medium transition ${
- current
- ?"border-[var(--mk-brand)] text-[var(--mk-brand-lit)]"
+                    current
+                      ? "border-[var(--mk-brand)] text-[var(--mk-brand-lit)]"
                       : "border-transparent text-[var(--mk-muted)] hover:text-[var(--mk-text)]"
                   }`}
                 >

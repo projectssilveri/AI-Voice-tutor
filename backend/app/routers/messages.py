@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -35,6 +36,7 @@ from sqlalchemy.orm import aliased
 from app.deps import CurrentUser, DbSession, RequireAdmin
 from app.models.message import DirectMessage
 from app.models.user import User, UserRole
+from app.schemas.text import NonBlank
 from app.services import audit
 
 router = APIRouter(tags=["messages"])
@@ -48,7 +50,6 @@ Recipient = aliased(User, name="recipient")
 STAFF = {
     UserRole.ADMIN,
     UserRole.SUPER_ADMIN,
-    UserRole.TEACHER,
     UserRole.ORG_ADMIN,
     UserRole.BRANCH_MANAGER,
 }
@@ -82,8 +83,8 @@ class MessageCreate(BaseModel):
     # request that quietly does something other than what it asked for is worse
     # than one that fails.
     recipient_id: uuid.UUID | None = None
-    subject: str = Field(min_length=1, max_length=255)
-    body: str = Field(min_length=1, max_length=5_000)
+    subject: Annotated[NonBlank, Field(max_length=255)]
+    body: Annotated[NonBlank, Field(max_length=5_000)]
     in_reply_to_id: uuid.UUID | None = None
 
 

@@ -10,7 +10,7 @@ Roles inside an organization:
 
     ORG_ADMIN        the whole organization — people, structure, reports
     BRANCH_MANAGER   their own branch only
-    TEACHER          authors content (phase 4)
+    DEPT_ADMIN       one department: its people and its training
     STUDENT          learns
 
 A platform SUPER_ADMIN may enter any tenant for support, and every such request
@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 
@@ -32,13 +32,15 @@ from app.deps import (
     CurrentUser,
     DbSession,
     OrgAdminScope,
+    OrgContext,
     OrgManagerScope,
     OrgScope,
 )
 from app.models.audit import AuditAction, AuditEvent
+from app.models.deletion import DeletionRequest, DeletionStatus, DeletionTarget
 from app.models.organization import Branch, Department, Organization
 from app.models.user import User, UserRole
-from app.services import accounts, audit, limits
+from app.services import access, accounts, audit, conflicts, deletions, limits
 from app.services import organizations as org_service
 
 router = APIRouter(prefix="/org/{slug}", tags=["organization portal"])
@@ -77,9 +79,11 @@ async def my_organization(
 # The roles an organization may hand out. Deliberately excludes ADMIN and
 # SUPER_ADMIN: those are platform roles, and letting a customer mint one would
 # hand them the whole product. Enforced by the schema below, not by a comment.
+# TEACHER was here too, so "retired from the dropdown" was only ever true of
+# the PLATFORM dropdown — a customer could still mint one, complete with the
+# paywall bypass that came with it.
 ORG_ASSIGNABLE_ROLES = (
     UserRole.STUDENT,
-    UserRole.TEACHER,
     UserRole.DEPT_ADMIN,
     UserRole.BRANCH_MANAGER,
     UserRole.ORG_ADMIN,
@@ -89,9 +93,9 @@ ORG_ASSIGNABLE_ROLES = (
 #
 # An org admin may create users and managers, and other admins — their own
 # level and everything under it. A branch manager runs the people in their
-# branch, so they may create learners and teachers, and not another manager or
-# an admin. Without a rank, "assignable inside an organization" would let a
-# branch manager promote themselves to org admin in one request.
+# branch, so they may create learners and department admins, and not another
+# manager or an org admin. Without a rank, "assignable inside an organization"
+# would let a branch manager promote themselves to org admin in one request.
 ROLE_RANK = {
     # Platform staff, doing support inside a customer's tenant. Absent from
     # this table, `ROLE_RANK.get(SUPER_ADMIN, -1)` was -1 — BELOW a learner —
@@ -101,7 +105,6 @@ ROLE_RANK = {
     # admin can (`OrgContext.is_org_admin` returns True for them).
     UserRole.SUPER_ADMIN: 5,
     UserRole.STUDENT: 0,
-    UserRole.TEACHER: 1,
     # A department admin sits under a branch manager because a branch contains
     # departments: a branch manager may appoint the HR admin inside their site,
     # and the HR admin may never appoint the branch's manager.
@@ -547,7 +550,14 @@ async def create_member(
         target_id=member.id,
         metadata={"role": member.role.value},
     )
-    await session.commit()
+    # THE FLOOR UNDER THE CHECK ABOVE. The address is looked up before this and
+    # answers 409 cleanly; two administrators adding the same colleague at the
+    # same moment both pass that lookup, and only `ix_users_email` can refuse
+    # the second. Without this it refused with a 500.
+    async with conflicts.as_conflict(
+        session, default="An account with that email already exists."
+    ):
+        await session.commit()
     await session.refresh(member)
     return await _member_row(session, member)
 
@@ -564,6 +574,18 @@ async def update_member(
     # The organization is checked as well as the id. Without it, knowing a user
     # id would be enough to edit somebody in another tenant.
     if member is None or member.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found."
+        )
+
+    # NOT THE TENANT'S TO MANAGE. Membership of this organization is what the
+    # check above establishes; it says nothing about what the person IS. A
+    # platform role reached through a tenant is still a platform role, and an
+    # org admin editing or switching one off is a tenant reaching upwards.
+    #
+    # 404 rather than 403, matching every other refusal on this boundary: the
+    # existence of platform staff is not a fact this portal confirms.
+    if member.role in access.STAFF_ROLES:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Member not found."
         )
@@ -702,21 +724,46 @@ class MemberRemoval(BaseModel):
     explanation: str
 
 
-@router.delete("/members/{member_id}", response_model=MemberRemoval)
+@router.delete(
+    "/members/{member_id}",
+    response_model=MemberRemoval,
+    responses={202: {"model": MemberRemoval}},
+)
 async def remove_member(
-    member_id: uuid.UUID, session: DbSession, scope: OrgManagerScope
+    member_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgManagerScope,
+    response: Response,
+    reason: str = "",
 ) -> MemberRemoval:
-    """Remove someone from the organization.
+    """Remove someone from the organization, or ask an administrator to.
 
-    Deletes the account outright when it has no history, and closes it when it
-    does — see `services/accounts.py` for why those are different operations
-    and why the caller is told which one ran.
+    An ADMINISTRATOR removes: the account is deleted outright when it has no
+    history, and closed when it does — see `services/accounts.py` for why those
+    are different operations and why the caller is told which one ran.
 
-    Same guards as editing: a branch manager may only remove their own branch's
-    people, nobody senior to them, and nobody may remove themselves.
+    A BRANCH OR DEPARTMENT MANAGER asks: 202, the account is untouched, and it
+    waits in the administrators' queue. `outcome` is "requested" in that case,
+    which is how the screen knows to say so rather than announcing a removal
+    that has not happened.
+
+    Same guards as editing either way: a branch manager may only reach their own
+    branch's people, nobody senior to them, and nobody may remove themselves.
     """
     member = await session.get(User, member_id)
     if member is None or member.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found."
+        )
+
+    # NOT THE TENANT'S TO MANAGE. Membership of this organization is what the
+    # check above establishes; it says nothing about what the person IS. A
+    # platform role reached through a tenant is still a platform role, and an
+    # org admin editing or switching one off is a tenant reaching upwards.
+    #
+    # 404 rather than 403, matching every other refusal on this boundary: the
+    # existence of platform staff is not a fact this portal confirms.
+    if member.role in access.STAFF_ROLES:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Member not found."
         )
@@ -734,6 +781,53 @@ async def remove_member(
 
     _manageable(scope, member)
 
+    # A MANAGER ASKS; AN ADMINISTRATOR DECIDES.
+    #
+    # This route is `OrgManagerScope`, which is org admins AND branch managers
+    # AND department admins. Until now all three could remove somebody outright
+    # — a department admin could delete a colleague with no administrator ever
+    # seeing it. Removing a person is the most destructive thing in this portal
+    # and it was the least supervised.
+    #
+    # An org admin pressing this is already the decider, so they still act
+    # immediately; the row below records it as raised and approved in the same
+    # moment, so the history has one shape whoever acted.
+    if scope.user.role is not UserRole.ORG_ADMIN:
+        try:
+            request = await deletions.request_deletion(
+                session,
+                organization=scope.organization,
+                target_type=DeletionTarget.MEMBER,
+                target_id=member.id,
+                target_label=f"{member.name} ({member.email})",
+                actor=scope.user,
+                reason=reason,
+            )
+        except deletions.DeletionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+        await audit.record(
+            session,
+            action=AuditAction.DELETION_REQUESTED,
+            actor=scope.user,
+            organization_id=scope.organization.id,
+            target_type="user",
+            target_id=member.id,
+            metadata={"reason": request.reason, "request": str(request.id)},
+        )
+        await session.commit()
+
+        response.status_code = status.HTTP_202_ACCEPTED
+        return MemberRemoval(
+            outcome="requested",
+            explanation=(
+                f"{member.name} has not been removed. An administrator has to "
+                "approve it, and it is waiting on them."
+            ),
+        )
+
     # THE ADMIN FLOOR applies to removal exactly as it does to demotion and
     # deactivation — an organization stranded with one admin does not care
     # which of the three routes got it there.
@@ -746,6 +840,25 @@ async def remove_member(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
+
+    # The record of an administrator acting alone, written before the act so a
+    # failure leaves no orphan. `pre_approved` is honest about what it is: one
+    # person's decision, not two.
+    try:
+        await deletions.request_deletion(
+            session,
+            organization=scope.organization,
+            target_type=DeletionTarget.MEMBER,
+            target_id=member.id,
+            target_label=f"{member.name} ({member.email})",
+            actor=scope.user,
+            reason=reason or "Removed by an organisation administrator.",
+            pre_approved=True,
+        )
+    except deletions.DeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
 
     removal = await accounts.remove_account(session, member)
 
@@ -764,6 +877,220 @@ async def remove_member(
     await session.commit()
 
     return MemberRemoval(outcome=removal.outcome, explanation=removal.explanation)
+
+
+# ---------------------------------------------------------------------------
+# Deletions waiting on this organization
+# ---------------------------------------------------------------------------
+#
+# ONE QUEUE, TWO SOURCES. Platform staff ask from the admin console; a branch or
+# department manager asks from inside the portal. The decider is the same person
+# either way — this organization's own administrator — so putting them in two
+# places would only mean two screens to remember to check.
+
+
+class DeletionRequestRow(BaseModel):
+    id: uuid.UUID
+    #: member | training | document
+    target_type: str
+    target_id: uuid.UUID
+    #: The name, captured when the request was raised. After an approval the id
+    #: points at nothing, which is why this is stored rather than joined.
+    target_label: str
+    reason: str
+    status: str
+    requested_at: datetime
+    requested_by_name: str | None
+    requested_by_email: str | None
+    #: True when the person reading this is the one who asked. They cannot
+    #: decide their own request, and a disabled button with a reason beside it
+    #: is clearer than a button that errors.
+    requested_by_me: bool
+    decided_at: datetime | None
+    decided_by_name: str | None
+    decision_note: str | None
+    outcome: str | None
+
+
+class Decision(BaseModel):
+    """Why. Required on a decline, optional on an approval."""
+
+    note: str | None = Field(default=None, max_length=2_000)
+
+
+async def _deletion_rows(
+    session: DbSession, requests: list[DeletionRequest], reader: User
+) -> list[DeletionRequestRow]:
+    """Name the people on each row, in one query rather than one per row."""
+    ids = {r.requested_by for r in requests} | {
+        r.decided_by for r in requests if r.decided_by
+    }
+    people: dict[uuid.UUID, User] = {}
+    if ids:
+        found = await session.scalars(select(User).where(User.id.in_(ids)))
+        people = {person.id: person for person in found}
+
+    rows = []
+    for request in requests:
+        asked = people.get(request.requested_by)
+        decided = people.get(request.decided_by) if request.decided_by else None
+        rows.append(
+            DeletionRequestRow(
+                id=request.id,
+                target_type=request.target_type.value,
+                target_id=request.target_id,
+                target_label=request.target_label,
+                reason=request.reason,
+                status=request.status.value,
+                requested_at=request.requested_at,
+                requested_by_name=asked.name if asked else None,
+                requested_by_email=asked.email if asked else None,
+                requested_by_me=request.requested_by == reader.id,
+                decided_at=request.decided_at,
+                decided_by_name=decided.name if decided else None,
+                decision_note=request.decision_note,
+                outcome=request.outcome,
+            )
+        )
+    return rows
+
+
+@router.get("/deletion-requests", response_model=list[DeletionRequestRow])
+async def list_deletion_requests(
+    session: DbSession,
+    scope: OrgAdminScope,
+    include_decided: bool = False,
+) -> list[DeletionRequestRow]:
+    """What is waiting on this organization's administrators.
+
+    ADMIN SCOPE, not manager scope. A branch manager who could read the queue
+    could read every reason anybody gave for wanting anybody removed, which is
+    a different thing from being able to ask for a removal themselves.
+    """
+    requests = await deletions.list_for_organization(
+        session,
+        scope.organization.id,
+        status=None if include_decided else DeletionStatus.PENDING,
+    )
+    return await _deletion_rows(session, requests, scope.user)
+
+
+async def _load_request(
+    session: DbSession, scope: OrgContext, request_id: uuid.UUID
+) -> DeletionRequest:
+    """The request, LOCKED, so two administrators cannot decide it at once.
+
+    WHY THE LOCK. Deciding is read-then-write: the status is read, the thing is
+    destroyed, and only then is the status written. Nothing between those steps
+    stopped a second request doing the same. Two Approves arriving together
+    both saw `pending` and both ran the deletion; an Approve racing a Decline
+    destroyed the thing AND recorded that it had been refused.
+
+    `FOR UPDATE` makes the second transaction wait and then re-read, so it sees
+    the world the first one left behind — which is the world it should have
+    been deciding about. The same shape as `concurrency.lock_and_list`, which
+    exists because the admin floor had this exact bug.
+
+    One row, so there is no lock-ordering question to get wrong.
+    """
+    request = await session.get(DeletionRequest, request_id, with_for_update=True)
+    # Scoped before it is returned: a request id from another organization must
+    # not confirm that it exists.
+    if request is None or request.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found."
+        )
+    return request
+
+
+@router.post("/deletion-requests/{request_id}/approve", response_model=DeletionRequestRow)
+async def approve_deletion(
+    request_id: uuid.UUID,
+    payload: Decision,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> DeletionRequestRow:
+    """Agree, and the thing is destroyed in the same transaction.
+
+    THE DELETION AND THE RECORD OF IT LAND TOGETHER. `services/deletions.py`
+    performs the removal and marks the row, and neither is committed without the
+    other — a crash between them would otherwise leave something gone with
+    nothing to say who agreed to it.
+
+    Everything that mattered when the request was raised is re-checked here: the
+    member may have become this organization's second administrator since, and
+    the admin floor is computed now rather than trusted from then.
+    """
+    request = await _load_request(session, scope, request_id)
+    try:
+        await deletions.approve(
+            session, request=request, actor=scope.user, note=payload.note
+        )
+    except deletions.DeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+
+    # `record`, not `record_safely`: agreeing to destroy a person's account is
+    # exactly the class of event this trail exists for, so a failure to write it
+    # must fail the approval rather than quietly complete it.
+    await audit.record(
+        session,
+        action=AuditAction.DELETION_APPROVED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type=request.target_type.value,
+        target_id=request.target_id,
+        metadata={
+            "label": request.target_label,
+            "outcome": request.outcome,
+            "requested_by": str(request.requested_by),
+        },
+    )
+    await session.commit()
+    rows = await _deletion_rows(session, [request], scope.user)
+    return rows[0]
+
+
+@router.post("/deletion-requests/{request_id}/decline", response_model=DeletionRequestRow)
+async def decline_deletion(
+    request_id: uuid.UUID,
+    payload: Decision,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> DeletionRequestRow:
+    """Refuse. Nothing is touched, and the reason is stored.
+
+    THE NOTE IS REQUIRED, for the same reason rejecting a course requires one: a
+    refusal that says nothing tells the person who asked nothing they can act
+    on, so they ask again next week and somebody decides it twice.
+    """
+    request = await _load_request(session, scope, request_id)
+    try:
+        await deletions.decline(
+            session, request=request, actor=scope.user, note=payload.note
+        )
+    except deletions.DeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+
+    await audit.record(
+        session,
+        action=AuditAction.DELETION_DECLINED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type=request.target_type.value,
+        target_id=request.target_id,
+        metadata={
+            "label": request.target_label,
+            "note": request.decision_note,
+            "requested_by": str(request.requested_by),
+        },
+    )
+    await session.commit()
+    rows = await _deletion_rows(session, [request], scope.user)
+    return rows[0]
 
 
 # ---------------------------------------------------------------------------
@@ -820,7 +1147,9 @@ async def org_audit(
             select(AuditEvent, User)
             .outerjoin(User, User.id == AuditEvent.actor_user_id)
             .where(*filters)
-            .order_by(AuditEvent.created_at.desc())
+            # The same total order as the platform trail, for the same
+            # reason. See routers/audit_log.py.
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
             .limit(limit)
             .offset(offset)
         )

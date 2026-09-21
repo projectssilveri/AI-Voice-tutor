@@ -18,7 +18,7 @@ from __future__ import annotations
 import csv
 import io
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Query
@@ -97,6 +97,11 @@ class AuditFacets(BaseModel):
     organizations: list[AuditOrganizationFacet]
 
 
+def _as_utc(moment: datetime) -> datetime:
+    """Read a zone-less timestamp as UTC rather than as the server's clock."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
 def _filters(
     admin: User,
     *,
@@ -165,15 +170,51 @@ def _filters(
         # The middleware net stores the path in metadata; this is how you ask
         # "who touched anything under /admin" without knowing the action names.
         filters.append(AuditEvent.meta["path"].astext.ilike(f"{path.strip()}%"))
+    # A DATE WITH NO ZONE ON IT MEANS UTC.
+    #
+    # FastAPI parses `?since=2026-09-19` into a naive datetime. `created_at` is
+    # TIMESTAMP WITH TIME ZONE, so asyncpg has to decide what zone the caller
+    # meant and assumes the SERVER's. That makes the same query mean different
+    # things in different places: midnight UTC on Render, half past six the
+    # previous evening on a laptop in India. For a compliance trail, "which
+    # events are inside this window" is the entire question.
+    #
+    # It also crashed. Midnight on 1 January 1970 local time, on any server
+    # ahead of UTC, is before the epoch, and converting it raised
+    # `[Errno 22] Invalid argument` out of the C library as a 500.
+    #
+    # An offset the caller supplied is left exactly as sent.
     if since:
-        filters.append(AuditEvent.created_at >= since)
+        filters.append(AuditEvent.created_at >= _as_utc(since))
     if until:
-        filters.append(AuditEvent.created_at <= until)
+        filters.append(AuditEvent.created_at <= _as_utc(until))
 
     return filters
 
 
-def _row(event: AuditEvent, who: User | None) -> AuditEventRow:
+#: Request plumbing, which is a debugging aid rather than an audit fact.
+#: The console already drops these three from the details column and hides the
+#: path filter from anybody but a super admin (issue 65) — but it did that in
+#: the browser, over a payload that still carried them, and the CSV export
+#: wrote them out in full.
+#:
+#: That made it a tenancy hole as well as a tidiness one. The catch-all
+#: `http.request` event has no organization_id, so the scope below never
+#: touches it, and its path reads `/org/acme/members`. A platform admin
+#: downloading the trail got 242 rows naming a customer by slug, and which of
+#: their routes somebody had been poking at. Found by diffing the export
+#: against the listing.
+PLUMBING = frozenset({"method", "path", "status"})
+
+
+def _details(meta: dict[str, Any] | None, admin: User) -> dict[str, Any]:
+    """An event's details, with the plumbing kept for the owner only."""
+    if admin.role is UserRole.SUPER_ADMIN:
+        return meta or {}
+    return {k: v for k, v in (meta or {}).items() if k not in PLUMBING}
+
+
+def _row(event: AuditEvent, who: User | None, admin: User) -> AuditEventRow:
     """One event plus its actor.
 
     Split out of the comprehension it used to live in, where the loop variable
@@ -194,7 +235,7 @@ def _row(event: AuditEvent, who: User | None) -> AuditEventRow:
         target_id=event.target_id,
         ip_address=event.ip_address,
         user_agent=event.user_agent,
-        metadata=event.meta,
+        metadata=_details(event.meta, admin),
     )
 
 
@@ -256,14 +297,19 @@ async def list_audit_events(
             select(AuditEvent, User)
             .outerjoin(User, User.id == AuditEvent.actor_user_id)
             .where(*filters)
-            .order_by(AuditEvent.created_at.desc())
+            # A TOTAL ORDER. Every event written during one request shares
+            # a timestamp, so without a tiebreaker LIMIT/OFFSET reshuffles
+            # between pages and an auditor sees some rows twice and misses
+            # others. `id` is a uuid4, which carries no meaning here and
+            # does not need to: it only has to be stable and distinct.
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
             .limit(limit)
             .offset(offset)
         )
     ).all()
 
     return AuditPage(
-        events=[_row(event, who) for event, who in rows],
+        events=[_row(event, who, admin) for event, who in rows],
         total=total or 0,
         limit=limit,
         offset=offset,
@@ -441,7 +487,12 @@ async def export_audit_events(
             select(AuditEvent, User)
             .outerjoin(User, User.id == AuditEvent.actor_user_id)
             .where(*filters)
-            .order_by(AuditEvent.created_at.desc())
+            # A TOTAL ORDER. Every event written during one request shares
+            # a timestamp, so without a tiebreaker LIMIT/OFFSET reshuffles
+            # between pages and an auditor sees some rows twice and misses
+            # others. `id` is a uuid4, which carries no meaning here and
+            # does not need to: it only has to be stable and distinct.
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
             .limit(EXPORT_LIMIT)
         )
     ).all()
@@ -480,7 +531,9 @@ async def export_audit_events(
                 event.user_agent or "",
                 # Flattened rather than raw JSON: a spreadsheet cell holding
                 # {"a": 1} is not something anyone can sort or filter on.
-                "; ".join(f"{k}={v}" for k, v in (event.meta or {}).items()),
+                "; ".join(
+                    f"{k}={v}" for k, v in _details(event.meta, admin).items()
+                ),
             ]
         )
     if len(rows) == EXPORT_LIMIT:

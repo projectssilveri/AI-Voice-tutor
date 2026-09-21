@@ -2,7 +2,7 @@
 
 WHO CAN DO WHAT:
 
-  upload / delete   staff (admin or teacher) — the same people who author the
+  upload / delete   staff (admin) — the same people who author the
                     module text the tutor teaches from.
   list / download   any signed-in user who can reach the module.
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["materials"])
 
-staff_only = Depends(require_role(UserRole.ADMIN, UserRole.TEACHER))
+staff_only = Depends(require_role(UserRole.ADMIN))
 
 
 class MaterialRead(BaseModel):

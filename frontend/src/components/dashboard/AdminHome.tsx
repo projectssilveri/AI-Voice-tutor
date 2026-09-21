@@ -16,10 +16,10 @@ import {
   StatTile,
 } from "@/components/dashboard/Tiles";
 import { useAuth } from "@/context/AuthContext";
+import { formatMoney } from "@/lib/money";
 import {
   type PlatformAnalytics,
   type RevenueAnalytics,
-  formatMoney,
   getPlatformAnalytics,
   getRevenueAnalytics,
   shortDay,
@@ -98,7 +98,7 @@ export default function AdminHome() {
         }
         action={
           <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-medium text-brand-600 dark:bg-brand-500/15 dark:text-brand-400">
-            {isSuperAdmin ? "Super admin" : "Admin"}
+            {isSuperAdmin ? "Super Admin" : "Platform Admin"}
           </span>
         }
       />
@@ -181,7 +181,7 @@ export default function AdminHome() {
               </p>
             ) : (
               <div className="max-w-full overflow-x-auto custom-scrollbar">
-                <table className="min-w-full text-sm">
+                <table className="table-wide min-w-full text-sm">
                   <thead className="border-b border-gray-200 dark:border-gray-800">
                     <tr>
                       {["Buyer", "Item", "Amount", "Status", "When"].map(
@@ -318,13 +318,31 @@ export default function AdminHome() {
             emptyMessage="No tutor sessions in this period."
           />
         </Panel>
-        <Panel title="Enrolments per course" subtitle="All time">
+        <Panel
+          title="Enrolments per course"
+          subtitle="All time, busiest first"
+        >
+          {/* TOP EIGHT, not all fifteen. Past about seven categories a bar
+              chart stops being a comparison and becomes a badly sorted table —
+              and with courses nobody has joined now filtered out server-side,
+              what is left is the part worth ranking. The count below says how
+              many did not fit, so nothing is silently hidden. */}
           <BarChart
-            points={platform?.enrolments_per_course ?? []}
+            points={(platform?.enrolments_per_course ?? []).slice(0, 8)}
             horizontal
             color={CHART_COLORS.BRAND_SOFT}
-            emptyMessage="No enrolments yet."
+            valueSuffix=" enrolled"
+            emptyMessage="Nobody has enrolled in anything yet."
           />
+          {(platform?.enrolments_per_course ?? []).length > 8 ? (
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              {(platform?.enrolments_per_course ?? []).length - 8} more course
+              {(platform?.enrolments_per_course ?? []).length - 8 === 1
+                ? ""
+                : "s"}{" "}
+              with fewer enrolments.
+            </p>
+          ) : null}
         </Panel>
       </div>
 
@@ -333,12 +351,22 @@ export default function AdminHome() {
           title="Completion rate"
           subtitle="Share of enrolled learners' modules finished"
         >
+          {/* `percentage` pins the axis to 0-100. It used to scale to the data,
+              so a chart topping out at 50% filled the panel and read as though
+              everything were finished — and when the figure could still exceed
+              100 (it could: a course measured 125%) the axis quietly drew to
+              150 and made an impossible number look like a good one.
+
+              Courses with nobody enrolled are dropped server-side. A 0% bar on
+              a course nobody has started says "everyone is failing this" when
+              it means "nobody has begun". */}
           <BarChart
-            points={platform?.completion_rate_per_course ?? []}
+            points={(platform?.completion_rate_per_course ?? []).slice(0, 8)}
             horizontal
+            percentage
             color={CHART_COLORS.SUCCESS}
             valueSuffix="%"
-            emptyMessage="Nothing completed yet."
+            emptyMessage="No enrolled learners yet, so nothing to measure."
           />
         </Panel>
 
@@ -369,7 +397,7 @@ export default function AdminHome() {
           </p>
         ) : (
           <div className="max-w-full overflow-x-auto custom-scrollbar">
-            <table className="min-w-full text-sm">
+            <table className="table-wide min-w-full text-sm">
               <thead className="border-b border-gray-200 dark:border-gray-800">
                 <tr>
                   {[

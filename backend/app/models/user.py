@@ -33,7 +33,12 @@ class UserRole(str, enum.Enum):
     """
 
     STUDENT = "student"
-    TEACHER = "teacher"
+    # TEACHER was here, from 0001 when this was going to be classrooms. It
+    # outlived the idea: nothing was left that a teacher did and an admin did
+    # not, so it was taken off the role dropdown — and left in the code, still
+    # inside STAFF_ROLES, still bypassing the paywall, still skipping the exam
+    # completion gate. Retired properly in migration 0025; the single account
+    # holding it became a student.
     ADMIN = "admin"
     SUPER_ADMIN = "super_admin"
 

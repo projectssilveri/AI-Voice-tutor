@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import CartLink from "@/components/cart/CartLink";
 import AccountMenu from "@/components/marketing/Header/AccountMenu";
 import Logo from "@/components/marketing/ui/Logo";
 import { useAuth } from "@/context/AuthContext";
@@ -26,6 +27,13 @@ import menuData from "./menuData";
  *
  * Kept from the original because both were real fixes: the scroll listener is
  * removed on unmount, and the mobile menu closes on navigation.
+ *
+ * THE MOBILE MENU IS A DRAWER, not a panel in the header. It used to be an
+ * ordinary block rendered after the nav, inside a `sticky` header — so opening
+ * it made the header taller and pushed the entire page down, and closing it
+ * snapped back. On a phone that reads as the site breaking rather than as a
+ * menu. It is now fixed, slides in over the content, and the page underneath
+ * does not move.
  */
 export default function Header() {
   const { user } = useAuth();
@@ -44,6 +52,8 @@ export default function Header() {
 
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -57,6 +67,63 @@ export default function Header() {
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
+
+  // WHAT MAKES IT A DRAWER RATHER THAN A DIV THAT LOOKS LIKE ONE.
+  //
+  //   * Escape closes it, because it covers the page.
+  //   * The page behind it does not scroll. Without this, dragging over the
+  //     backdrop scrolls the article underneath and the drawer appears frozen
+  //     to a scrolling page — the single most common mobile-drawer bug.
+  //   * Focus moves into it on open and back to the button on close, and Tab
+  //     stays inside while it is open. A menu covering the screen that the
+  //     keyboard is not in is a menu a keyboard user cannot leave.
+  useEffect(() => {
+    if (!open) return;
+
+    // Captured now, not read in the cleanup. By the time cleanup runs React
+    // may have re-rendered and pointed the ref elsewhere, and focus would go
+    // to whatever happened to be there.
+    const opener = toggleRef.current;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const focusable = () =>
+      Array.from(
+        panelRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled])',
+        ) ?? [],
+      );
+
+    focusable()[0]?.focus();
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+      // Back to the control that opened it, so the keyboard does not land at
+      // the top of the document.
+      opener?.focus();
+    };
+  }, [open]);
 
   return (
     <header className="sticky top-0 z-50 px-4 pt-4 sm:px-6">
@@ -103,9 +170,13 @@ export default function Header() {
         </ul>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* `CartLink` hides itself from an organization member, for the
+              same reason Pricing and Bundles are dropped from the nav above. */}
+          <CartLink />
           <AccountMenu />
 
           <button
+            ref={toggleRef}
             type="button"
             onClick={() => setOpen((value) => !value)}
             aria-expanded={open}
@@ -133,25 +204,103 @@ export default function Header() {
         </div>
       </nav>
 
-      {open && (
-        <div
-          id="marketing-mobile-nav"
-          className="mx-auto mt-2 max-w-[1200px] rounded-2xl border border-[var(--mk-line)] bg-[var(--mk-raised)] p-2 lg:hidden"
-        >
-          <ul>
-            {visibleMenu.map((item) => (
+      {/* THE BACKDROP. Tapping outside a drawer to close it is the gesture
+          people reach for first, and it also dims the page enough that the
+          drawer reads as being on top rather than part of the layout.
+
+          ALWAYS RENDERED, never `{open && ...}`: an element that does not
+          exist cannot animate out, and unmounting it made closing instant
+          while opening slid. `invisible` plus `pointer-events-none` keeps it
+          out of the way of taps and of the accessibility tree when shut. */}
+      <div
+        onClick={() => setOpen(false)}
+        aria-hidden="true"
+        className={cn(
+          "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden",
+          "transition-opacity duration-300 ease-[var(--ease-out-soft)]",
+          "motion-reduce:transition-none",
+          open ? "opacity-100" : "pointer-events-none invisible opacity-0",
+        )}
+      />
+
+      <div
+        ref={panelRef}
+        id="marketing-mobile-nav"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Menu"
+        className={cn(
+          // FIXED, so the page underneath keeps its place. This is the whole
+          // fix: the old panel was in normal flow and pushed the content down.
+          "fixed inset-y-0 right-0 z-50 w-[min(20rem,85vw)] lg:hidden",
+          "flex flex-col border-l border-[var(--mk-line)] bg-[var(--mk-raised)]",
+          "shadow-[-16px_0_48px_rgba(0,0,0,0.5)]",
+          // `dvh`, not `vh`: on a phone `vh` is the tallest the viewport ever
+          // gets, so the bottom of the drawer sits under the browser chrome.
+          "h-dvh overflow-y-auto overscroll-contain",
+          "transition-transform duration-300 ease-[var(--ease-out-soft)]",
+          "motion-reduce:transition-none",
+          open ? "translate-x-0" : "pointer-events-none translate-x-full",
+        )}
+        // Hidden from assistive technology and from tabbing when shut, which
+        // `translate` alone does not do — an off-screen menu is still readable
+        // by a screen reader and still lands focus when you Tab into it.
+        //
+        // A real boolean. Passing an empty string is the pre-React-19 spelling
+        // and React 19 now reads it as FALSE, so the menu stayed reachable
+        // while shut and the console said so on every render.
+        inert={!open}
+      >
+        <div className="flex items-center justify-between border-b border-[var(--mk-line)] px-5 py-4">
+          <Logo />
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Close menu"
+            className="grid size-9 place-items-center rounded-lg border border-[var(--mk-line)] text-[var(--mk-muted)] transition-colors hover:text-[var(--mk-text)]"
+          >
+            <svg
+              aria-hidden="true"
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+            >
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+
+        <ul className="flex-1 p-3">
+          {visibleMenu.map((item) => {
+            const active =
+              item.path === "/"
+                ? pathname === "/"
+                : pathname.startsWith(item.path);
+            return (
               <li key={item.id}>
                 <Link
                   href={item.path}
-                  className="block rounded-xl px-4 py-3 text-[15px] text-[var(--mk-muted)] hover:bg-white/5 hover:text-[var(--mk-text)]"
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "block rounded-xl px-4 py-3 text-[15px] transition-colors",
+                    active
+                      ? "bg-white/[0.08] font-medium text-[var(--mk-text)]"
+                      : "text-[var(--mk-muted)] hover:bg-white/5 hover:text-[var(--mk-text)]",
+                  )}
                 >
                   {item.title}
                 </Link>
               </li>
-            ))}
-          </ul>
-        </div>
-      )}
+            );
+          })}
+        </ul>
+      </div>
     </header>
   );
 }

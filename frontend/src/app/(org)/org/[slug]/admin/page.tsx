@@ -7,6 +7,8 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { Action } from "@/components/ui/Action";
+import Avatar from "@/components/ui/Avatar";
+import DeletionQueue from "@/components/org/DeletionQueue";
 import OrgShell from "@/components/org/OrgShell";
 import { useAuth } from "@/context/AuthContext";
 import EmptyState from "@/components/ui/EmptyState";
@@ -34,8 +36,6 @@ const ROLE_TONE: Record<string, string> = {
     "bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-400",
   branch_manager:
     "bg-warning-50 text-warning-700 dark:bg-warning-500/15 dark:text-warning-400",
-  teacher:
-    "bg-success-50 text-success-700 dark:bg-success-500/15 dark:text-success-400",
   student: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
 };
 
@@ -136,7 +136,6 @@ export default function OrgPeoplePage() {
   // them. Presentation only; `_assignable` refuses it regardless.
   const RANK: Record<string, number> = {
     student: 0,
-    teacher: 1,
     dept_admin: 2,
     branch_manager: 3,
     org_admin: 4,
@@ -172,6 +171,17 @@ export default function OrgPeoplePage() {
           password={justCreated.password}
           onClose={() => setJustCreated(null)}
         />
+      ) : null}
+
+      {/* DECISIONS WAITING, above everything else on the page.
+          Somebody has asked to delete one of this organization's people, its
+          training or its files — from the platform's console or from inside
+          this portal — and nothing happens to it until an administrator here
+          says so. Below the members table would be the same as not having it.
+          Renders nothing when the queue is empty, and reads as empty for
+          anybody who is not an administrator. */}
+      {profile?.is_org_admin ? (
+        <DeletionQueue slug={slug} onDecided={() => void load()} />
       ) : null}
 
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -421,9 +431,7 @@ export default function OrgPeoplePage() {
                 key={member.id}
                 className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4"
               >
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-500 text-sm font-semibold text-white">
-                  {member.name.charAt(0).toUpperCase()}
-                </span>
+                <Avatar userId={member.id} name={member.name} size="md" />
 
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-gray-800 dark:text-white/90">
@@ -549,28 +557,61 @@ export default function OrgPeoplePage() {
                   </label>
                 ) : null}
 
+                {/* REMOVE, OR ASK TO. An administrator removes somebody
+                    outright; a branch or department manager raises a request
+                    that an administrator decides. The button says which, and
+                    the prompt asks for the reason the request needs, because
+                    an administrator deciding from a name alone is not
+                    deciding. */}
                 {canWrite && member.id !== signedIn?.id ? (
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => {
-                      if (
-                        !window.confirm(
-                          `Remove ${member.name} from ${profile?.name ?? "this organization"}?
+                      const decides = profile?.is_org_admin ?? false;
+                      let reason = "";
+
+                      if (decides) {
+                        if (
+                          !window.confirm(
+                            `Remove ${member.name} from ${profile?.name ?? "this organization"}?
 
 If they have any history their account is closed rather than deleted, so nothing they have done is lost.`,
-                        )
-                      ) {
-                        return;
+                          )
+                        ) {
+                          return;
+                        }
+                      } else {
+                        const answer = window.prompt(
+                          `Ask an administrator to remove ${member.name}?
+
+Nothing happens to their account until one of them approves it.
+
+Why should they be removed?`,
+                          "",
+                        );
+                        if (answer === null) return;
+                        reason = answer.trim();
+                        if (!reason) {
+                          setError(
+                            "Say why they should be removed. The request needs a reason.",
+                          );
+                          return;
+                        }
                       }
+
                       void run(async () => {
-                        const result = await removeMember(slug, member.id);
+                        const result = await removeMember(
+                          slug,
+                          member.id,
+                          reason,
+                        );
                         setNotice(result.explanation);
                       });
                     }}
                     className="shrink-0 rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
                   >
-                    Remove
+                    {profile?.is_org_admin ? "Remove" : "Ask to remove"}
                   </button>
                 ) : null}
               </li>

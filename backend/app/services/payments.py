@@ -24,14 +24,17 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import redact
+from app.models.cart import CartItem
 from app.models.course import Course
 from app.models.order import Order, OrderStatus
 from app.models.subscription import (
@@ -204,6 +207,100 @@ async def start_course_purchase(
     return await _record_then_register(session, order, receipt_prefix="course")
 
 
+async def start_cart_purchase(
+    session: AsyncSession, *, user: User, courses: Sequence[Course]
+) -> list[Order]:
+    """One payment for a basket of courses. Returns the orders it created.
+
+    THE AMOUNT IS SUMMED FROM THE COURSE ROWS, never sent by the client — the
+    same rule as buying one course, and the reason is the same: a client that
+    names its own price names it wrong on purpose eventually.
+
+    THE ROWS ARE WRITTEN BEFORE RAZORPAY IS ASKED, for the reason spelled out
+    in `_record_then_register`: an order the provider knows about and we do not
+    is a payment our webhook cannot find. Written together in one transaction,
+    so a basket never lands half-recorded.
+
+    The caller is expected to have run `services.cart.purchasable`, which is
+    what decides a course may still be bought. The checks here are the ones
+    that protect the MONEY — a zero total, or a duplicate — rather than the
+    ones that decide what is on sale.
+    """
+    if not courses:
+        raise PaymentError("There is nothing in your cart.")
+
+    seen: set[uuid.UUID] = set()
+    for course in courses:
+        if course.id in seen:
+            raise PaymentError("The same course appears twice in your cart.")
+        seen.add(course.id)
+
+    total_minor = sum(course.price_minor for course in courses)
+    if total_minor <= 0:
+        raise PaymentError("There is nothing to pay for.")
+
+    # One currency per payment, because Razorpay takes one amount in one
+    # currency. Everything is INR today; this is the check that turns a silent
+    # mis-charge into a refusal on the day that stops being true.
+    currencies = {course.currency for course in courses}
+    if len(currencies) > 1:
+        raise PaymentError(
+            "These courses are priced in different currencies and cannot be "
+            "bought together."
+        )
+    currency = courses[0].currency
+
+    already = await session.scalars(
+        select(Order.course_id).where(
+            Order.user_id == user.id,
+            Order.course_id.in_(seen),
+            Order.status == OrderStatus.PAID,
+        )
+    )
+    owned = set(already.all())
+    if owned:
+        raise PaymentError("Your cart has something you already own.")
+
+    group_id = uuid.uuid4()
+    orders = [
+        Order(
+            user_id=user.id,
+            course_id=course.id,
+            amount_minor=course.price_minor,
+            currency=currency,
+            status=OrderStatus.CREATED,
+            provider="razorpay",
+            order_group_id=group_id,
+        )
+        for course in courses
+    ]
+    session.add_all(orders)
+    await session.commit()
+    for order in orders:
+        await session.refresh(order)
+
+    try:
+        provider_order_id = await _create_provider_order(
+            amount_minor=total_minor,
+            currency=currency,
+            receipt=f"cart-{group_id}",
+        )
+    except PaymentError:
+        # Inert rows, exactly as in the single-course path: nothing is granted
+        # by anything but `paid`, and they record that somebody tried.
+        for order in orders:
+            order.failure_reason = "Could not create an order with the provider."
+        await session.commit()
+        raise
+
+    for order in orders:
+        order.provider_order_id = provider_order_id
+    await session.commit()
+    for order in orders:
+        await session.refresh(order)
+    return orders
+
+
 async def start_plan_purchase(
     session: AsyncSession, *, user: User, plan: SubscriptionPlan
 ) -> Order:
@@ -240,6 +337,26 @@ def signature_is_valid(
     return hmac.compare_digest(expected, signature)
 
 
+async def orders_for_provider_order(
+    session: AsyncSession, provider_order_id: str
+) -> list[Order]:
+    """Every order row one provider payment covers.
+
+    ONE ROW FOR A SINGLE PURCHASE, SEVERAL FOR A CART. This used to be a
+    `scalar()` returning one row, which was right while a payment could only
+    buy one thing. Left as it was, a basket of three courses would have marked
+    one order paid and granted one course for the price of three — and the
+    other two rows would have sat in `created` looking like abandoned
+    checkouts rather than like money taken for nothing.
+    """
+    found = await session.scalars(
+        select(Order)
+        .where(Order.provider_order_id == provider_order_id)
+        .order_by(Order.created_at, Order.id)
+    )
+    return list(found.all())
+
+
 async def confirm_payment(
     session: AsyncSession,
     *,
@@ -247,64 +364,101 @@ async def confirm_payment(
     provider_order_id: str,
     provider_payment_id: str,
     signature: str,
-) -> Order:
-    """Mark an order paid, if and only if the signature checks out.
+) -> list[Order]:
+    """Mark a payment's orders paid, if and only if the signature checks out.
 
-    Returns the order. Raises rather than returning a failure flag, so a caller
-    cannot forget to look.
+    Returns every order the payment settled — one for a single purchase,
+    several for a cart. Raises rather than returning a failure flag, so a
+    caller cannot forget to look.
     """
-    order = await session.scalar(
-        select(Order).where(Order.provider_order_id == provider_order_id)
-    )
-    if order is None:
+    orders = await orders_for_provider_order(session, provider_order_id)
+    if not orders:
         raise PaymentError("No such order.")
 
-    # The order belongs to whoever created it. Without this check, anyone could
-    # confirm someone else's order and have the course land on their account.
-    if order.user_id != user.id:
-        logger.warning(
-            "User %s tried to confirm order %s belonging to %s",
-            user.id,
-            order.id,
-            order.user_id,
-        )
-        raise PaymentError("No such order.")
+    # The orders belong to whoever created them. Without this check, anyone
+    # could confirm someone else's payment and have the courses land on their
+    # account. Checked on EVERY row, not the first: they are written together
+    # by one call, and "they always share a user" is exactly the sort of
+    # invariant that stops being true quietly.
+    for order in orders:
+        if order.user_id != user.id:
+            logger.warning(
+                "User %s tried to confirm order %s belonging to %s",
+                user.id,
+                order.id,
+                order.user_id,
+            )
+            raise PaymentError("No such order.")
 
-    if order.status is OrderStatus.PAID:
-        return order  # Razorpay retries; confirming twice is not an error.
+    # Razorpay retries, and the webhook may have got here first. Confirming
+    # twice is not an error.
+    if all(order.status is OrderStatus.PAID for order in orders):
+        return orders
 
     if not signature_is_valid(
         provider_order_id=provider_order_id,
         provider_payment_id=provider_payment_id,
         signature=signature,
     ):
-        order.status = OrderStatus.FAILED
-        order.failure_reason = "Signature verification failed."
+        for order in orders:
+            if order.status is not OrderStatus.PAID:
+                order.status = OrderStatus.FAILED
+                order.failure_reason = "Signature verification failed."
         await session.commit()
-        logger.warning("Signature mismatch on order %s", order.id)
+        logger.warning("Signature mismatch on payment %s", provider_order_id)
         raise SignatureMismatchError("Payment could not be verified.")
 
-    order.status = OrderStatus.PAID
-    order.provider_payment_id = provider_payment_id
-    order.paid_at = datetime.now(UTC)
-
-    # Paying for a plan has to produce the thing that actually grants access.
-    # Marking the order paid alone would take the money and give nothing: the
-    # access check reads `subscriptions`, not `orders`.
-    if order.plan_id is not None:
-        await fulfil_plan_order(session, order)
-
+    await mark_paid(session, orders, provider_payment_id=provider_payment_id)
     await session.commit()
-    await session.refresh(order)
+    for order in orders:
+        await session.refresh(order)
 
-    logger.info(
-        "Order %s paid (%s %s) by user %s",
-        order.id,
-        order.amount_minor,
-        order.currency,
-        user.id,
-    )
-    return order
+    for order in orders:
+        logger.info(
+            "Order %s paid (%s %s) by user %s",
+            order.id,
+            order.amount_minor,
+            order.currency,
+            user.id,
+        )
+    return orders
+
+
+async def mark_paid(
+    session: AsyncSession, orders: Sequence[Order], *, provider_payment_id: str
+) -> None:
+    """Move orders to paid and hand over what they bought. No commit.
+
+    Shared by the browser callback and the webhook, which had drifted apart
+    once already — the webhook marked an order paid and forgot to start the
+    subscription, so a customer who closed the tab was charged for a bundle
+    that unlocked nothing. Two callers, one body, and that cannot happen twice.
+
+    A COURSE NEEDS NOTHING FULFILLING. Access reads `orders.status = 'paid'`
+    directly, so the row moving is the grant. A plan does not work that way:
+    the access check reads `subscriptions`.
+    """
+    now = datetime.now(UTC)
+    for order in orders:
+        if order.status is OrderStatus.PAID:
+            continue
+        order.status = OrderStatus.PAID
+        order.provider_payment_id = provider_payment_id
+        order.paid_at = now
+        if order.plan_id is not None:
+            await fulfil_plan_order(session, order)
+
+    # The basket has been paid for, so it is not a basket any more. Left alone,
+    # the cart badge would still show three the morning after checkout and the
+    # cart page would be a list of "you already have this".
+    bought = [order.course_id for order in orders if order.course_id is not None]
+    if bought:
+        await session.execute(
+            delete(CartItem).where(
+                CartItem.user_id == orders[0].user_id,
+                CartItem.course_id.in_(bought),
+            )
+        )
 
 
 async def fulfil_plan_order(session: AsyncSession, order: Order) -> Subscription:

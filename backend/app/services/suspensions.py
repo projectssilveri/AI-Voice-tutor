@@ -10,7 +10,7 @@ paying customer out on their own. `users.is_active` moves in exactly one place
 for this flow — `approve` — and the ordinary user-update schema no longer
 carries the field at all.
 
-The platform owner does not need a request. They can suspend directly, and that
+The super admin does not need a request. They can suspend directly, and that
 is recorded as a request they raised and approved in the same moment, so the
 history reads the same either way rather than having a second shape.
 """
@@ -51,7 +51,7 @@ async def request_suspension(
     clean = (reason or "").strip()
     if not clean:
         raise SuspensionError(
-            "Say why. The platform owner cannot act on a request with no reason, "
+            "Say why. The super admin cannot act on a request with no reason, "
             "and neither can the person it is about."
         )
 
@@ -61,16 +61,16 @@ async def request_suspension(
     if not target.is_active:
         raise SuspensionError("That account is already suspended.")
 
-    # A platform owner cannot be suspended by a request from below. Anyone who
+    # A super admin cannot be suspended by a request from below. Anyone who
     # could raise one against them could remove the only person able to decide
     # it, which is how an escalation becomes a lockout.
     if target.role is UserRole.SUPER_ADMIN:
-        raise SuspensionError("A platform owner's account cannot be suspended here.")
+        raise SuspensionError("A super admin's account cannot be suspended here.")
 
     if await open_request_for(session, target.id) is not None:
         raise SuspensionError(
             "Somebody has already asked for this account to be suspended, and "
-            "the platform owner has not decided yet."
+            "the super admin has not decided yet."
         )
 
     request = SuspensionRequest(
@@ -102,13 +102,31 @@ async def approve(
 ) -> SuspensionRequest:
     """The owner agrees, and the account is switched off. Does not commit."""
     if actor.role is not UserRole.SUPER_ADMIN:
-        raise SuspensionError("Only the platform owner can decide a suspension.")
+        raise SuspensionError("Only the super admin can decide a suspension.")
     if request.status is not SuspensionStatus.PENDING:
         raise SuspensionError("That request has already been decided.")
 
     target = await session.get(User, request.user_id)
     if target is None:
         raise SuspensionError("That account no longer exists.")
+
+    # RE-CHECKED HERE, not only when the request was raised.
+    #
+    # `request_suspension` refuses to raise one against a super admin, and
+    # `set_active_directly` now refuses to switch one off. This was the third
+    # door and it had no lock: a request raised while somebody was an ordinary
+    # user stays pending, and if they are promoted before it is decided,
+    # approving it suspends a super admin — through a path that never asked
+    # what they had become.
+    #
+    # The gap between raising and deciding is the whole point of the request
+    # flow, so the role has to be checked at the end of it and not only at the
+    # start.
+    if target.role is UserRole.SUPER_ADMIN:
+        raise SuspensionError(
+            "That account is a super admin now. Change their role first if "
+            "they should no longer hold it."
+        )
 
     request.status = SuspensionStatus.APPROVED
     request.decided_by = actor.id
@@ -129,7 +147,7 @@ async def decline(
 ) -> SuspensionRequest:
     """The owner says no. The account is untouched. Does not commit."""
     if actor.role is not UserRole.SUPER_ADMIN:
-        raise SuspensionError("Only the platform owner can decide a suspension.")
+        raise SuspensionError("Only the super admin can decide a suspension.")
     if request.status is not SuspensionStatus.PENDING:
         raise SuspensionError("That request has already been decided.")
 
@@ -152,9 +170,24 @@ async def set_active_directly(
     switched back on is a decision nobody is going to make.
     """
     if actor.role is not UserRole.SUPER_ADMIN:
-        raise SuspensionError("Only the platform owner can suspend an account.")
+        raise SuspensionError("Only the super admin can suspend an account.")
     if target.id == actor.id and not active:
         raise SuspensionError("You cannot suspend your own account.")
+
+    # THE SAME RULE AS `request_suspension`, which has refused this since it was
+    # written. This path did not, so the guard that stops an admin escalating a
+    # lockout was simply missing from the door the owner uses — a super admin
+    # could switch off every other super admin one at a time, including the
+    # first account on the platform, and nobody left could undo it. Reported as
+    # issues 3 and 5.
+    #
+    # ONLY WHEN SUSPENDING. Restoring has to stay open, or an account switched
+    # off before this guard existed could never be switched back on.
+    if not active and target.role is UserRole.SUPER_ADMIN:
+        raise SuspensionError(
+            "A super admin's account cannot be suspended. Change their role "
+            "first if they should no longer hold it."
+        )
 
     open_request = await open_request_for(session, target.id)
 
@@ -175,7 +208,7 @@ async def set_active_directly(
     request = SuspensionRequest(
         user_id=target.id,
         requested_by=actor.id,
-        reason=(reason or "").strip()[:2_000] or "Suspended by the platform owner.",
+        reason=(reason or "").strip()[:2_000] or "Suspended by the super admin.",
         status=SuspensionStatus.APPROVED,
         decided_by=actor.id,
         decided_at=datetime.now(UTC),

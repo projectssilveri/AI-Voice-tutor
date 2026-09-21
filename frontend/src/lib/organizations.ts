@@ -1,9 +1,10 @@
 /**
  * Organizations — the platform super admin's view.
  *
- * Every call here is behind `RequireSuperAdmin` on the backend. Creating a
- * tenant decides who exists on the platform at all, which puts it with revenue
- * and role management rather than with ordinary admin work (decision 50).
+ * Every call here is behind `RequireSuperAdmin` on the backend, WITH ONE
+ * EXCEPTION at the bottom of this file. Creating a tenant decides who exists on
+ * the platform at all, which puts it with revenue and role management rather
+ * than with ordinary admin work (decision 50).
  */
 
 import { apiFetch } from "@/lib/api";
@@ -48,6 +49,25 @@ const BASE = "/admin/organizations";
 
 export function listOrganizations(): Promise<Organization[]> {
   return apiFetch<Organization[]>(BASE, authed);
+}
+
+/** Just enough of an organisation to name it in a dropdown. */
+export interface OrganizationName {
+  id: string;
+  name: string;
+}
+
+/**
+ * Names and ids, for a platform admin appointing a customer's administrator.
+ *
+ * THE ONLY CALL IN THIS FILE AN ORDINARY ADMIN MAY MAKE, and it returns two
+ * fields on purpose. `listOrganizations` above carries seat counts, admin
+ * counts and course counts — a read of how large each customer is and how
+ * close to stranded, which is the super admin's business and not something to
+ * hand out so somebody can fill in a dropdown.
+ */
+export function listOrganizationNames(): Promise<OrganizationName[]> {
+  return apiFetch<OrganizationName[]>(`${BASE}/names`, authed);
 }
 
 export function getOrganization(id: string): Promise<OrganizationDetail> {

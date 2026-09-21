@@ -5,6 +5,14 @@ subscription plan — because the payment flow is identical and splitting it
 would mean two of every query on the revenue dashboard. Exactly one of
 `course_id` / `plan_id` is set, enforced by a CHECK.
 
+ONE ROW PER THING BOUGHT, EVEN WHEN THEY WERE BOUGHT TOGETHER. Checking out a
+cart of three courses writes three rows sharing an `order_group_id` and one
+provider order id, because the customer paid once. It is tempting to write a
+single row for the basket instead, and it would break two things that both read
+an order as "one course, one price": `services/refunds.py` decides what to
+return from this row's `amount_minor` and the buyer's progress through this
+row's course, and access is granted per `course_id`.
+
 The rule this table exists to serve: **access is granted by `status = 'paid'`,
 never by the browser saying the payment worked.** Razorpay's checkout runs in
 the client, so its success callback is a hint, not proof; the row only moves to
@@ -29,6 +37,7 @@ from sqlalchemy import (
     Text,
     text,
 )
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, uuid_pk
@@ -69,16 +78,22 @@ class Order(TimestampMixin, Base):
             "status IN ('created', 'paid', 'failed', 'refunded')",
             name="ck_orders_status",
         ),
-        # The provider's order id is how a webhook finds this row, so it must
-        # not repeat.
+        # The provider's order id is how a webhook finds these rows. It used
+        # to be unique on its own; a cart checkout means several rows share one
+        # payment, so what must not repeat is the same COURSE (or plan) twice
+        # against one payment — which would double-count revenue and issue two
+        # receipts for one purchase. `coalesce` is safe: the CHECK above
+        # guarantees exactly one of the pair is set.
         Index(
-            "uq_orders_provider_order_id",
+            "uq_orders_provider_order_target",
             "provider_order_id",
+            text("coalesce(course_id, plan_id)"),
             unique=True,
             postgresql_where=text("provider_order_id IS NOT NULL"),
         ),
         Index("ix_orders_user_id", "user_id"),
         Index("ix_orders_course_id", "course_id"),
+        Index("ix_orders_order_group_id", "order_group_id"),
         Index("ix_orders_status_created", "status", "created_at"),
     )
 
@@ -95,6 +110,13 @@ class Order(TimestampMixin, Base):
     plan_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("subscription_plans.id", ondelete="RESTRICT")
     )
+
+    # WHICH BASKET THIS CAME FROM. NULL for the ordinary case — one course, or
+    # one plan, bought on its own. Set, and shared, by the rows a single cart
+    # checkout produced. No foreign key: it points at nothing but its own
+    # siblings, and inventing a `order_groups` table with no columns of its own
+    # would be a join for the sake of a diagram.
+    order_group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     # Copied from the course/plan at purchase time, not read back through the
     # foreign key. A later price change must not rewrite what somebody paid.

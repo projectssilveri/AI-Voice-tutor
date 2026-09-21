@@ -9,7 +9,7 @@ import {
   Panel,
 } from "@/components/dashboard/Tiles";
 import ProgressBar from "@/components/ui/ProgressBar";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { counted } from "@/lib/plural";
 import {
   type RefundQuote,

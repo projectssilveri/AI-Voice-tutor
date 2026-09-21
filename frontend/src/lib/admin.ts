@@ -25,10 +25,17 @@ export interface AdminUserRow {
   last_session_at: string | null;
   /**
    * Somebody has already asked for this account to be switched off and the
-   * platform owner has not decided. The button says so rather than letting an
+   * super admin has not decided. The button says so rather than letting an
    * admin press it a second time and get an error back.
    */
   suspension_pending: boolean;
+  /**
+   * Somebody has already asked for this account to be DELETED and the
+   * organisation's own administrator has not decided. Pressing Delete again
+   * queues nothing and answers 409, so without this the console's only way to
+   * find out is to produce an error.
+   */
+  deletion_pending: boolean;
   /** Null for a public B2C account. Drives the organisation filter. */
   organization_id: string | null;
   organization_name: string | null;
@@ -45,9 +52,9 @@ export type AssignableRole = "student" | "admin" | "super_admin";
 
 export function setUserRole(
   userId: string,
-  // "teacher" is gone: nothing in the product distinguishes a tutor from an
-  // admin, so it was an option that changed nothing anyone could see. Existing
-  // teacher accounts keep the role — they just cannot be created any more.
+  // "teacher" is gone from the product entirely now, not just from this
+  // dropdown — migration 0025. Leaving it in the code after taking it off the
+  // screen is what let a retired role keep the paywall bypass.
   role: AssignableRole,
 ): Promise<AdminUserRow> {
   return apiFetch<AdminUserRow>(`/admin/users/${userId}/role`, {
@@ -80,6 +87,8 @@ export interface ModuleUsageRow {
   module_title: string;
   sessions: number;
   minutes: number;
+  /** Whole seconds, so a 40-second lesson is not reported as "0 min". */
+  seconds: number;
 }
 
 export interface UsageOverview {
@@ -119,8 +128,39 @@ export interface AttemptOverviewRow {
   passed: boolean;
 }
 
-export function listUsers(): Promise<AdminUserRow[]> {
-  return apiFetch<AdminUserRow[]>("/admin/users", authed);
+export interface AdminUserQuery {
+  /** Name, email or organisation. */
+  q?: string;
+  role?: string;
+  organization_id?: string;
+  /** Accounts belonging to no organisation. */
+  public_only?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AdminUserPage {
+  items: AdminUserRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * One page of people, filtered by the server.
+ *
+ * It used to return everybody and the screen filtered in the browser. That was
+ * 1.9MB on a platform with five thousand accounts, fetched again on every
+ * keystroke in the search box, to draw ten rows.
+ */
+export function listUsers(query: AdminUserQuery = {}): Promise<AdminUserPage> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === "" || value === false) continue;
+    params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return apiFetch<AdminUserPage>(`/admin/users${qs ? `?${qs}` : ""}`, authed);
 }
 
 export function listActivity(limit = 50): Promise<ActivityLogRow[]> {
@@ -181,6 +221,15 @@ export function createUser(payload: {
   role: string;
   phone?: string | null;
   course_ids?: string[];
+  /**
+   * Required when `role` is `org_admin`, refused for every other role.
+   *
+   * An organisation admin with no organisation administers nothing: they sign
+   * in and every screen in the portal answers 404. The server refuses both
+   * mistakes rather than creating the account and letting the person discover
+   * it, so this field is not optional in the way its type suggests.
+   */
+  organization_id?: string | null;
 }): Promise<CreatedUser> {
   return apiFetch<CreatedUser>("/admin/users", {
     withCredentials: true,
@@ -208,7 +257,7 @@ export interface SuspensionRow {
 }
 
 /**
- * Ask the platform owner to switch an account off.
+ * Ask the super admin to switch an account off.
  *
  * NOTHING HAPPENS TO THE ACCOUNT HERE. An admin can raise a problem the moment
  * they see it without being able to lock a customer out on their own; the
@@ -282,10 +331,55 @@ export function updateUser(
   });
 }
 
-export function removeUser(id: string): Promise<UserRemoval> {
-  return apiFetch<UserRemoval>(`/admin/users/${id}`, {
+/** 202 instead of 200: nothing was deleted, and here is who it waits on. */
+export interface DeletionRequested {
+  request_id: string;
+  organization_id: string;
+  organization_name: string;
+  target_label: string;
+  explanation: string;
+}
+
+/** Narrows the union above — `outcome` only exists when something happened. */
+export function wasRemoved(
+  result: UserRemoval | DeletionRequested,
+): result is UserRemoval {
+  return "outcome" in result;
+}
+
+/**
+ * Remove an account — or ask the customer, which is the same call.
+ *
+ * TWO OUTCOMES BEHIND ONE VERB, decided by the server from whether the account
+ * belongs to an organisation:
+ *
+ *   * a PUBLIC B2C account is deleted, or closed if it has history, and the
+ *     answer is a `UserRemoval` saying which;
+ *   * an account inside an ORGANISATION is untouched, and the answer is a
+ *     `DeletionRequested` naming the company now being asked.
+ *
+ * `reason` is required for the second case and ignored for the first. It is
+ * sent always rather than conditionally, because the caller does not reliably
+ * know which kind of account it is holding and the server does.
+ */
+export function removeUser(
+  id: string,
+  reason = "",
+): Promise<UserRemoval | DeletionRequested> {
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  return apiFetch<UserRemoval | DeletionRequested>(
+    `/admin/users/${id}${query}`,
+    { withCredentials: true, method: "DELETE" },
+  );
+}
+
+// Which courses they already have. `setUserEnrollments` below REPLACES the
+// list, so the screen offering those checkboxes has to read this first — the
+// editor used to start empty, and saving one new course removed every other
+// enrolment the student had.
+export function getUserEnrollments(id: string): Promise<string[]> {
+  return apiFetch<string[]>(`/admin/users/${id}/enrollments`, {
     withCredentials: true,
-    method: "DELETE",
   });
 }
 

@@ -405,8 +405,11 @@ about it.
                 (
                     "Explain one-way data flow",
                     "In two or three sentences, explain how a child component "
-                    "tells its parent that something happened. Mention what "
-                    "props are, and what the parent passes down.",
+                    "tells its parent that something happened. Mention props "
+                    "and function.",
+                    # Both words are graded, so both have to be asked for.
+                    # "what the parent passes down" was marked on the word
+                    # `function` and never said so.
                     ["props", "function"],
                     MatchMode.CONTAINS,
                 ),
@@ -1546,8 +1549,10 @@ feeling ill.
                     "Contrast floor",
                     "State the minimum contrast ratio for normal body text, "
                     "written as a ratio.",
+                    # EXACT: these are three ways of writing ONE answer, and
+                    # CONTAINS would have demanded all three at once.
                     ["4.5:1", "4.5 to 1", "4.5"],
-                    MatchMode.CONTAINS,
+                    MatchMode.EXACT,
                 ),
             ],
         ),
@@ -1764,8 +1769,11 @@ your laptop with three rows of test data.
                     "Keeping the empties",
                     "Name the join that keeps rows from the left table even "
                     "when nothing matches. Two words.",
+                    # NEITHER answer could score full marks under CONTAINS:
+                    # "left join" does not contain "left outer join", and
+                    # "left outer join" does not contain "left join".
                     ["left join", "left outer join"],
-                    MatchMode.CONTAINS,
+                    MatchMode.EXACT,
                 ),
             ],
         ),
@@ -1837,7 +1845,7 @@ database connection for as long as they take to answer.
                     "Held too long",
                     "Explain in a sentence why holding a transaction open "
                     "across a call to an external payment provider is a bad "
-                    "idea. Mention connection or pool.",
+                    "idea. Mention connection and pool.",
                     ["connection", "pool"],
                     MatchMode.CONTAINS,
                 ),
@@ -1986,7 +1994,7 @@ at the boundary is a bug that never reaches a customer.
                     "Which comparison operator checks value AND type in PHP? "
                     "Write the operator.",
                     ["===", "triple equals"],
-                    MatchMode.CONTAINS,
+                    MatchMode.EXACT,
                 ),
             ],
         ),
@@ -2057,8 +2065,11 @@ page, so another site cannot make the browser submit it on the visitor's behalf.
                     "Data, not instructions",
                     "Name the database technique that keeps user input from "
                     "being treated as SQL. Two words.",
+                    # Singular and plural of one answer. Under CONTAINS the
+                    # singular could never score full marks, because it does
+                    # not contain the plural.
                     ["prepared statement", "prepared statements"],
-                    MatchMode.CONTAINS,
+                    MatchMode.EXACT,
                 ),
             ],
         ),
@@ -2424,7 +2435,7 @@ runs in test and production and the only difference is what you hand it.
                 (
                     "Silent failure",
                     "Explain in a sentence why catching an exception and doing "
-                    "nothing is dangerous. Mention state or continues.",
+                    "nothing is dangerous. Mention state and continues.",
                     ["state", "continue"],
                     MatchMode.CONTAINS,
                 ),
@@ -2505,8 +2516,10 @@ somebody is pressing to make it stop.
                     "The shared default",
                     "Name one type you should never use as a default argument "
                     "value in Python. One word.",
+                    # "Name ONE" and CONTAINS wanted all four. EXACT is the
+                    # mode that means any one of these will do.
                     ["list", "dict", "dictionary", "set"],
-                    MatchMode.CONTAINS,
+                    MatchMode.EXACT,
                 ),
             ],
         ),
@@ -2641,7 +2654,7 @@ the same library can coexist, which they will.
                     "What should you create per project so two projects can "
                     "use different library versions? Two words.",
                     ["virtual environment", "virtualenv", "venv"],
-                    MatchMode.CONTAINS,
+                    MatchMode.EXACT,
                 ),
             ],
         ),

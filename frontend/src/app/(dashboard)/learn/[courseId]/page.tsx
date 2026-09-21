@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { ApiError, errorText } from "@/lib/api";
 import { type CourseDetail, enroll, getCourse, unenroll } from "@/lib/student";
 import {
@@ -125,7 +125,7 @@ export default function CourseDetailPage() {
         <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
           {missing
             ? "It may have been removed, or the link may be wrong."
-            : `${error ?? "Something went wrong."} This is a problem at our end, not with the course. Try again in a moment.`}
+            : `${error ?? "We could not load this course."} That is our end. Try again in a moment.`}
         </p>
         <div className="flex flex-wrap justify-center gap-3">
           {!missing ? (

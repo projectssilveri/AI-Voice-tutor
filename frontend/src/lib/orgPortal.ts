@@ -7,6 +7,7 @@
  */
 
 import { apiFetch } from "@/lib/api";
+import { roleLabel as platformRole } from "@/lib/roles";
 import { API_V1, env } from "@/lib/env";
 
 const authed = { withCredentials: true, cache: "no-store" } as const;
@@ -93,7 +94,6 @@ export interface OrgAuditEvent {
 /** Roles an organization may hand out. Platform roles are absent by design. */
 export const ORG_ROLES = [
   { value: "student", label: "Learner", hint: "Takes courses" },
-  { value: "teacher", label: "Teacher", hint: "Authors course content" },
   {
     value: "dept_admin",
     label: "Department admin",
@@ -111,8 +111,18 @@ export const ORG_ROLES = [
   },
 ] as const;
 
+/**
+ * What a role is called INSIDE one company's portal.
+ *
+ * `org_admin` is just "Administrator" here, because the whole screen is that
+ * organisation and repeating the word adds nothing.
+ *
+ * Falls through to the platform map for anybody who is not one of these. A
+ * super admin visiting a customer is not an org role, so this returned the raw
+ * column and the header read "super_admin" under their name.
+ */
 export function roleLabel(role: string): string {
-  return ORG_ROLES.find((r) => r.value === role)?.label ?? role;
+  return ORG_ROLES.find((r) => r.value === role)?.label ?? platformRole(role);
 }
 
 export function getPublicOrg(slug: string): Promise<PublicOrg> {
@@ -169,27 +179,107 @@ export function updateMember(
 }
 
 export interface MemberRemoval {
-  /** "deleted" when the account had no history, "deactivated" when it did. */
+  /**
+   * "deleted" when the account had no history, "deactivated" when it did —
+   * and "requested" when nothing happened at all because the person pressing
+   * was not an administrator.
+   */
   outcome: string;
   explanation: string;
 }
 
 /**
- * Remove someone from the organization.
+ * Remove someone from the organization, or ask an administrator to.
  *
- * Deletes the account outright when it has no history and closes it when it
- * does — the server decides which and says so in `explanation`, because an
- * admin who presses Delete and later finds the person still in the audit trail
- * needs to have been told why.
+ * AN ADMINISTRATOR REMOVES. The account is deleted outright when it has no
+ * history and closed when it does — the server decides which and says so in
+ * `explanation`, because an admin who presses Delete and later finds the
+ * person still in the audit trail needs to have been told why.
+ *
+ * A BRANCH OR DEPARTMENT MANAGER ASKS. Nothing is touched, `outcome` comes
+ * back "requested", and it waits in the administrators' queue. Check that
+ * rather than announcing a removal that has not happened.
  */
 export function removeMember(
   slug: string,
   memberId: string,
+  reason = "",
 ): Promise<MemberRemoval> {
-  return apiFetch<MemberRemoval>(`/org/${slug}/members/${memberId}`, {
-    ...authed,
-    method: "DELETE",
-  });
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  return apiFetch<MemberRemoval>(
+    `/org/${slug}/members/${memberId}${query}`,
+    { ...authed, method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Deletions waiting on this organization's administrators
+// ---------------------------------------------------------------------------
+
+export interface DeletionRequestRow {
+  id: string;
+  /** member | training | document */
+  target_type: string;
+  target_id: string;
+  /**
+   * The name, captured when the request was raised. After an approval the id
+   * points at nothing, which is why the server stores this rather than joining.
+   */
+  target_label: string;
+  reason: string;
+  /** pending | approved | declined */
+  status: string;
+  requested_at: string;
+  requested_by_name: string | null;
+  requested_by_email: string | null;
+  /** You asked for this, so somebody else has to decide it. */
+  requested_by_me: boolean;
+  decided_at: string | null;
+  decided_by_name: string | null;
+  decision_note: string | null;
+  outcome: string | null;
+}
+
+/** What is waiting on this organization's administrators. Admins only. */
+export function listDeletionRequests(
+  slug: string,
+  includeDecided = false,
+): Promise<DeletionRequestRow[]> {
+  const query = includeDecided ? "?include_decided=true" : "";
+  return apiFetch<DeletionRequestRow[]>(
+    `/org/${slug}/deletion-requests${query}`,
+    authed,
+  );
+}
+
+/** Agree. The thing is destroyed in the same transaction as the record of it. */
+export function approveDeletion(
+  slug: string,
+  requestId: string,
+  note?: string,
+): Promise<DeletionRequestRow> {
+  return apiFetch<DeletionRequestRow>(
+    `/org/${slug}/deletion-requests/${requestId}/approve`,
+    { ...authed, method: "POST", body: { note: note || null } },
+  );
+}
+
+/**
+ * Refuse. Nothing is touched.
+ *
+ * The note is REQUIRED by the server, for the same reason rejecting a course
+ * is: a refusal that says nothing tells the person who asked nothing they can
+ * act on, so they ask again next week.
+ */
+export function declineDeletion(
+  slug: string,
+  requestId: string,
+  note: string,
+): Promise<DeletionRequestRow> {
+  return apiFetch<DeletionRequestRow>(
+    `/org/${slug}/deletion-requests/${requestId}/decline`,
+    { ...authed, method: "POST", body: { note } },
+  );
 }
 
 export function listOrgAudit(
@@ -324,11 +414,21 @@ export function orgDocumentUrl(slug: string, documentId: string): string {
   return `${env.apiBaseUrl}${API_V1}/org/${slug}/documents/${documentId}/file`;
 }
 
+/**
+ * Remove a file, or ask an administrator to.
+ *
+ * Same split as `removeMember`: an org admin removes it, anybody else raises a
+ * request and the file is untouched. The server answers 202 with no body in
+ * that case, so the caller cannot tell from the return value alone — reload the
+ * list and the file being still there is the answer.
+ */
 export function deleteOrgDocument(
   slug: string,
   documentId: string,
+  reason = "",
 ): Promise<void> {
-  return apiFetch(`/org/${slug}/documents/${documentId}`, {
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  return apiFetch(`/org/${slug}/documents/${documentId}${query}`, {
     ...authed,
     method: "DELETE",
   });

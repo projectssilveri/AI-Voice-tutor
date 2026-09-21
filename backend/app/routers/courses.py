@@ -11,12 +11,16 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 
 from app.deps import CurrentUser, DbSession, RequireSuperAdmin, require_role
 from app.models.assignment import Assignment
+from app.models.audit import AuditAction
+from app.models.certification import CertExam
+from app.models.deletion import DeletionTarget
 from app.models.material import ModuleMaterial
+from app.models.order import Order
 from app.models.quiz import QuizQuestion
 from app.models.user import UserRole
 from app.models.voice import VoiceSession
@@ -29,7 +33,14 @@ from app.schemas.course import (
     CourseWithModules,
     ModuleSummary,
 )
-from app.services import access, audit, course_review, limits
+from app.services import (
+    access,
+    audit,
+    conflicts,
+    course_review,
+    deletions,
+    limits,
+)
 from app.services import courses as course_service
 from app.services import enrollments as enrollment_service
 from app.services import extensions as extension_service
@@ -39,6 +50,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/courses", tags=["courses"])
 
 admin_only = Depends(require_role(UserRole.ADMIN))
+
+# AUTHORING IS SUPER ADMIN ONLY (issue 11). `require_role(ADMIN)` widens
+# upwards to include super admins; this one does not widen, because the point
+# is to exclude the platform admin who previously satisfied it.
+#
+# The ORGANISATION portal is untouched. An org admin writes their own company's
+# training through `/org/{slug}/courses`, a different router with its own scope
+# check — what a customer may write about their own business is not this rule's
+# business.
+super_admin_only = Depends(require_role(UserRole.SUPER_ADMIN))
+
 
 
 def _speaking_minutes(content: str | None) -> int:
@@ -65,8 +87,8 @@ async def list_courses(session: DbSession, user: CurrentUser) -> list[CourseRead
         visible_to_user_id=None if is_staff else user.id,
         # The walled garden. An organization member sees exactly their own
         # organization's courses and nothing from the marketplace — including
-        # an org TEACHER, who is in STAFF_ROLES and would otherwise be shown
-        # every course on the platform by the line above.
+        # one who is in STAFF_ROLES and would otherwise be shown every course
+        # on the platform by the line above.
         organization_id=user.organization_id,
         # Only the platform super admin sees across tenants, matching
         # `require_org_scope` and `access.tenancy_decision`.
@@ -91,6 +113,22 @@ async def list_courses(session: DbSession, user: CurrentUser) -> list[CourseRead
         for course, _ in rows
     }
 
+    # WHICH COURSES END IN AN EXAM. Nothing else on the row implies it, and the
+    # authoring screen had no way to say: an owner had to open each course in
+    # turn to find out whether finishing it earned a certificate (issue 74).
+    # One query for the whole page, not one per row.
+    certified: set[uuid.UUID] = set()
+    if rows:
+        certified = set(
+            (
+                await session.scalars(
+                    select(CertExam.course_id).where(
+                        CertExam.course_id.in_([course.id for course, _ in rows])
+                    )
+                )
+            ).all()
+        )
+
     return [
         CourseRead.model_validate(course).model_copy(
             update={
@@ -108,6 +146,7 @@ async def list_courses(session: DbSession, user: CurrentUser) -> list[CourseRead
                     course.id
                 ].minutes_per_session,
                 "ai_limit_basis": allowances[course.id].basis,
+                "has_certification": course.id in certified,
             }
         )
         for course, module_count in rows
@@ -255,16 +294,37 @@ async def get_course(
     "",
     response_model=CourseRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[admin_only],
+    dependencies=[super_admin_only],
 )
-async def create_course(payload: CourseCreate, session: DbSession) -> CourseRead:
+async def create_course(
+    payload: CourseCreate, session: DbSession, user: CurrentUser
+) -> CourseRead:
     course = await course_service.create_course(
         session, title=payload.title, description=payload.description
     )
+    # Recorded by name. Nothing explicit was written here, so the middleware's
+    # catch-all filed it as `http.request` and the console showed "Changed
+    # something" for the creation of a course. Issue 66 asks which object was
+    # touched; a title answers that in a way a uuid never will.
+    # `record_safely`, not `record`: the service above has already committed,
+    # so this event is in a transaction of its own. A raise here would report
+    # failure for work that already landed.
+    await audit.record_safely(
+        session,
+        action=AuditAction.COURSE_CREATED,
+        actor=user,
+        target_type="course",
+        target_id=course.id,
+        metadata={"name": course.title},
+    )
+    await session.commit()
+    await session.refresh(course)
     return CourseRead.model_validate(course)
 
 
-@router.patch("/{course_id}", response_model=CourseRead, dependencies=[admin_only])
+@router.patch(
+    "/{course_id}", response_model=CourseRead, dependencies=[super_admin_only]
+)
 async def update_course(
     course_id: uuid.UUID, payload: CourseUpdate, session: DbSession, user: CurrentUser
 ) -> CourseRead:
@@ -278,6 +338,18 @@ async def update_course(
             status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
         ) from None
 
+    # READ IT BEFORE IT MOVES. The trail could say a course had been updated
+    # and never what changed, which is issues 41, 59 and 60 — "Changed
+    # something" with no old value is a record nobody can act on.
+    fields = ("title", "description", "access_days", "is_published")
+    try:
+        existing = await course_service.get_course(session, course_id)
+    except course_service.CourseNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        ) from None
+    before = audit.snapshot(existing, fields)
+
     try:
         course = await course_service.update_course(
             session, course_id, **payload.model_dump(exclude_unset=True)
@@ -286,6 +358,21 @@ async def update_course(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
         ) from None
+
+    moved = audit.changes(before, audit.snapshot(course, fields))
+    if moved:
+        # `record_safely`: `course_service.update_course` commits before this
+        # runs, so a raise here would fail a request whose work already landed.
+        await audit.record_safely(
+            session,
+            action=AuditAction.COURSE_UPDATED,
+            actor=user,
+            target_type="course",
+            target_id=course.id,
+            metadata={"name": course.title, "changes": moved},
+        )
+        await session.commit()
+        await session.refresh(course)
     return CourseRead.model_validate(course)
 
 
@@ -356,6 +443,15 @@ async def update_course_pricing(
     # place that rule lives, so a future publishing route cannot forget it.
     publish = changes.pop("is_published", None)
 
+    # WHAT THE PRICE WAS, captured before it moves. "Who dropped the price,
+    # and from what" is the question this trail exists to answer and could not
+    # — the route wrote nothing, so the catch-all filed it as `http.request`
+    # and the console said "Changed something". Issue 41 names price changes
+    # specifically.
+    priced = ("price_minor", "list_price_minor", "currency", "access_days")
+    before = audit.snapshot(course, priced)
+    was_published = course.is_published
+
     for field, value in changes.items():
         setattr(course, field, value)
 
@@ -368,6 +464,25 @@ async def update_course_pricing(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
+
+    moved = audit.changes(before, audit.snapshot(course, priced))
+    if publish is not None and publish != was_published:
+        # Going on or off sale is not a field edit and reads badly as one.
+        moved["on sale"] = {"from": was_published, "to": course.is_published}
+
+    if moved:
+        await audit.record(
+            session,
+            action="content.course_priced",
+            actor=admin,
+            target_type="course",
+            target_id=course.id,
+            metadata={
+                "name": course.title,
+                "currency": course.currency,
+                "changes": moved,
+            },
+        )
 
     await session.commit()
     await session.refresh(course)
@@ -386,9 +501,9 @@ async def submit_course_for_review(
     course_id: uuid.UUID,
     session: DbSession,
     user: CurrentUser,
-    _: Annotated[None, admin_only] = None,
+    _: Annotated[None, super_admin_only] = None,
 ) -> CourseRead:
-    """Send a course to the platform owner for approval.
+    """Send a course to the super admin for approval.
 
     What an ordinary admin does instead of publishing. They write the course
     and hand it over; the owner decides whether it goes on sale. A super admin
@@ -500,8 +615,10 @@ async def delete_course(
     session: DbSession,
     admin: RequireSuperAdmin,
     user: CurrentUser,
+    response: Response,
+    reason: str = "",
 ) -> None:
-    """Delete a course. SUPER ADMIN ONLY.
+    """Delete our course, or ASK to delete a customer's. SUPER ADMIN ONLY.
 
     Was `admin_only`, which let anybody with the admin role destroy a course —
     including one another admin had spent a week writing, and one that had been
@@ -510,6 +627,12 @@ async def delete_course(
 
     An ordinary admin who wants a course gone asks for it, exactly as they now
     ask for it to go on sale.
+
+    A COURSE INSIDE AN ORGANISATION IS NOT OURS TO DESTROY. It becomes a request
+    that customer's own administrator decides, answered 202 with no body, and
+    the course is untouched until they agree. Training somebody built is the
+    thing a customer would least forgive us for deleting by mistake, and
+    decision 170 is the recorded instance of exactly that happening.
     """
     # Tenancy. `admin_only` says "you are staff"; it says nothing about WHOSE
     # course this is. Without this an ordinary platform admin could rename and
@@ -521,9 +644,100 @@ async def delete_course(
             status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
         ) from None
 
+    # THE NAME, READ BEFORE THE ROW GOES. After a delete the target id points
+    # at nothing, so an event carrying only a uuid is a record that a course
+    # was destroyed and no way to say which one. Issue 66.
     try:
-        await course_service.delete_course(session, course_id)
+        doomed = await course_service.get_course(session, course_id)
+        name, was_published = doomed.title, doomed.is_published
     except course_service.CourseNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
         ) from None
+
+    if doomed.organization_id is not None:
+        from app.models.organization import Organization
+
+        organization = await session.get(Organization, doomed.organization_id)
+        if organization is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+            )
+        try:
+            request = await deletions.request_deletion(
+                session,
+                organization=organization,
+                target_type=DeletionTarget.TRAINING,
+                target_id=course_id,
+                target_label=name,
+                actor=user,
+                reason=reason,
+            )
+        except deletions.DeletionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+        await audit.record(
+            session,
+            action=AuditAction.DELETION_REQUESTED,
+            actor=user,
+            organization_id=organization.id,
+            target_type="course",
+            target_id=course_id,
+            metadata={"name": name, "request": str(request.id)},
+        )
+        await session.commit()
+        response.status_code = status.HTTP_202_ACCEPTED
+        return
+
+    # SOLD COURSES CANNOT BE DELETED, and now they say so.
+    #
+    # `orders.course_id` is RESTRICT on purpose: an order that cannot name what
+    # was bought is not a receipt, and a refund needs it. The delete therefore
+    # fails at the database — which nothing caught, so the owner pressing Delete
+    # on a course with one sale against it got "Internal server error" and no
+    # idea that selling it was the reason.
+    #
+    # Checked BEFORE the delete rather than caught after it, because the count
+    # is the useful part of the message. The `as_conflict` below is still there
+    # for anything else that points at a course.
+    sold = await session.scalar(
+        select(func.count()).select_from(Order).where(Order.course_id == course_id)
+    )
+    if sold:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{name} has been bought {sold} time{'s' if sold != 1 else ''}, "
+                "so it cannot be deleted. The orders would no longer say what "
+                "was paid for. Take it off sale instead."
+            ),
+        )
+
+    try:
+        async with conflicts.as_conflict(
+            session,
+            default=(
+                "Something still refers to this course, so it cannot be deleted. "
+                "Take it off sale instead."
+            ),
+        ):
+            await course_service.delete_course(session, course_id)
+    except course_service.CourseNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        ) from None
+
+    # `record_safely`, not `record`: the service above has already committed,
+    # so this event is in a transaction of its own. A raise here would report
+    # failure for work that already landed.
+    await audit.record_safely(
+        session,
+        action=AuditAction.COURSE_DELETED,
+        actor=user,
+        target_type="course",
+        target_id=course_id,
+        metadata={"name": name, "was_on_sale": was_published},
+    )
+    await session.commit()

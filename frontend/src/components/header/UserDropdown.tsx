@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
+import Avatar from "@/components/ui/Avatar";
 import { useAuth } from "@/context/AuthContext";
 import { unreadCount } from "@/lib/messages";
 import { Dropdown } from "../ui/dropdown/Dropdown";
@@ -30,7 +31,7 @@ export default function UserDropdown() {
   }, []);
 
   const [isOpen, setIsOpen] = useState(false);
-  const { user, signOut } = useAuth();
+  const { user, photoVersion, signOut } = useAuth();
   const router = useRouter();
 
   async function handleSignOut() {
@@ -55,14 +56,17 @@ export default function UserDropdown() {
         className="flex items-center text-gray-700 dark:text-gray-400 dropdown-toggle"
       >
         {/* The template hardcoded a stock photo here, so every account —
-            student, teacher, admin — appeared as the same stranger. There is
-            no avatar field on `users`, so the initial is the honest version. */}
-        <span
-          className="mr-3 flex h-11 w-11 items-center justify-center rounded-full bg-brand-500 text-base font-semibold text-white"
-          aria-hidden
-        >
-          {(user?.name ?? "?").charAt(0).toUpperCase()}
-        </span>
+            student, teacher, admin — appeared as the same stranger. It was
+            replaced by a hand-drawn initial, with a note saying `users` had no
+            avatar field. It has had one for a while: people can upload a photo
+            on /profile, and this header went on showing them a letter. */}
+        <Avatar
+          userId={user?.id}
+          name={user?.name}
+          size="md"
+          version={photoVersion}
+          className="mr-3"
+        />
 
         <span className="block mr-1 font-medium text-theme-sm">
           {user?.name ?? "Account"}

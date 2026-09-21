@@ -170,6 +170,7 @@ export function BarChart({
   valuePrefix = "",
   valueSuffix = "",
   emptyMessage = "No data yet.",
+  percentage = false,
 }: {
   points: SeriesPoint[];
   height?: number;
@@ -178,6 +179,14 @@ export function BarChart({
   valuePrefix?: string;
   valueSuffix?: string;
   emptyMessage?: string;
+  /**
+   * The values are a PERCENTAGE, so the axis runs 0 to 100 whatever the data
+   * does. Without it a chart whose highest bar is 50% fills the panel and
+   * reads as "half of everything", and one whose highest is 125% — which used
+   * to be possible — drew an axis to 150 and made an impossible number look
+   * ordinary.
+   */
+  percentage?: boolean;
 }) {
   const { theme } = useTheme();
   const dark = theme === "dark";
@@ -185,6 +194,33 @@ export function BarChart({
   if (points.length === 0) {
     return <EmptyState message={emptyMessage} height={height} />;
   }
+
+  // COUNTS OF THINGS DO NOT HAVE DECIMALS. Apex divides whatever range it is
+  // given into five ticks, so a chart whose tallest bar is 1 enrolment was
+  // labelled 0.0 / 0.2 / 0.4 / 0.6 / 0.8 / 1.0 — two fifths of a person.
+  // When every value is whole, the axis is told to stay whole too.
+  const wholeNumbers = points.every((p) => Number.isInteger(p.value));
+  const peak = Math.max(...points.map((p) => p.value), 0);
+
+  // WHICH AXIS CARRIES THE NUMBERS DEPENDS ON THE ORIENTATION, and getting it
+  // wrong renders nothing at all. In a horizontal bar chart Apex keeps the
+  // category names in `xaxis.categories` but draws the VALUE scale along the
+  // x-axis; putting `min`/`max` on `yaxis` there constrains the category axis
+  // to a numeric range and the chart comes back empty — no bars, no labels,
+  // no error. Measured: a 482x220 canvas containing nothing.
+  // `toFixed(0)` rather than rounding the data: the value stays exact for the
+  // tooltip, and only the AXIS stops inventing precision the measurement never
+  // had. Apex types the two axes differently — the x formatter is handed a
+  // string, the y formatter a number — so each gets its own.
+  const tidy = (n: number) =>
+    wholeNumbers || percentage ? n.toFixed(0) : String(n);
+  const bounds = percentage
+    ? { min: 0, max: 100, tickAmount: 4 }
+    : wholeNumbers
+      ? // At most one tick per whole number, so a chart topping out at 2 gets
+        // 0/1/2 rather than 0/0.4/0.8/1.2/1.6/2.
+        { min: 0, tickAmount: Math.min(Math.max(peak, 1), 5) }
+      : {};
 
   const options: ApexOptions = {
     ...baseOptions(dark),
@@ -201,11 +237,26 @@ export function BarChart({
     },
     xaxis: {
       categories: points.map((p) => p.label),
-      labels: { ...axisLabel(dark), hideOverlappingLabels: true },
+      labels: {
+        ...axisLabel(dark),
+        hideOverlappingLabels: true,
+        // Horizontal: THIS axis carries the values, so it wears the formatter.
+        ...(horizontal
+          ? { formatter: (value: string) => tidy(Number(value)) }
+          : {}),
+      },
       axisBorder: { show: false },
       axisTicks: { show: false },
+      ...(horizontal ? bounds : {}),
     },
-    yaxis: { labels: axisLabel(dark) },
+    yaxis: {
+      labels: {
+        ...axisLabel(dark),
+        // Vertical: the values are here instead.
+        ...(horizontal ? {} : { formatter: (value: number) => tidy(value) }),
+      },
+      ...(horizontal ? {} : bounds),
+    },
     tooltip: {
       ...tooltipStyle(dark),
       y: {

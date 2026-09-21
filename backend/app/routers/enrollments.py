@@ -112,10 +112,88 @@ async def set_my_module_progress(
             status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
         ) from None
 
+    # THE BUTTON IS A CLAIM, NOT A DECISION. It used to write COMPLETED
+    # straight through, which is how a course reached 100% with every quiz
+    # untouched — issues 24, 27 and 28, and the mechanism behind the
+    # certificate-without-studying hole in 13 and 14.
+    #
+    # Only completing is checked. Re-opening a module is always allowed: a
+    # student saying "I need to go over this again" is never something to argue
+    # with.
+    if payload.status is ProgressStatus.COMPLETED:
+        requirements = await enrollment_service.module_requirements(
+            session, user.id, module.id, lesson_done=True
+        )
+        if not requirements.met:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(
+                    enrollment_service.RequirementsNotMetError(requirements)
+                ),
+            )
+
     progress = await enrollment_service.set_module_status(
         session, user.id, module.id, payload.status
     )
     return ModuleProgressOut(module_id=progress.module_id, status=progress.status.value)
+
+
+class ModuleRequirementsOut(BaseModel):
+    """What is left before this module counts as done.
+
+    A student who presses "mark complete" and is refused needs to see WHY
+    before pressing it, not after. One request for the module on screen rather
+    than a field on every module in the course listing — the course page does
+    not need this, and an N+1 across twelve modules to render one badge is a
+    poor trade.
+    """
+
+    needs_quiz: bool
+    quiz_passed: bool
+    best_quiz_score: float | None
+    needs_assignment: bool
+    assignment_submitted: bool
+    #: Whether everything except the lesson itself is done, so the screen can
+    #: offer "mark complete" rather than dangling a button that will be refused.
+    ready_to_complete: bool
+    outstanding: list[str]
+
+
+@router.get(
+    "/modules/{module_id}/requirements", response_model=ModuleRequirementsOut
+)
+async def my_module_requirements(
+    module_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> ModuleRequirementsOut:
+    """The quiz and assignment standing for one module."""
+    try:
+        module = await course_service.get_module(session, module_id)
+    except course_service.ModuleNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+
+    try:
+        await access.require_module_in_tenant(session, user, module_id)
+    except access.CourseOutsideTenantError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+
+    # `lesson_done=True` here on purpose: this answers "what ELSE is left", and
+    # the lesson is the one part the student can see for themselves.
+    requirements = await enrollment_service.module_requirements(
+        session, user.id, module.id, lesson_done=True
+    )
+    return ModuleRequirementsOut(
+        needs_quiz=requirements.needs_quiz,
+        quiz_passed=requirements.quiz_passed,
+        best_quiz_score=requirements.best_quiz_score,
+        needs_assignment=requirements.needs_assignment,
+        assignment_submitted=requirements.assignment_submitted,
+        ready_to_complete=requirements.met,
+        outstanding=requirements.outstanding,
+    )
 
 
 @router.post("/courses/{course_id}/enroll", status_code=status.HTTP_201_CREATED)

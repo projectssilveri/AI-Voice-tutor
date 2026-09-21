@@ -17,9 +17,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.core import passwords
 from app.core.users import password_helper
@@ -28,6 +28,7 @@ from app.models.assignment import Assignment, AssignmentSubmission
 from app.models.audit import AuditAction, AuditEvent
 from app.models.certification import CertAttempt, CertExam, Certificate
 from app.models.course import Course, Module
+from app.models.deletion import DeletionTarget
 from app.models.enrollment import Enrollment, ModuleProgress, ProgressStatus
 from app.models.order import Order, OrderStatus
 from app.models.organization import Branch, Department, Organization
@@ -41,43 +42,215 @@ from app.models.subscription import (
 )
 from app.models.user import User, UserRole
 from app.models.voice import VoiceSession
-from app.services import accounts, audit, certification
+from app.services import (
+    accounts,
+    audit,
+    certification,
+    concurrency,
+    conflicts,
+    deletions,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 # WHO MAY HAND OUT WHICH ROLE.
 #
-# The same rank rule the organization portal uses: nobody assigns a role above
-# their own. "Tutor" is deliberately absent — it was in the dropdown, nothing on
-# the platform distinguishes a teacher from an admin today, and an option that
-# changes nothing visible is worse than no option.
+# Was a rank comparison: anything at or below your own. That is how a platform
+# admin could mint another platform admin, and then a super admin, and it is
+# the escalation issue 1 reports. Rank still exists — the demotion floor uses
+# it — but it is no longer the authority on who may create whom.
+#
+# An explicit table instead, because the rule is not actually "below me". A
+# platform admin may create an ORGANISATION admin, which is not below them at
+# all; it is beside them, on the customer's ladder. A rank number cannot say
+# that and a table can.
+#
+# "Tutor" is absent because the role no longer exists — retired in migration
+# 0025, its one account moved to Student.
 ROLE_RANK = {
     UserRole.STUDENT: 0,
-    UserRole.TEACHER: 1,
     UserRole.ADMIN: 2,
     UserRole.SUPER_ADMIN: 3,
 }
-PLATFORM_ASSIGNABLE = (UserRole.STUDENT, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+
+MAY_CREATE: dict[UserRole, frozenset[UserRole]] = {
+    UserRole.SUPER_ADMIN: frozenset(
+        {
+            UserRole.STUDENT,
+            UserRole.ADMIN,
+            UserRole.SUPER_ADMIN,
+            UserRole.ORG_ADMIN,
+        }
+    ),
+    # A platform admin runs the public side and appoints a customer's first
+    # administrator. They do not staff the platform — that is the super admin's
+    # to decide, and it is the whole point of the split.
+    UserRole.ADMIN: frozenset({UserRole.STUDENT, UserRole.ORG_ADMIN}),
+}
+
+#: Every role this console can create, for the "not from here" message. The
+#: per-actor sets above are what actually decide.
+PLATFORM_ASSIGNABLE = tuple(
+    sorted({role for roles in MAY_CREATE.values() for role in roles}, key=lambda r: r.value)
+)
+
+#: The staff ladder a platform admin may not look at. Their own row is always
+#: visible; a peer's and the super admin's are not.
+STAFF_ABOVE_PLATFORM_ADMIN = frozenset({UserRole.ADMIN, UserRole.SUPER_ADMIN})
 
 
 def _may_assign(actor: User, role: UserRole) -> None:
+    allowed = MAY_CREATE.get(actor.role, frozenset())
     if role not in PLATFORM_ASSIGNABLE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="That role cannot be assigned from here.",
         )
-    if ROLE_RANK.get(role, 99) > ROLE_RANK.get(actor.role, -1):
+    if role not in allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You cannot give someone a role above your own.",
+            detail="You cannot create an account with that role.",
         )
 
 
+def can_see(actor: User, target: User) -> bool:
+    """Whether `actor` may see `target` exists at all.
+
+    THE LADDER IS super admin > platform admin > organisation admin, and sight
+    runs DOWN it. A platform admin sees every customer's people in full —
+    administrators, branch and department managers, learners — because they are
+    above the organisation admin and support work is impossible from a directory
+    of four names.
+
+    THE ONE THING THEY DO NOT SEE IS THE LADDER ABOVE THEM: other platform
+    admins and super admins are not in their list, wherever those accounts sit.
+    Their own row always is.
+
+    THE LISTING AND THE PER-USER ROUTES MUST AGREE, or a row appears in the
+    table and 404s when clicked. The predicate lives here once and
+    `visible_filter` below is its SQL twin — change one and the tests that
+    compare them will say so.
+
+    SEEING IS NOT TOUCHING. `can_manage` is the other half, and it is much
+    narrower: full sight of a customer plus no ability to change them is
+    exactly the shape decision 170 asked for.
+    """
+    if actor.role is UserRole.SUPER_ADMIN:
+        return True
+    if target.id == actor.id:
+        return True
+    # Hidden wherever they sit, which is on the public side in practice — a
+    # platform account cannot be stamped with an organisation any more, and
+    # `create_platform_user` refuses to make one.
+    return target.role not in STAFF_ABOVE_PLATFORM_ADMIN
+
+
+def visible_filter(actor: User) -> list:
+    """`can_see` as SQL, for the listing. Keep the two in step."""
+    if actor.role is UserRole.SUPER_ADMIN:
+        return []
+    return [
+        or_(
+            User.id == actor.id,
+            User.role.notin_(tuple(STAFF_ABOVE_PLATFORM_ADMIN)),
+        )
+    ]
+
+
+def can_manage(actor: User, target: User) -> bool:
+    """Whether `actor` may CHANGE `target`, as opposed to merely see them.
+
+    ANYBODY INSIDE AN ORGANISATION IS OFF LIMITS, not just its administrators.
+    A platform admin now sees a customer's whole roster; being able to edit,
+    rename or switch off any of those people from a screen that also lists our
+    own B2C learners is precisely the mix that ended with a customer's course
+    renamed and then deleted (decision 170). Sight solved the support problem.
+    A write button would bring the original problem back with a wider blast
+    radius than it had before.
+
+    So: public accounts are ours, everyone else's people are theirs. The
+    company's own admins manage their roster at /org/{slug}/members, and
+    anything that needs destroying goes through `services/deletions.py`, where
+    the customer's own administrator says yes or no.
+    """
+    if not can_see(actor, target):
+        return False
+    if actor.role is UserRole.SUPER_ADMIN:
+        return True
+    return target.organization_id is None
+
+
 def _visible(actor: User, target: User) -> None:
-    """An ordinary admin does not reach into a customer's organization."""
-    if actor.role is not UserRole.SUPER_ADMIN and target.organization_id is not None:
+    """404 unless this person may be SEEN. The guard on every read route.
+
+    Existed, was deleted in the previous change when the reads all moved to
+    `_manageable`, and is back because the reads moved again: a platform admin
+    reads a customer's people in full now. The pair is the point — one door for
+    looking, a narrower one for changing — and collapsing them in either
+    direction is what produced both bugs.
+    """
+    if not can_see(actor, target):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
+        )
+
+
+def _manageable(actor: User, target: User) -> None:
+    """404 unless this person may be changed.
+
+    404 rather than 403, matching `_visible`: a platform admin can see that an
+    organisation admin exists, and telling them "you are not allowed" on every
+    action would be a worse experience than the buttons simply not being there
+    — which is what the console does. This is the server saying the same thing
+    to anyone who goes round it.
+    """
+    if not can_manage(actor, target):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
+        )
+
+
+async def assert_super_admin_floor(session, target: User) -> None:
+    """Refuse to take the last active super admin off the platform.
+
+    The old rule was blunter: NO super admin could be demoted by anyone, ever.
+    That prevented the lockout, but it made role management self-contradictory —
+    a super admin could hand the top role to somebody and then had no way to
+    take it back, which is what issues 2, 4 and 6 report.
+
+    The thing actually worth protecting is not "super admins are permanent", it
+    is "the platform always has somebody who can promote people". So count them
+    instead. This is the same shape as
+    `organizations.assert_admin_floor_after_change`, which has protected
+    customers from the identical lockout since organizations existed.
+
+    409, not 403: the caller has the right to do this in principle, the
+    platform's current state is what forbids it.
+
+    LOCKED, NOT MERELY COUNTED. Reading the count and then writing leaves a gap:
+    two requests demoting two different super admins each see one remaining, and
+    between them leave none. Every super admin row is locked here — including
+    the target's, so both requests contend on the same set rather than on
+    disjoint halves of it — and ordered by id so they queue instead of
+    deadlocking.
+    """
+    if target.role is not UserRole.SUPER_ADMIN:
+        return
+
+    held = await concurrency.lock_and_list(
+        session,
+        select(User.id)
+        .where(User.role == UserRole.SUPER_ADMIN, User.is_active.is_(True))
+        .order_by(User.id),
+    )
+    remaining = len([row for row in held if row != target.id])
+    if not remaining:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "That is the last super admin. Promote somebody else first, or "
+                "there would be nobody left able to promote anyone."
+            ),
         )
 
 
@@ -121,6 +294,13 @@ class PlatformUserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     role: UserRole = UserRole.STUDENT
     phone: str | None = Field(default=None, max_length=40)
+    #: REQUIRED FOR AN ORGANISATION ADMIN, refused for anybody else.
+    #:
+    #: An org admin with no organisation administers nothing: they sign in,
+    #: `require_org_scope` finds no tenant for them, and every screen in the
+    #: portal answers 404. The account looks fine in the console and is useless
+    #: to the person holding it, which is the worst shape a bug can take.
+    organization_id: uuid.UUID | None = None
     #: Courses to enrol them in immediately, so "create a user and give them
     #: the induction course" is one action rather than three screens.
     course_ids: list[uuid.UUID] = Field(default_factory=list)
@@ -136,7 +316,7 @@ class PlatformUserUpdate(BaseModel):
     no way to put it right short of the database. The route validates it, keeps
     it unique, and writes the old and new values into the audit trail.
 
-    IS_ACTIVE IS GONE, and moved behind the platform owner. Suspending an
+    IS_ACTIVE IS GONE, and moved behind the super admin. Suspending an
     account is not an editing decision; an admin asks for it with a reason
     (`POST /admin/users/{id}/suspension-request`) and the owner decides. Absent
     from this schema, so the route drops the field even if it is in the body.
@@ -175,6 +355,32 @@ async def create_platform_user(
     """
     _may_assign(admin, payload.role)
 
+    # The organisation, checked before the account exists rather than after.
+    organization_id = None
+    if payload.role is UserRole.ORG_ADMIN:
+        if payload.organization_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Name the organisation this administrator belongs to.",
+            )
+        from app.models.organization import Organization
+
+        organization = await session.get(Organization, payload.organization_id)
+        if organization is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="That organisation does not exist.",
+            )
+        organization_id = organization.id
+    elif payload.organization_id is not None:
+        # Silently ignoring it would create a platform account quietly stamped
+        # with a customer's id — which is the exact shape that let a tenant
+        # reach a platform account through its own member list.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only an organisation administrator belongs to an organisation.",
+        )
+
     email = payload.email.lower().strip()
     if await session.scalar(select(User).where(User.email == email)):
         raise HTTPException(
@@ -204,9 +410,21 @@ async def create_platform_user(
         # through — the same reasoning as the organization portal.
         is_verified=True,
         is_superuser=payload.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN),
+        organization_id=organization_id,
     )
-    session.add(user)
-    await session.flush()
+    # THE UNIQUE INDEX IS THE ONLY THING THAT CAN DECIDE THIS.
+    #
+    # There is a check for the address a few lines above, and it is worth
+    # keeping — it gives a clean message without a wasted round trip. What it
+    # cannot do is win a race: two admins creating the same person at the same
+    # moment both read "that email is free", both insert, and `ix_users_email`
+    # refuses the second. That was a 500 for whoever lost, on a form they had
+    # filled in correctly. Verified before this fix.
+    async with conflicts.as_conflict(
+        session, default="An account with that email already exists."
+    ):
+        session.add(user)
+        await session.flush()
 
     # Deduped, exactly as `set_enrollments` does two hundred lines below. Sending
     # the same id twice produced two identical rows, `uq_enrollments_user_course`
@@ -232,9 +450,15 @@ async def create_platform_user(
         metadata={
             "role": user.role.value,
             "courses": len(set(payload.course_ids)),
+            "organization": str(organization_id) if organization_id else None,
         },
     )
-    await session.commit()
+    # The enrolments added above carry their own unique index, so the commit
+    # needs the same floor as the insert did.
+    async with conflicts.as_conflict(
+        session, default="That account could not be created."
+    ):
+        await session.commit()
 
     return CreatedUser(
         id=user.id,
@@ -261,19 +485,28 @@ async def update_platform_user(
     changed here with both values recorded, and the console warns before saving.
 
     Not here: the role, which has its own endpoint behind a stricter gate, and
-    `is_active`, which now needs the platform owner's approval.
+    `is_active`, which now needs the super admin's approval.
     """
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
-    _visible(admin, user)
+    _manageable(admin, user)
 
-    if user.role is UserRole.SUPER_ADMIN and admin.role is not UserRole.SUPER_ADMIN:
+    # NOBODY EDITS ANOTHER SUPER ADMIN FROM HERE, not even a peer. This used to
+    # allow it, and `email` is editable on this route — so one super admin could
+    # move another's sign-in address onto one they control. That is account
+    # takeover wearing the clothes of a typo fix, and it is issue 5.
+    #
+    # Their own account is still theirs to edit, through /profile.
+    if user.role is UserRole.SUPER_ADMIN and user.id != admin.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only a super admin can edit a super admin.",
+            detail=(
+                "A super admin's account can only be edited by the person who "
+                "holds it, from their own profile."
+            ),
         )
 
     changed: dict[str, Any] = {}
@@ -327,14 +560,50 @@ async def update_platform_user(
     )
 
 
-@router.delete("/users/{user_id}", response_model=UserRemoval)
+class DeletionRequested(BaseModel):
+    """202: nothing was deleted, and here is what is waiting on whom."""
+
+    request_id: uuid.UUID
+    organization_id: uuid.UUID
+    organization_name: str
+    target_label: str
+    explanation: str
+
+
+@router.delete(
+    "/users/{user_id}",
+    response_model=UserRemoval | DeletionRequested,
+    responses={202: {"model": DeletionRequested}},
+)
 async def remove_platform_user(
-    user_id: uuid.UUID, session: DbSession, admin: RequireSuperAdmin
-) -> UserRemoval:
-    """Delete an account, or close it if it has history.
+    user_id: uuid.UUID,
+    session: DbSession,
+    admin: RequireSuperAdmin,
+    response: Response,
+    reason: str = Query(
+        default="",
+        max_length=2_000,
+        description="Required when the account belongs to an organisation.",
+    ),
+) -> UserRemoval | DeletionRequested:
+    """Delete a public account, or ASK to delete one belonging to a customer.
 
     Super admin only. Deciding who exists on the platform sits with revenue and
     role management, which decision 50 puts above an ordinary admin.
+
+    TWO DIFFERENT OPERATIONS BEHIND ONE VERB, decided by whether the account
+    belongs to an organisation:
+
+      * PUBLIC B2C — deleted, or closed if it has history, exactly as before.
+        No customer is involved, so there is nobody to ask.
+      * INSIDE AN ORGANISATION — 202 and a pending request. Platform staff can
+        see a customer's people in full now; removing one is the customer's
+        call, and their own administrator makes it. The account is untouched.
+
+    The verb stays DELETE rather than becoming a second endpoint because the
+    caller's intent is identical either way — "remove this person" — and a
+    console that has to know which kind of account it is holding before it can
+    pick a URL is a console that will eventually pick the wrong one.
     """
     user = await session.get(User, user_id)
     if user is None:
@@ -346,12 +615,59 @@ async def remove_platform_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="You cannot remove your own account.",
         )
-    if user.role is UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Another super admin cannot be removed from here.",
+
+    # THE CUSTOMER'S PEOPLE ARE THE CUSTOMER'S. Checked before the floors below
+    # because it is not a refusal — it is a different operation, and the floors
+    # that matter are recomputed at approval time instead.
+    if user.organization_id is not None:
+        organization = await session.get(Organization, user.organization_id)
+        if organization is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
+            )
+        try:
+            request = await deletions.request_deletion(
+                session,
+                organization=organization,
+                target_type=DeletionTarget.MEMBER,
+                target_id=user.id,
+                target_label=f"{user.name} ({user.email})",
+                actor=admin,
+                reason=reason,
+            )
+        except deletions.DeletionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+        await audit.record(
+            session,
+            action=AuditAction.DELETION_REQUESTED,
+            actor=admin,
+            organization_id=organization.id,
+            target_type="user",
+            target_id=user.id,
+            metadata={"reason": request.reason, "request": str(request.id)},
+        )
+        await session.commit()
+
+        response.status_code = status.HTTP_202_ACCEPTED
+        return DeletionRequested(
+            request_id=request.id,
+            organization_id=organization.id,
+            organization_name=organization.name,
+            target_label=request.target_label,
+            explanation=(
+                f"{user.name} has not been removed. "
+                f"{organization.name}'s administrators have been asked to "
+                "approve it, and it is waiting on them."
+            ),
         )
 
+    # Was a blanket refusal. Now the floor: the last super admin cannot go, and
+    # any other one can — the same rule demotion uses, so the two screens do not
+    # disagree about who is removable.
+    await assert_super_admin_floor(session, user)
     await _assert_org_floor_holds(session, user)
 
     removal = await accounts.remove_account(session, user)
@@ -369,6 +685,40 @@ async def remove_platform_user(
 
 class EnrollmentSet(BaseModel):
     course_ids: list[uuid.UUID]
+
+
+@router.get("/users/{user_id}/enrollments", response_model=list[uuid.UUID])
+async def get_enrollments(
+    user_id: uuid.UUID, session: DbSession, admin: RequireAdmin
+) -> list[uuid.UUID]:
+    """Which courses this person is enrolled in, as ids.
+
+    The PUT below is DECLARATIVE — it sets the whole list — so any screen
+    offering those checkboxes has to know what is already ticked before the
+    operator touches anything. There was no reader, so the console opened every
+    editor empty, and ticking one new course deleted every other enrolment the
+    student had. Reported as issues 69 and 70.
+
+    Ids only. The console already holds the titles from `/admin/courses`, and a
+    second copy here is a second thing to keep in step.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
+        )
+    # READ, so `_visible`. What a customer's member is enrolled in is part of
+    # the customer's data a platform admin may see; `set_enrollments` below is
+    # the write, and it keeps the narrower guard.
+    _visible(admin, user)
+
+    return sorted(
+        (
+            await session.scalars(
+                select(Enrollment.course_id).where(Enrollment.user_id == user_id)
+            )
+        ).all()
+    )
 
 
 @router.put("/users/{user_id}/enrollments", response_model=list[uuid.UUID])
@@ -393,7 +743,7 @@ async def set_enrollments(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
-    _visible(admin, user)
+    _manageable(admin, user)
 
     wanted = set(payload.course_ids)
     if wanted:
@@ -582,6 +932,9 @@ async def user_dossier(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
+    # READ. The whole record of one person — enrolments, progress, tutor use,
+    # orders. For a customer's member this is the screen support actually needs,
+    # and none of it changes anything.
     _visible(admin, user)
 
     organization = (
@@ -1069,7 +1422,7 @@ async def grant_extension(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
-    _visible(admin, user)
+    _manageable(admin, user)
 
     # Exactly one target, matching the CHECK constraint on the table. Caught
     # here so the caller gets a sentence rather than an IntegrityError.
@@ -1153,6 +1506,7 @@ async def list_extensions(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
+    # READ. `grant_extension` is the write and keeps `_manageable`.
     _visible(admin, user)
 
     granter = User.__table__.alias("granter")

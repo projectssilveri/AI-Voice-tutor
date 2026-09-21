@@ -6,7 +6,7 @@ import { useAuth } from "@/context/AuthContext";
 import { type CourseRow, submitCourseForReview } from "@/lib/authoring";
 
 /**
- * Where this course stands with the platform owner, and the one button that
+ * Where this course stands with the super admin, and the one button that
  * moves it.
  *
  * An ordinary admin writes courses and cannot publish them — that has always
@@ -60,24 +60,24 @@ export default function CourseReviewPanel({
       heading: "Draft",
       body: isSuperAdmin
         ? "Not on sale. You can publish it yourself from the price panel below, or send it through review like anyone else."
-        : "Only you can see this. When it is ready, send it to the platform owner for approval.",
+        : "Only you can see this. When it is ready, send it to the super admin for approval.",
     },
     pending: {
       tone: "border-warning-500 bg-warning-50 dark:bg-warning-500/10",
       heading: "Waiting for approval",
-      body: "Sent to the platform owner. They will either put it on sale or send it back with a note.",
+      body: "Sent to the super admin. They will either put it on sale or send it back with a note.",
     },
     approved: {
       tone: "border-success-500 bg-success-50 dark:bg-success-500/10",
       heading: course.is_published ? "Approved and live" : "Approved",
       body: course.is_published
         ? "On the public catalogue now."
-        : "Approved but not on sale. The platform owner switches it on.",
+        : "Approved but not on sale. The super admin switches it on.",
     },
     rejected: {
       tone: "border-error-500 bg-error-50 dark:bg-error-500/10",
       heading: "Sent back",
-      body: "The platform owner asked for changes. Make them, then submit it again.",
+      body: "The super admin asked for changes. Make them, then submit it again.",
     },
   }[status] ?? {
     tone: "border-gray-200 dark:border-gray-800",

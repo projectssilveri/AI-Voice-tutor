@@ -1,5 +1,4 @@
 # Voice Tutor LMS — backend dependencies
-# Installed into the local Python environment.
 #   pip install -r requirements.txt
 
 # --- Web framework ---
@@ -37,4 +36,3 @@ pypdf>=6.0                        # extracts text from uploaded course material
 
 # --- HTTP ---
 httpx>=0.28.0
-anthropic>=0.120.0   # Anthropic API, non-live text steps only.

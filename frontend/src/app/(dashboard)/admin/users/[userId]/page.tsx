@@ -5,11 +5,13 @@ import { useParams } from "next/navigation";
 import { Fragment, useCallback, useEffect, useState } from "react";
 
 import ExtendAccess from "@/components/admin/ExtendAccess";
+import { useAuth } from "@/context/AuthContext";
 import RequireAuth from "@/components/auth/RequireAuth";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { type UserDossier, getUserDossier } from "@/lib/admin";
-import { actionLabel } from "@/lib/audit";
+import { eventDetails, eventLabel } from "@/lib/audit";
+import { roleLabel } from "@/lib/roles";
 import { counted } from "@/lib/plural";
 
 /**
@@ -51,14 +53,30 @@ function stamp(iso: string | null): string {
   })}`;
 }
 
-function Yes({ value }: { value: boolean }) {
+/**
+ * A green or red pill that says what it means.
+ *
+ * It used to be called `Yes` and print the word "Yes", which is fine directly
+ * under a column headed "Passed" and useless anywhere else. It was also used
+ * bare in the header line, where it produced "Joined Aug 08, 2026 · Yes" and
+ * left the reader to guess the question.
+ */
+function Flag({
+  value,
+  yes,
+  no,
+}: {
+  value: boolean;
+  yes: string;
+  no: string;
+}) {
   return value ? (
     <span className="rounded-full bg-success-50 px-2.5 py-1 text-xs font-semibold text-success-700 dark:bg-success-500/15 dark:text-success-400">
-      Yes
+      {yes}
     </span>
   ) : (
     <span className="rounded-full bg-error-50 px-2.5 py-1 text-xs font-semibold text-error-700 dark:bg-error-500/15 dark:text-error-400">
-      No
+      {no}
     </span>
   );
 }
@@ -131,6 +149,7 @@ function Bar({ percent }: { percent: number }) {
 
 function Dossier() {
   const { userId } = useParams<{ userId: string }>();
+  const { user: me } = useAuth();
   const [data, setData] = useState<UserDossier | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -205,7 +224,7 @@ function Dossier() {
           ) : (
             <span>No phone number</span>
           )}
-          <span className="capitalize">{data.role.replace(/_/g, " ")}</span>
+          <span>{roleLabel(data.role)}</span>
           {data.organization_name ? (
             <span>
               {data.organization_name}
@@ -214,7 +233,7 @@ function Dossier() {
             </span>
           ) : null}
           <span>Joined {date(data.created_at)}</span>
-          <Yes value={data.is_active} />
+          <Flag value={data.is_active} yes="Active" no="Suspended" />
         </p>
       </header>
 
@@ -255,7 +274,7 @@ function Dossier() {
         ) : (
           <div className={PANEL}>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[60rem]">
+              <table className="table-wide w-full min-w-[60rem]">
                 <thead className={HEAD}>
                   <tr>
                     <th className="px-4 py-3">Course</th>
@@ -337,17 +356,30 @@ function Dossier() {
       </Section>
 
       {/* Directly under the course table, because the dates it changes are
-          the ones in the Expires column above. */}
-      <div className="mt-4">
-        <ExtendAccess
-          userId={data.id}
-          courses={data.courses.map((course) => ({
-            id: course.course_id,
-            title: course.course_title,
-          }))}
-          onGranted={() => void load()}
-        />
-      </div>
+          the ones in the Expires column above.
+
+          NOT FOR A CUSTOMER'S PEOPLE, unless a super admin is reading. A
+          platform admin can open this record in full and change nothing in it;
+          `grant_extension` is one of the writes the server refuses, so the
+          control would be a form that always ends in an error. A super admin
+          keeps it, because support genuinely does extend a customer's access. */}
+      {data.organization_name === null || me?.role === "super_admin" ? (
+        <div className="mt-4">
+          <ExtendAccess
+            userId={data.id}
+            courses={data.courses.map((course) => ({
+              id: course.course_id,
+              title: course.course_title,
+            }))}
+            onGranted={() => void load()}
+          />
+        </div>
+      ) : (
+        <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+          {data.organization_name} manages this person&rsquo;s access. Their own
+          administrators can change it from their portal.
+        </p>
+      )}
 
       {/* ---- quizzes ---- */}
       <Section
@@ -363,7 +395,7 @@ function Dossier() {
         ) : (
           <div className={PANEL}>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[48rem]">
+              <table className="table-wide w-full min-w-[48rem]">
                 <thead className={HEAD}>
                   <tr>
                     <th className="px-4 py-3">Module</th>
@@ -394,7 +426,7 @@ function Dossier() {
                         {quiz.questions}
                       </td>
                       <td className={CELL}>
-                        <Yes value={quiz.taken} />
+                        <Flag value={quiz.taken} yes="Taken" no="Not taken" />
                       </td>
                       <td
                         className={`${CELL} text-gray-600 dark:text-gray-400`}
@@ -436,7 +468,7 @@ function Dossier() {
         ) : (
           <div className={PANEL}>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[54rem]">
+              <table className="table-wide w-full min-w-[54rem]">
                 <thead className={HEAD}>
                   <tr>
                     <th className="px-4 py-3">Exam</th>
@@ -480,7 +512,11 @@ function Dossier() {
                             : `${exam.best_score}%`}
                         </td>
                         <td className={CELL}>
-                          <Yes value={exam.passed} />
+                          <Flag
+                            value={exam.passed}
+                            yes="Passed"
+                            no="Not passed"
+                          />
                         </td>
                         <td className={CELL}>
                           {exam.certificate_id ? (
@@ -517,7 +553,7 @@ function Dossier() {
                       {openExam === exam.exam_id ? (
                         <tr className="bg-gray-50 dark:bg-white/[0.02]">
                           <td colSpan={7} className="px-4 py-4">
-                            <table className="w-full">
+                            <table className="table-wide w-full">
                               <thead className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
                                 <tr>
                                   <th className="pb-2">Attempt</th>
@@ -536,7 +572,11 @@ function Dossier() {
                                       {attempt.score}%
                                     </td>
                                     <td className="py-1.5">
-                                      <Yes value={attempt.passed} />
+                                      <Flag
+                                        value={attempt.passed}
+                                        yes="Passed"
+                                        no="Failed"
+                                      />
                                     </td>
                                     <td className="py-1.5 text-sm text-gray-600 dark:text-gray-400">
                                       {stamp(attempt.taken_at)}
@@ -562,7 +602,7 @@ function Dossier() {
         <Section title="Assignments">
           <div className={PANEL}>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[42rem]">
+              <table className="table-wide w-full min-w-[42rem]">
                 <thead className={HEAD}>
                   <tr>
                     <th className="px-4 py-3">Assignment</th>
@@ -625,7 +665,7 @@ function Dossier() {
         ) : (
           <div className={PANEL}>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[42rem]">
+              <table className="table-wide w-full min-w-[42rem]">
                 <thead className={HEAD}>
                   <tr>
                     <th className="px-4 py-3">Started</th>
@@ -686,7 +726,7 @@ function Dossier() {
         ) : (
           <div className={PANEL}>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[48rem]">
+              <table className="table-wide w-full min-w-[48rem]">
                 <thead className={HEAD}>
                   <tr>
                     <th className="px-4 py-3">When</th>
@@ -706,19 +746,12 @@ function Dossier() {
                       <td
                         className={`${CELL} text-gray-800 dark:text-white/90`}
                       >
-                        {actionLabel(row.action)}
+                        {eventLabel(row.action, row.metadata)}
                       </td>
                       <td
                         className={`${CELL} text-xs text-gray-500 dark:text-gray-400`}
                       >
-                        {row.metadata && Object.keys(row.metadata).length > 0
-                          ? Object.entries(row.metadata)
-                              .map(
-                                ([key, value]) =>
-                                  `${key.replace(/_/g, " ")}: ${String(value)}`,
-                              )
-                              .join(" · ")
-                          : "Not recorded"}
+                        {eventDetails(row.metadata, row.action) ?? "Not recorded"}
                       </td>
                       <td
                         className={`${CELL} text-xs text-gray-500 dark:text-gray-400`}

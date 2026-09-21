@@ -8,10 +8,11 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.schemas import ORMModel
+from app.schemas.text import NonBlankName, OptionalNonBlankName
 
 
 class ModuleBase(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
+    title: NonBlankName
     order: int | None = Field(
         default=None,
         ge=0,
@@ -37,7 +38,7 @@ class ModuleCreate(ModuleBase):
 
 
 class ModuleUpdate(BaseModel):
-    title: str | None = Field(default=None, min_length=1, max_length=255)
+    title: OptionalNonBlankName
     order: int | None = Field(default=None, ge=0)
     content: str | None = None
 
@@ -80,7 +81,7 @@ class ModuleSummary(ORMModel):
 
 
 class CourseBase(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
+    title: NonBlankName
     description: str | None = None
 
 
@@ -98,7 +99,7 @@ class CourseUpdate(BaseModel):
     request body — the route would drop it.
     """
 
-    title: str | None = Field(default=None, min_length=1, max_length=255)
+    title: OptionalNonBlankName
     description: str | None = None
 
 
@@ -181,10 +182,16 @@ class CourseRead(ORMModel, CourseBase):
     # Populated by the list endpoint only; None when a single course is
     # returned, where the caller has the modules themselves.
     module_count: int | None = None
+    # WHETHER THE COURSE ENDS IN AN EXAM. Listing only, for the same reason as
+    # `module_count`: a single course is fetched with everything hanging off
+    # it, so the caller can already see. On the list it is not derivable from
+    # any other field, and without it the authoring screen could not say
+    # whether a course offered a certificate or nothing at all (issue 74).
+    has_certification: bool | None = None
 
     # --- Approval --------------------------------------------------------
     # draft | pending | approved | rejected. An ordinary admin writes and
-    # submits; only the platform owner decides.
+    # submits; only the super admin decides.
     review_status: str = "draft"
     submitted_at: datetime | None = None
     reviewed_at: datetime | None = None

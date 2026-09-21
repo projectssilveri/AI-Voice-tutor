@@ -47,6 +47,13 @@ _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # duplicate it. Matched by prefix against the path after the API version.
 _HAS_ITS_OWN_EVENT: tuple[str, ...] = (
     "/auth/logout",  # recorded with the actor resolved, in routers/auth.py
+    # Every route in routers/profile writes its own event, naming the thing
+    # that changed. The net wrote a second row for the same request, described
+    # from the method and the path — so "PUT /profile/photo" came out as
+    # "Replaced their own profile" and "DELETE /profile/photo" as "Deleted
+    # their own profile". Somebody swapping their picture appeared in the trail
+    # as somebody deleting their account, twice per click.
+    "/profile/",
 )
 
 # Login is special. A SUCCESSFUL login is recorded in core/users.py, where

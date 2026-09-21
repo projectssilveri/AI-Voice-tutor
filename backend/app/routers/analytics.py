@@ -386,41 +386,77 @@ async def platform_analytics(
         else (Course.organization_id.is_(None),)
     )
 
+    # AND THE PEOPLE, which was the half that leaked. Only the per-course charts
+    # below were ever scoped; every headline number on this page — students,
+    # enrolments, modules completed, certificates, attempts, tutor minutes —
+    # counted the whole database, customers' private training included. An
+    # ordinary admin saw a total they had no business seeing, sitting directly
+    # above a chart that had been carefully filtered. Reported as issues 42, 43
+    # and 44.
+    #
+    # `None` for a super admin, who genuinely does see across tenants for
+    # support. Everyone else counts public B2C accounts only — the same rule
+    # `admin.list_users` has always applied to the Users screen, so the two
+    # screens finally agree.
+    visible_people = (
+        None
+        if actor.role is UserRole.SUPER_ADMIN
+        else select(User.id).where(User.organization_id.is_(None)).scalar_subquery()
+    )
+
+    def mine(column):
+        """Constrain a user_id column to the people this admin may count."""
+        return () if visible_people is None else (column.in_(visible_people),)
+
     student_filter = User.role == UserRole.STUDENT
+    people_scope = (
+        () if visible_people is None else (User.organization_id.is_(None),)
+    )
 
     total_students = await session.scalar(
-        select(func.count()).select_from(User).where(student_filter)
+        select(func.count()).select_from(User).where(student_filter, *people_scope)
     ) or 0
 
     active_students = await session.scalar(
         select(func.count(func.distinct(VoiceSession.user_id))).where(
-            VoiceSession.started_at >= since
+            VoiceSession.started_at >= since, *mine(VoiceSession.user_id)
         )
     ) or 0
 
     used_tutor = await session.scalar(
-        select(func.count(func.distinct(VoiceSession.user_id)))
+        select(func.count(func.distinct(VoiceSession.user_id))).where(
+            *mine(VoiceSession.user_id)
+        )
     ) or 0
 
     total_enrolments = await session.scalar(
-        select(func.count()).select_from(Enrollment)
+        select(func.count())
+        .select_from(Enrollment)
+        .where(*mine(Enrollment.user_id))
     ) or 0
 
     modules_completed = await session.scalar(
         select(func.count())
         .select_from(ModuleProgress)
-        .where(ModuleProgress.status == ProgressStatus.COMPLETED)
+        .where(
+            ModuleProgress.status == ProgressStatus.COMPLETED,
+            *mine(ModuleProgress.user_id),
+        )
     ) or 0
 
     certificates_issued = await session.scalar(
-        select(func.count()).select_from(Certificate)
+        select(func.count())
+        .select_from(Certificate)
+        .where(*mine(Certificate.user_id))
     ) or 0
 
     attempts_total = await session.scalar(
-        select(func.count()).select_from(CertAttempt)
+        select(func.count()).select_from(CertAttempt).where(*mine(CertAttempt.user_id))
     ) or 0
     attempts_passed = await session.scalar(
-        select(func.count()).select_from(CertAttempt).where(CertAttempt.passed)
+        select(func.count())
+        .select_from(CertAttempt)
+        .where(CertAttempt.passed, *mine(CertAttempt.user_id))
     ) or 0
 
     voice_seconds = await session.scalar(
@@ -433,19 +469,20 @@ async def platform_analytics(
                 ),
                 0,
             )
-        ).where(VoiceSession.ended_at.is_not(None))
+        ).where(VoiceSession.ended_at.is_not(None), *mine(VoiceSession.user_id))
     ) or 0
 
     interruptions = await session.scalar(
         select(func.count())
         .select_from(Transcript)
-        .where(Transcript.is_interruption.is_(True))
+        .join(VoiceSession, VoiceSession.id == Transcript.session_id)
+        .where(Transcript.is_interruption.is_(True), *mine(VoiceSession.user_id))
     ) or 0
 
     signup_rows = (
         await session.execute(
             select(cast(User.created_at, Date), func.count())
-            .where(User.created_at >= since, student_filter)
+            .where(User.created_at >= since, student_filter, *people_scope)
             .group_by(cast(User.created_at, Date))
             .order_by(cast(User.created_at, Date))
         )
@@ -467,6 +504,7 @@ async def platform_analytics(
             .where(
                 VoiceSession.started_at >= since,
                 VoiceSession.ended_at.is_not(None),
+                *mine(VoiceSession.user_id),
             )
             .group_by(cast(VoiceSession.started_at, Date))
             .order_by(cast(VoiceSession.started_at, Date))
@@ -509,6 +547,16 @@ async def platform_analytics(
             )
         ).all()
     )
+    # THE NUMERATOR AND THE DENOMINATOR HAVE TO DESCRIBE THE SAME PEOPLE.
+    #
+    # This counted every completed module row on the course; `possible` below
+    # counts modules times CURRENTLY ENROLLED learners. Somebody who finished
+    # four modules and was then unenrolled stayed in the top half and vanished
+    # from the bottom — so the share went over 100%. Measured live at 125% on
+    # a course with four modules, one enrolled learner and five completed rows.
+    #
+    # The join to `enrollments` is what fixes it: progress only counts while
+    # the person it belongs to is still on the course.
     completed_counts = dict(
         (
             await session.execute(
@@ -516,6 +564,11 @@ async def platform_analytics(
                 .select_from(ModuleProgress)
                 .join(Module, Module.id == ModuleProgress.module_id)
                 .join(Course, Course.id == Module.course_id)
+                .join(
+                    Enrollment,
+                    (Enrollment.course_id == Course.id)
+                    & (Enrollment.user_id == ModuleProgress.user_id),
+                )
                 .where(
                     ModuleProgress.status == ProgressStatus.COMPLETED,
                     *course_scope,
@@ -528,9 +581,22 @@ async def platform_analytics(
     completion_rate = []
     for title, module_count in module_counts.items():
         possible = (module_count or 0) * learner_counts.get(title, 0)
+        # NOTHING TO REPORT, so nothing is reported. A course with no learners
+        # on it was being drawn as a 0% bar, which reads as "everybody is
+        # failing this one" when it means "nobody has started it". Nine of
+        # fifteen bars on this chart were that lie.
+        if not possible:
+            continue
         done = completed_counts.get(title, 0)
-        rate = (done / possible * 100) if possible else 0.0
+        # Clamped as well as fixed. The join above is what stops this going
+        # over 100; the clamp is here so that a future query which forgets the
+        # same thing produces a wrong number rather than an impossible one.
+        rate = min(done / possible * 100, 100.0)
         completion_rate.append(NamedValue(label=title, value=round(rate, 1)))
+
+    # Highest first. A ranked comparison the reader has to sort themselves is a
+    # table with the sorting taken away.
+    completion_rate.sort(key=lambda row: row.value, reverse=True)
 
     return PlatformAnalytics(
         total_students=total_students,
@@ -553,20 +619,32 @@ async def platform_analytics(
             DayPoint(day=day, value=round(float(seconds) / 60, 1))
             for day, seconds in minute_rows
         ],
+        # COURSES NOBODY IS ON ARE LEFT OUT, for the same reason as the
+        # completion chart above: a row of empty bars is not information, and
+        # with fifteen courses it was most of the chart. The count stays an
+        # integer on the way out — a whole number of people — so the axis can
+        # be told not to invent 0.2 of a person.
         enrolments_per_course=[
-            NamedValue(label=title, value=float(count))
+            NamedValue(label=title, value=float(int(count)))
             for title, count in enrolment_rows
+            if count
         ],
         completion_rate_per_course=completion_rate,
-        leaderboard=await _leaderboard(session),
+        leaderboard=await _leaderboard(session, visible_people=visible_people),
     )
 
 
-async def _leaderboard(session: DbSession, limit: int = 10) -> list[LeaderboardRow]:
+async def _leaderboard(
+    session: DbSession, limit: int = 10, *, visible_people=None
+) -> list[LeaderboardRow]:
     """Ranking students by what they have actually finished.
 
     Weighted towards completion rather than time spent: sitting in a session
     should not outrank finishing modules and passing an exam.
+
+    SCOPED, which it was not. This ranked every learner on the platform for
+    every admin, so an ordinary admin read the names of another customer's
+    staff off their own dashboard. Issue 43.
     """
     completed = (
         select(
@@ -615,7 +693,14 @@ async def _leaderboard(session: DbSession, limit: int = 10) -> list[LeaderboardR
             .outerjoin(completed, completed.c.user_id == User.id)
             .outerjoin(minutes, minutes.c.user_id == User.id)
             .outerjoin(certs, certs.c.user_id == User.id)
-            .where(User.role == UserRole.STUDENT)
+            .where(
+                User.role == UserRole.STUDENT,
+                *(
+                    ()
+                    if visible_people is None
+                    else (User.id.in_(visible_people),)
+                ),
+            )
             .order_by(
                 (
                     func.coalesce(completed.c.completed, 0) * 10
@@ -627,7 +712,7 @@ async def _leaderboard(session: DbSession, limit: int = 10) -> list[LeaderboardR
         )
     ).all()
 
-    return [
+    ranked = [
         LeaderboardRow(
             user_id=user_id,
             name=name,
@@ -641,6 +726,19 @@ async def _leaderboard(session: DbSession, limit: int = 10) -> list[LeaderboardR
         )
         for user_id, name, email, completed_count, seconds, cert_count in rows
     ]
+
+    # A RANKING OF NOTHING IS NOT A RANKING. When a row scores zero the place
+    # it is given is whatever the database happened to return, presented as
+    # though somebody were ahead — issue 31, where the tester saw learners
+    # ranked with 0 modules, 0 certificates, 0 minutes and 0 score.
+    #
+    # Dropped per row, not only when the whole table is zero. Six learners who
+    # have finished nothing, sitting at ranks three to eight under two who
+    # have, is the same complaint in miniature: they are not top learners, and
+    # the order among them means nothing. With them gone the list is the real
+    # ranking, and when nobody has done anything it is empty and the screen
+    # says so.
+    return [row for row in ranked if row.score > 0]
 
 
 # --- Revenue (super admin only) --------------------------------------------

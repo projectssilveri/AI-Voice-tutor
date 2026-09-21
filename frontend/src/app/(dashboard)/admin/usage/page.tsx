@@ -10,7 +10,6 @@ import {
   listActivity,
 } from "@/lib/admin";
 import { counted } from "@/lib/plural";
-import ProgressBar from "@/components/ui/ProgressBar";
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null) return "open";
@@ -51,9 +50,10 @@ function UsageAndActivity() {
     };
   }, []);
 
+  // The busiest module BY TIME, which is what the bars are scaled to now.
   const topPeak = Math.max(
     1,
-    ...(usage?.top_modules.map((row) => row.sessions) ?? [1]),
+    ...(usage?.top_modules.map((row) => row.seconds) ?? [1]),
   );
 
   return (
@@ -74,9 +74,12 @@ function UsageAndActivity() {
       ) : null}
 
       <div className="rounded-2xl border border-gray-200 bg-white shadow-raised p-6 dark:border-gray-800 dark:bg-white/[0.03]">
-        <h2 className="mb-4 text-base font-semibold text-gray-800 dark:text-white/90">
+        <h2 className="mb-1 text-base font-semibold text-gray-800 dark:text-white/90">
           Most-used modules
         </h2>
+        <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+          Time spent with the tutor, longest first.
+        </p>
         {loading ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
         ) : !usage || usage.top_modules.length === 0 ? (
@@ -92,13 +95,41 @@ function UsageAndActivity() {
                     {row.module_title}
                   </span>
                   <span className="text-gray-500 dark:text-gray-400">
-                    {counted(row.sessions, "session")} · {row.minutes} min
+                    {/* "0 min" on a lesson that actually happened reads as a
+                        bug. Under a minute is said in words. */}
+                    {row.seconds > 0 && row.minutes === 0
+                      ? "under a minute"
+                      : `${row.minutes} min`}{" "}
+                    · {counted(row.sessions, "session")}
                   </span>
                 </div>
-                <ProgressBar
-                  value={(row.sessions / topPeak) * 100}
-                  label={`${row.sessions} sessions`}
-                />
+                {/* A BAR, NOT A PROGRESS METER.
+                    This was a `ProgressBar` filled to `sessions / topPeak`,
+                    which is a ranking drawn in the one component that means
+                    "progress towards completion". The busiest module showed a
+                    full bar — reading as finished, or as a quota met, when it
+                    only meant "more than the others". Nothing here is
+                    progressing towards anything.
+
+                    Same geometry, honest meaning: width is share of the
+                    busiest module, and the number beside it is the real
+                    count. */}
+                {/* LENGTH IS TIME, not session count. Every module tends to
+                    have exactly one session, so a bar scaled to sessions made
+                    four modules look identical while one of them had eight
+                    minutes of lecture and another had none. */}
+                <div
+                  className="h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800"
+                  role="img"
+                  aria-label={`${row.module_title}: ${row.minutes} minutes across ${row.sessions} sessions`}
+                >
+                  <div
+                    className="h-full rounded-full bg-brand-500"
+                    style={{
+                      width: `${topPeak > 0 ? Math.min((row.seconds / topPeak) * 100, 100) : 0}%`,
+                    }}
+                  />
+                </div>
               </li>
             ))}
           </ul>
@@ -115,7 +146,7 @@ function UsageAndActivity() {
           </p>
         </div>
         <div className="max-w-full overflow-x-auto custom-scrollbar">
-          <table className="min-w-full text-sm">
+          <table className="table-wide min-w-full text-sm">
             <thead className="border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-white/[0.02]">
               <tr>
                 {[
@@ -125,7 +156,12 @@ function UsageAndActivity() {
                   "Duration",
                   "Turns",
                   "Interruptions",
-                  "Model",
+                  // "Model" was here. Which Gemini build served a lesson tells
+                  // an admin nothing they can act on, and it is an internal
+                  // detail of how we buy the tutor. Issue 53. The API still
+                  // returns it — `model_name` is on the row so a transcript
+                  // keeps the context of what produced it — this screen just
+                  // stops showing it.
                 ].map((heading) => (
                   <th
                     key={heading}
@@ -185,9 +221,6 @@ function UsageAndActivity() {
                       <span className="font-medium text-gray-800 dark:text-white/90">
                         {row.interruptions}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">
-                      {row.model_name}
                     </td>
                   </tr>
                 ))

@@ -3,15 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import AddToCartButton from "@/components/cart/AddToCartButton";
 import BuyCourseButton from "@/components/dashboard/BuyCourseButton";
 import { useAuth } from "@/context/AuthContext";
 import { accessLabel } from "@/lib/catalogue";
+import { formatMoney as money } from "@/lib/money";
 import { type Entitlements, getEntitlements } from "@/lib/payments";
-
-function money(minor: number, currency: string): string {
-  const symbol = currency === "INR" ? "₹" : `${currency} `;
-  return `${symbol}${(minor / 100).toLocaleString("en-IN")}`;
-}
 
 const PRIMARY =
   "inline-flex items-center justify-center rounded-lg bg-[var(--mk-brand)] px-8 py-4 text-base font-semibold text-white transition-[background-color,box-shadow,transform] duration-200 ease-[var(--ease-out-soft)] hover:bg-[var(--mk-brand)]/90 active:scale-[0.98] motion-reduce:active:scale-100";
@@ -170,9 +167,26 @@ export default function CoursePurchase({
           </Link>
         )}
 
-        <Link href="/courses" className={SECONDARY}>
-          All courses
-        </Link>
+        {/* ADD TO CART SITS BESIDE BUY, NOT INSTEAD OF IT. Somebody who
+            wants this one course and nothing else should not have to go
+            through a basket to get it; somebody collecting three should not
+            have to buy them one at a time. Both, which is what Udemy and
+            Coursera put here.
+
+            It works signed out — the id waits in the browser and moves to the
+            account at sign-in — so a visitor is not sent to a sign-up form
+            before they have finished deciding. */}
+        {checked && !authLoading && !free && !owned ? (
+          <AddToCartButton
+            courseId={courseId}
+            variant="outline"
+            className="sm:w-auto"
+          />
+        ) : (
+          <Link href="/courses" className={SECONDARY}>
+            All courses
+          </Link>
+        )}
       </div>
 
       {!free && !owned ? (
@@ -181,7 +195,14 @@ export default function CoursePurchase({
           <Link href="/pricing" className="text-[var(--mk-brand-lit)] hover:underline">
             subscription
           </Link>
-          . Razorpay handles the payment, so we never see your card details.
+          . Razorpay handles the payment, so we never see your card details.{" "}
+          {/* The catalogue link moved down here when Add to cart took its
+              place in the button row. Three buttons of equal weight make the
+              reader pick between them; a link in a sentence does not. */}
+          <Link href="/courses" className="text-[var(--mk-brand-lit)] hover:underline">
+            Browse all courses
+          </Link>
+          .
         </p>
       ) : null}
     </div>

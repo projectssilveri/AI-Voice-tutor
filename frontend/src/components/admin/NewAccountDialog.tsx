@@ -139,10 +139,52 @@ export default function NewAccountDialog({
  * which is not a source anybody should take a credential from. The alphabet
  * omits the characters people misread when a password is read down a phone:
  * no 0/O, no 1/l/I.
+ *
+ * IT MUST SATISFY THE SERVER, and it did not. `backend/app/core/passwords.py`
+ * requires a digit and a special character; this generator produced letters and
+ * digits only, so the password it pre-filled was refused every single time and
+ * "Create user" answered "Add at least one special character" on a field the
+ * admin had not typed. Creating an account from this console could not be done
+ * without first noticing that and editing the password by hand.
+ *
+ * So the classes are not left to chance. Sixteen random characters from a
+ * mixed alphabet will almost always contain a digit and a symbol, and "almost
+ * always" is the wrong guarantee for a form that refuses the remainder: one of
+ * each is placed deliberately, then the result is shuffled so their positions
+ * carry no information.
  */
+
+/** No 0/O and no 1/l/I: this gets read down a phone. */
+const LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
+const DIGITS = "23456789";
+//: Deliberately small and deliberately boring. Every one of these survives a
+//: shell, a spreadsheet and a chat window unescaped, and is unambiguous when
+//: spoken aloud.
+const SYMBOLS = "!@#$%*?-+=";
+
+/** A uniform pick, rejecting the biased tail rather than taking `% n`. */
+function pick(alphabet: string): string {
+  const limit = Math.floor(0x100000000 / alphabet.length) * alphabet.length;
+  const one = new Uint32Array(1);
+  let n = 0;
+  do {
+    crypto.getRandomValues(one);
+    n = one[0];
+  } while (n >= limit);
+  return alphabet[n % alphabet.length];
+}
+
 export function generatePassword(length = 16): string {
-  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
-  const bytes = new Uint32Array(length);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (n) => alphabet[n % alphabet.length]).join("");
+  const all = LETTERS + DIGITS + SYMBOLS;
+  const chars = [pick(DIGITS), pick(SYMBOLS)];
+  while (chars.length < length) chars.push(pick(all));
+
+  // Fisher-Yates, so the guaranteed digit and symbol are not always first.
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const one = new Uint32Array(1);
+    crypto.getRandomValues(one);
+    const j = one[0] % (i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
 }

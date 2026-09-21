@@ -46,6 +46,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.models.course import CourseReviewStatus
 from app.services import extensions
 from scripts.catalogue import CATALOGUE, CourseSpec
 
@@ -279,6 +280,18 @@ async def upsert_course(session, spec: CourseSpec) -> Course:
             access_days=access_days,
             currency="INR",
             is_published=spec.is_published,
+            # PUBLISHED MEANS APPROVED, matching what migration 0019 did to
+            # every course that already existed when review was introduced
+            # ("UPDATE courses SET review_status = 'approved' WHERE
+            # is_published = true"). Without this the seed manufactured the one
+            # state the workflow says cannot exist: a course on sale that
+            # review has never seen. Submitting one then left it PENDING and
+            # still published, which is what issue 37 reported.
+            review_status=(
+                CourseReviewStatus.APPROVED
+                if spec.is_published
+                else CourseReviewStatus.DRAFT
+            ),
         )
         session.add(course)
         await session.flush()
@@ -292,6 +305,10 @@ async def upsert_course(session, spec: CourseSpec) -> Course:
         course.list_price_minor = spec.list_price_minor
         course.access_days = access_days
         course.is_published = spec.is_published
+        # Same rule on a re-seed, or a course published here on the second run
+        # drifts back into the contradictory state.
+        if spec.is_published and course.review_status is CourseReviewStatus.DRAFT:
+            course.review_status = CourseReviewStatus.APPROVED
         print(f"\n  = {spec.title} ({spec.price_label})")
 
     for order, module_spec in enumerate(spec.modules):
@@ -454,17 +471,22 @@ async def main() -> None:
 
     async with SessionLocal() as session:
         print("accounts")
+        # NAMED AFTER THE ROLE, because these names are what a tester reads
+        # in a message picker or a training report. "Platform Owner" sat beside
+        # "Platform Admin" in those lists and read as a rank above it — a tier
+        # this product decided it does not have. The ladder is super admin,
+        # platform admin, organisation admin, and nothing above it.
         await upsert_user(
             session,
             email=SUPER_ADMIN_EMAIL,
-            name="Platform Owner",
+            name="Super Admin",
             password=SUPER_ADMIN_PASSWORD,
             role=UserRole.SUPER_ADMIN,
         )
         await upsert_user(
             session,
             email=ADMIN_EMAIL,
-            name="Seed Admin",
+            name="Platform Admin",
             password=ADMIN_PASSWORD,
             role=UserRole.ADMIN,
         )

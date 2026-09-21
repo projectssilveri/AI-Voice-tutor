@@ -83,7 +83,11 @@ def require_role(*allowed: UserRole):
 
 # Convenience aliases for the gates used most.
 RequireAdmin = Annotated[User, Depends(require_role(UserRole.ADMIN))]
-RequireStaff = Annotated[User, Depends(require_role(UserRole.ADMIN, UserRole.TEACHER))]
+# TEACHER used to be the other half of "staff". With it retired this is the
+# same set as RequireAdmin, and is kept as a separate name because the routes
+# that use it mean "may author content" rather than "may administer people" —
+# a distinction worth keeping a word for when the two diverge again.
+RequireStaff = Annotated[User, Depends(require_role(UserRole.ADMIN))]
 
 # Money and role management. Deliberately NOT widened by the rule above: this
 # is the one gate an ordinary admin must not pass.
@@ -296,6 +300,14 @@ def require_org_scope(
             # Support access into a customer's tenant. Recorded on every
             # request rather than only on writes: reading a customer's people
             # and their training is the thing they would want to know about.
+            #
+            # ADDRESS, DEVICE AND AGENT, which this call left out for as long
+            # as it existed. The middleware collects all three on every other
+            # event; a hand-written record stores only what it is handed, so
+            # every row about an outsider reading a customer's data showed
+            # "Not recorded" where the address goes. That is the first thing
+            # the customer would want to know and it was the one field
+            # missing.
             await audit.record_safely(
                 session,
                 action=AuditAction.PLATFORM_ACCESSED_ORG,
@@ -303,6 +315,9 @@ def require_org_scope(
                 organization_id=organization.id,
                 target_type="organization",
                 target_id=organization.id,
+                ip_address=audit.client_ip(request.headers, request.client),
+                device_id=audit.device_id(request.headers, request.cookies),
+                user_agent=request.headers.get("user-agent"),
                 metadata={"path": request.url.path, "method": request.method},
             )
             await session.commit()

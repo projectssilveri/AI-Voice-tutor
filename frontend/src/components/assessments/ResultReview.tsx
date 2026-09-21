@@ -3,10 +3,15 @@
 import type { QuizAnswerResult } from "@/lib/assessments";
 
 /**
- * Per-question review after grading.
+ * Per-question review after grading. PRACTICE QUIZZES ONLY.
  *
- * The answer key appears only here, once the attempt is already recorded — so
- * showing it cannot be used to improve the attempt it belongs to.
+ * It shows what the right answer was, which is the point: the attempt is
+ * already recorded, retakes are unlimited, and a quiz you cannot learn from
+ * only measures.
+ *
+ * The certification exam has no screen like this and no data to build one
+ * from. Its result is a score, a standing and whether a certificate was
+ * issued; the paper comes back without answers on it.
  */
 export default function ResultReview({
   results,

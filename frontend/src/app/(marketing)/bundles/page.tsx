@@ -5,6 +5,7 @@ import BundleCard from "@/components/marketing/Bundles/BundleCard";
 import Breadcrumb from "@/components/marketing/common/Breadcrumb";
 import OrgRedirectNotice from "@/components/org/OrgRedirectNotice";
 import { type PublicPlan, listPublicPlans, splitPlans } from "@/lib/catalogue";
+import { formatMoney } from "@/lib/money";
 
 export const metadata: Metadata = {
   title: "Full-stack bundles",
@@ -59,8 +60,6 @@ export default async function BundlesPage() {
   const atWidest = bundles.filter((plan) => plan.course_count === widest);
   const featured = atWidest.length === 1 ? atWidest[0] : null;
 
-  const symbol = currency === "INR" ? "₹" : `${currency} `;
-
   return (
     <>
       <Breadcrumb
@@ -85,7 +84,7 @@ export default async function BundlesPage() {
           {failed || bundles.length === 0 ? (
             <p className="text-center text-base text-[var(--mk-muted)]">
               {failed
-                ? "Bundles are unavailable right now. Please try again shortly."
+                ? "We could not load the bundles. That is our end, not yours. Reload in a moment."
                 : "Bundles are on the way."}
             </p>
           ) : (
@@ -106,7 +105,7 @@ export default async function BundlesPage() {
             </h3>
             <p className="mb-6 text-base text-[var(--mk-muted)]">
               {allAccessFrom !== null
-                ? `All Access opens every course on the platform, including ones added later, from ${symbol}${(allAccessFrom / 100).toLocaleString("en-IN")} a month.`
+                ? `All Access opens every course on the platform, including ones added later, from ${formatMoney(allAccessFrom, currency)} a month.`
                 : "All Access opens every course on the platform, including ones added later."}
             </p>
             <Link

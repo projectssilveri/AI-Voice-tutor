@@ -25,6 +25,19 @@ interface AuthContextValue {
   loading: boolean;
   refresh: () => Promise<AuthUser | null>;
   signOut: () => Promise<void>;
+  /**
+   * Bumped whenever the signed-in person changes their own photo.
+   *
+   * The photo endpoint sets `max-age=300`, which is right for a table of fifty
+   * faces and wrong for the one you just replaced. Every avatar that draws THIS
+   * person passes this as its cache key, so a change lands in the header, on
+   * the account card and in the upload box at the same moment. It used to be a
+   * counter inside the upload box alone, so removing a photo cleared it there
+   * and left it in the header for the next five minutes.
+   */
+  photoVersion: number;
+  /** Call after an upload or a removal. */
+  photoChanged: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -32,6 +45,9 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [photoVersion, setPhotoVersion] = useState(0);
+
+  const photoChanged = useCallback(() => setPhotoVersion((n) => n + 1), []);
 
   const refresh = useCallback(async () => {
     const next = await fetchSession();
@@ -65,8 +81,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const value = useMemo(
-    () => ({ user, loading, refresh, signOut }),
-    [user, loading, refresh, signOut],
+    () => ({ user, loading, refresh, signOut, photoVersion, photoChanged }),
+    [user, loading, refresh, signOut, photoVersion, photoChanged],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

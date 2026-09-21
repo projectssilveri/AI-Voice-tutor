@@ -1,4 +1,4 @@
-"""Bundles and packages, for the platform owner.
+"""Bundles and packages, for the super admin.
 
 List them, see who bought each one, change what they cost and what they cover,
 and create new ones.
@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.deps import DbSession, RequireSuperAdmin
 from app.models.subscription import BillingInterval, SubscriptionPlan
+from app.schemas.text import NonBlankName, OptionalNonBlankName
 from app.services import audit, plans
 
 logger = logging.getLogger(__name__)
@@ -139,7 +140,7 @@ async def list_bundle_holders(
 
 
 class BundleCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: NonBlankName
     description: str | None = Field(default=None, max_length=2_000)
     # Integer minor units (paise). 0 is allowed — a free bundle is a coherent
     # thing to offer — and negative is not.
@@ -159,7 +160,7 @@ class BundleUpdate(BaseModel):
     route has to be able to tell them apart.
     """
 
-    name: str | None = Field(default=None, min_length=1, max_length=255)
+    name: OptionalNonBlankName
     description: str | None = Field(default=None, max_length=2_000)
     price_minor: int | None = Field(default=None, ge=0, le=100_000_000)
     currency: str | None = Field(default=None, min_length=3, max_length=3)

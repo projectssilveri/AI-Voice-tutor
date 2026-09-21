@@ -38,7 +38,7 @@ class CourseReviewStatus(str, enum.Enum):
     """Where a course is in the approval it now needs before going on sale.
 
     DRAFT     an admin is still writing it.
-    PENDING   sent to the platform owner and waiting.
+    PENDING   sent to the super admin and waiting.
     APPROVED  the owner said yes. Only an approved course may be published.
     REJECTED  sent back with a note. The author edits and submits again.
 
@@ -147,7 +147,7 @@ class Course(TimestampMixin, Base):
     )
 
     # WHERE THE COURSE IS IN APPROVAL. An ordinary admin writes a course and
-    # submits it; the platform owner approves or sends it back. Nothing reaches
+    # submits it; the super admin approves or sends it back. Nothing reaches
     # the catalogue without that, and `services/course_review.py` is the only
     # place the transitions are allowed to happen.
     review_status: Mapped[CourseReviewStatus] = mapped_column(

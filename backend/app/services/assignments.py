@@ -2,9 +2,9 @@
 
 Grading here compares the submitted answer with the answers the author listed
 as acceptable. It does not call an LLM. That is a deliberate instruction
-(2026-08-09) overriding the tech-stack line about the Anthropic API grading
-open-ended answers: a mark a student can appeal has to be reproducible, and the
-same model asked the same question twice can disagree with itself. This gives
+(2026-08-09) overriding the tech-stack line about an LLM grading open-ended
+answers: a mark a student can appeal has to be reproducible, and the same model
+asked the same question twice can disagree with itself. This gives
 the same result every time, costs nothing, and returns instantly.
 
 Normalisation before comparison is what stops the match being pedantic —
@@ -86,37 +86,72 @@ def grade_answer(assignment: Assignment, answer: str) -> GradeResult:
         for candidate in assignment.accepted_answers
     ]
 
+    max_score = float(assignment.max_score)
+
     if assignment.match_mode is MatchMode.CONTAINS:
-        missing = [
-            original
+        required = [
+            (original, candidate)
             for original, candidate in zip(
                 assignment.accepted_answers, accepted, strict=True
             )
-            if candidate and candidate not in submitted
+            if candidate
         ]
+        missing = [
+            original for original, candidate in required if candidate not in submitted
+        ]
+        covered = len(required) - len(missing)
         is_correct = not missing
-        if is_correct:
-            feedback = "Correct — your answer covers everything this asked for."
+
+        # PARTIAL CREDIT, which this did not give. An answer covering four of
+        # five required points scored zero, exactly as an empty box did, and a
+        # student watching 2/10 come back from a genuine attempt has no way to
+        # tell a near miss from a complete miss. That is issue 75: not that the
+        # marking was wrong, but that it was all-or-nothing and said nothing.
+        #
+        # The arithmetic was already here — `missing` has been counted since
+        # this was written — and then thrown away. Now it sets the score.
+        #
+        # Still deterministic. No model is asked to judge an answer; this is
+        # the same string matching, counted rather than collapsed to a boolean.
+        if not required:
+            score = max_score if is_correct else 0.0
         else:
-            # Naming the count, not the terms: saying which are missing would
-            # hand over the answer, and resubmission is unlimited.
+            score = round(max_score * covered / len(required), 2)
+
+        if is_correct:
+            feedback = "Correct. Your answer covers everything this one asked for."
+        elif covered:
+            # THE COUNT, NOT THE TERMS. Naming what is missing hands over the
+            # answer, and resubmission is unlimited. Saying how much landed is
+            # what turns a score into something a student can act on.
             feedback = (
-                f"Not quite. Your answer is missing {len(missing)} of the "
-                f"{len(accepted)} things this question asks you to cover. "
-                "Revisit the module and try again."
+                f"Partly there. Your answer covers {covered} of "
+                f"{len(required)} things this question asks for, so you have "
+                f"{score:g} of {max_score:g}. Revisit the module for the rest "
+                "and submit again. There is no limit on attempts."
+            )
+        else:
+            feedback = (
+                f"Not quite. Your answer does not yet cover any of the "
+                f"{len(required)} things this question asks for. Revisit the "
+                "module and try again."
             )
     else:
+        # EXACT is exact. There is no half of a right answer to give credit
+        # for, and inventing one here would mean guessing at what "nearly"
+        # means — which is the judgement this grader deliberately does not make.
         is_correct = submitted in accepted
+        score = max_score if is_correct else 0.0
         feedback = (
             "Correct."
             if is_correct
             else "That does not match the expected answer. "
-            "Revisit the module and try again — there is no limit on attempts."
+            "Revisit the module and try again. There is no limit on attempts."
         )
 
     return GradeResult(
         is_correct=is_correct,
-        score=float(assignment.max_score) if is_correct else 0.0,
+        score=score,
         feedback=feedback,
     )
 

@@ -153,10 +153,25 @@ export default function QuizPage() {
             <p className="text-sm text-gray-500 dark:text-gray-400">
               Attempt #{result.attempt_number}
             </p>
-            <p className="my-2 text-title-md font-bold text-gray-800 dark:text-white/90">
+            {/* THE VERDICT, not just the number. This showed a percentage
+                and a Retake button and left the student to work out whether
+                they had passed — while the module refused to complete below
+                the mark and said so on a different screen. */}
+            <p
+              className={`my-2 text-title-md font-bold ${
+                result.passed
+                  ? "text-success-700 dark:text-success-400"
+                  : "text-error-700 dark:text-error-400"
+              }`}
+            >
               {result.score}%
             </p>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
+            <p className="text-sm font-medium text-gray-800 dark:text-white/90">
+              {result.passed
+                ? "Passed."
+                : `Not passed. You need ${result.pass_mark}% to finish this module.`}
+            </p>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
               {result.correct_count} of {result.total_questions} correct
             </p>
             <button
@@ -164,7 +179,7 @@ export default function QuizPage() {
               onClick={retake}
               className="mt-5 rounded-lg bg-brand-500 px-6 py-2.5 text-sm font-medium text-white hover:bg-brand-600"
             >
-              Retake quiz
+              {result.passed ? "Take it again" : "Try again"}
             </button>
           </div>
 

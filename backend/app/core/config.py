@@ -90,11 +90,6 @@ class Settings(BaseSettings):
     # leaves somebody watching a page that will never speak again.
     gemini_max_resume_failures: int = 2
 
-    # Non-live text generation only: lecture scripts, quiz/exam questions,
-    # grading of open-ended answers. Never inside a Gemini Live session.
-    anthropic_api_key: str | None = None
-    anthropic_model: str = "opus-5"
-
     # --- Business rules --------------------------------------------------
     # Certification exams only. Quizzes are unlimited retakes and content
     # reading is unlimited — neither reads this value.

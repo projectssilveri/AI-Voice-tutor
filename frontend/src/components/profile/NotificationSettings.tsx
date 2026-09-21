@@ -63,7 +63,12 @@ function Toggle({
           onChange={(event) => onChange(event.target.checked)}
           className="peer sr-only"
         />
-        <span className="h-6 w-11 rounded-full bg-gray-300 transition-colors peer-checked:bg-brand-500 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand-500 peer-disabled:opacity-50 dark:bg-gray-700" />
+        {/* `dark:peer-checked:` is not decoration. `peer-checked:bg-brand-500`
+            and `dark:bg-gray-700` are both one-variant utilities, so whichever
+            Tailwind writes last wins — and that is the dark one. The track
+            stayed grey in dark mode however the switch was set, leaving a
+            sliding knob as the only sign it had changed. */}
+        <span className="h-6 w-11 rounded-full bg-gray-300 transition-colors peer-checked:bg-brand-500 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand-500 peer-disabled:opacity-50 dark:bg-gray-700 dark:peer-checked:bg-brand-500" />
         <span className="pointer-events-none absolute left-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" />
       </label>
     </div>
@@ -130,7 +135,7 @@ export default function NotificationSettings() {
     <section>
       <div className="mb-2 flex items-baseline justify-between gap-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white/90">
-          Notification preferences
+          Email from us
         </h2>
         {saved ? (
           <span
@@ -142,7 +147,7 @@ export default function NotificationSettings() {
         ) : null}
       </div>
       <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-        Manage the types of communications you receive.
+        Two switches. Both take effect straight away.
       </p>
 
       {error ? (
@@ -160,28 +165,27 @@ export default function NotificationSettings() {
           checked={prefs.notify_offers}
           disabled={busy}
           onChange={(next) => void change({ ...prefs, notify_offers: next })}
-          title="Updates and offerings"
-          description="New courses, changes to the product, and the occasional offer. Off unless you turn it on."
+          title="News and offers"
+          description="New courses, changes to the product, the odd discount. Off unless you switch it on."
         />
         <Toggle
           id="notify-learning"
           checked={prefs.notify_learning}
           disabled={busy}
           onChange={(next) => void change({ ...prefs, notify_learning: next })}
-          title="Your learning"
-          description="Reminders about a course you have started, quiz and exam results, and certificates."
+          title="Your courses"
+          description="Nudges about a course you have started, and your quiz, exam and certificate results."
         />
       </div>
 
       <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
-        These settings apply to email. To stop WhatsApp messages, reply{" "}
+        These cover email, and can take a few hours to kick in. For WhatsApp,
+        reply{" "}
         <span className="font-medium text-gray-700 dark:text-gray-300">
           stop
         </span>{" "}
-        in the WhatsApp chat. Changes can take a few hours to take effect. You
-        will still receive email about your account and anything you buy even if
-        you turn both of these off. A receipt is not something we can let you
-        opt out of.
+        in the chat. Receipts, password resets and notices about your account go
+        out either way. We cannot let you opt out of a receipt.
       </p>
     </section>
   );

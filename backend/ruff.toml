@@ -34,22 +34,15 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
-# Both scripts bootstrap `sys.path` so they can be run directly from the
+# scripts/seed.py bootstraps sys.path so it can be run directly from the
 # backend directory, which necessarily happens before the app imports.
 "scripts/seed.py" = ["E402"]
-"scripts/verify_migration.py" = ["E402"]
 
 # The catalogue is hand-written course content: prompts and descriptions are
 # deliberately split across lines inside tuples, which ISC004 flags because a
-# MISSING COMMA looks identical. That risk is real, so it is guarded by
-# tests/test_catalogue.py — which checks tuple arity, answer-key ranges, and
-# that a prompt has not swallowed its accepted answers — rather than by
-# parenthesising two hundred strings.
+# MISSING COMMA looks identical.
 "scripts/catalogue.py" = ["ISC"]
 
 # Alembic migrations are generated-shaped: long literal column definitions and
 # imports that exist for the autogenerate machinery.
 "alembic/versions/*" = ["E402"]
-
-# Tests may shadow names and build throwaway structures freely.
-"tests/*" = ["C408"]

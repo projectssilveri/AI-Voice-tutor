@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,31 @@ logger = logging.getLogger(__name__)
 # collision means three requests arrived together for one student. Beyond that
 # something is wrong that retrying will not fix.
 MAX_ATTEMPTS = 3
+
+
+async def lock_and_list(session: AsyncSession, query) -> list[Any]:
+    """Take a row lock on everything `query` selects, and return it.
+
+    WHY A LOCK AND NOT A COUNT. Both admin floors on this platform are
+    read-then-write: count who is left, decide, then demote. Between the count
+    and the write another transaction can do the same thing about a different
+    person, and both see a healthy count of one — so two requests that are each
+    individually safe leave zero administrators between them. Neither one did
+    anything wrong and the organization is locked out.
+
+    `SELECT ... FOR UPDATE` closes it by making the two transactions queue.
+    The second re-reads after the first commits and sees the world the first
+    one left behind, which is the world it should have been deciding about.
+
+    ORDERED, and that is not cosmetic. Two transactions taking the same locks
+    in opposite orders deadlock; taking them in the same order means one simply
+    waits. The caller passes the ordering because it knows the column.
+
+    AGGREGATES CANNOT BE LOCKED — Postgres refuses `FOR UPDATE` with
+    `count()` — so this returns the rows and lets the caller count them. That
+    is also why the floors compare a list length rather than a scalar.
+    """
+    return list((await session.scalars(query.with_for_update())).all())
 
 
 async def commit_with_retry[T](

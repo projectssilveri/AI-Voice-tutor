@@ -1,7 +1,7 @@
 """Getting a course from an admin's draft onto the catalogue.
 
 An ordinary admin writes courses. They do not decide what goes on sale — that
-sits with the platform owner, alongside pricing and revenue (decision 50). So a
+sits with the super admin, alongside pricing and revenue (decision 50). So a
 course now travels:
 
     draft ──submit──> pending ──approve──> approved ──publish──> on sale
@@ -48,7 +48,7 @@ def can_publish(course: Course) -> bool:
 async def submit_for_review(
     session: AsyncSession, *, course: Course, actor: User
 ) -> Course:
-    """An admin sends a course to the platform owner. Does not commit.
+    """An admin sends a course to the super admin. Does not commit.
 
     Refused on an empty course. A course with no modules has nothing to review
     and nothing to teach, and the owner finding that out by opening it is a
@@ -69,6 +69,24 @@ async def submit_for_review(
             "review or teach yet."
         )
 
+    # OFF SALE WHILE IT WAITS. A course showing "Waiting for approval" and
+    # "Published" at the same time is two statements that cannot both be true,
+    # and the tester found exactly that pair on screen (issue 37). It arises on
+    # any course that is published while still DRAFT — a seeded catalogue, or
+    # anything that reached `is_published` without going through `approve` —
+    # because DRAFT is submittable and submitting never touched the publish bit.
+    #
+    # Taking it down is the honest half of the pair. The alternative is to keep
+    # selling a version nobody has approved, which is what issue 38 objects to.
+    # A course that is genuinely approved cannot get here at all: the guard
+    # above refuses APPROVED outright.
+    #
+    # WHAT THIS IS NOT. It is not a pending-version workflow. Keeping the live
+    # course on sale while its edits queue needs somewhere to hold the edits,
+    # and that is a table this codebase does not have yet — issues 36 and 39,
+    # deliberately out of scope here.
+    course.is_published = False
+
     course.review_status = CourseReviewStatus.PENDING
     course.submitted_by = actor.id
     course.submitted_at = datetime.now(UTC)
@@ -78,6 +96,30 @@ async def submit_for_review(
     course.reviewed_by = None
     course.reviewed_at = None
     return course
+
+
+#: What each state is called in a sentence a person reads.
+_STATE_WORDS = {
+    CourseReviewStatus.DRAFT: "still a draft and has not been submitted",
+    CourseReviewStatus.APPROVED: "already approved",
+    CourseReviewStatus.REJECTED: "already been sent back",
+}
+
+
+def _require_pending(course: Course, verb: str) -> None:
+    """A queue decision only applies to something in the queue.
+
+    Names the state the course is ACTUALLY in. "This cannot be approved" on its
+    own is a message the reader has to go and investigate, and the answer is
+    one field away.
+    """
+    if course.review_status is CourseReviewStatus.PENDING:
+        return
+    where = _STATE_WORDS.get(course.review_status, "not waiting for approval")
+    raise ReviewError(
+        f"This course cannot be {verb}: it is {where}. Only a course waiting "
+        f"for approval can be decided here."
+    )
 
 
 async def approve(
@@ -96,7 +138,18 @@ async def approve(
     is a real thing and not worth forcing them to unpublish afterwards.
     """
     if actor.role is not UserRole.SUPER_ADMIN:
-        raise ReviewError("Only the platform owner can approve a course.")
+        raise ReviewError("Only the super admin can approve a course.")
+
+    # IT HAS TO BE IN THE QUEUE. This checked the actor and not the course, so
+    # a DRAFT nobody had submitted could be approved and published: the
+    # author's own submission skipped, and `submitted_at` left null on a course
+    # the trail says was approved. Re-approving an approved one also
+    # overwrote `reviewed_by` and `reviewed_at`, so who signed it off became
+    # whoever pressed the button last.
+    #
+    # Publishing something that was never submitted is a real thing an owner
+    # may want, and `apply_publish_flag` below is the deliberate way to do it.
+    _require_pending(course, "approved")
 
     course.review_status = CourseReviewStatus.APPROVED
     course.reviewed_by = actor.id
@@ -121,7 +174,14 @@ async def reject(
     refused is the two halves of the product disagreeing.
     """
     if actor.role is not UserRole.SUPER_ADMIN:
-        raise ReviewError("Only the platform owner can review a course.")
+        raise ReviewError("Only the super admin can review a course.")
+
+    # THE SAME RULE AS APPROVE. Rejecting unpublishes, deliberately, and
+    # applied to an APPROVED course that people have already bought that takes
+    # it off the catalogue through a route meant for the review queue. Taking a
+    # live course down is `apply_publish_flag`, which says in as many words
+    # that unpublishing is "off sale, not unapproved".
+    _require_pending(course, "sent back")
 
     clean = (note or "").strip()
     if not clean:
@@ -155,7 +215,7 @@ async def apply_publish_flag(
     the owner's own toggle a one-way door.
     """
     if actor.role is not UserRole.SUPER_ADMIN:
-        raise ReviewError("Only the platform owner can publish a course.")
+        raise ReviewError("Only the super admin can publish a course.")
 
     if publish and course.review_status is not CourseReviewStatus.APPROVED:
         course.review_status = CourseReviewStatus.APPROVED

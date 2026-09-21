@@ -153,7 +153,7 @@ function StaffMessages() {
       ) : (
         <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[58rem]">
+            <table className="table-wide w-full min-w-[58rem]">
               <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:border-gray-800 dark:bg-white/[0.02] dark:text-gray-400">
                 <tr>
                   <th className="px-4 py-3">Sent</th>

@@ -48,7 +48,7 @@ export default function Page() {
         </p>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[520px] border-collapse text-left text-[15px]">
+          <table className="table-wide w-full min-w-[520px] border-collapse text-left text-[15px]">
             <thead>
               <tr className="border-b border-[var(--mk-line)]">
                 <th className="py-3 pr-4 font-semibold text-[var(--mk-text)]">

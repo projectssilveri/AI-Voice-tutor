@@ -24,14 +24,14 @@ const ACCEPT = "image/jpeg,image/png,image/gif,image/webp";
 const MAX_BYTES = 2 * 1024 * 1024;
 
 export default function ProfilePhoto() {
-  const { user } = useAuth();
+  const { user, photoVersion, photoChanged } = useAuth();
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Bumped after every change so `Avatar` refetches instead of showing the
-  // cached old picture. The endpoint sets max-age=300, which is right for a
-  // table of fifty faces and wrong for the one you just replaced.
-  const [version, setVersion] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
+  //: Null until the avatar has tried to fetch one. Remove stays enabled for
+  //: that moment rather than flickering from enabled to disabled.
+  const [hasPhoto, setHasPhoto] = useState<boolean | null>(null);
 
   if (!user) return null;
 
@@ -47,9 +47,11 @@ export default function ProfilePhoto() {
     }
 
     setBusy(true);
+    setNotice(null);
     try {
       await uploadPhoto(file);
-      setVersion((n) => n + 1);
+      photoChanged();
+      setNotice("Photo updated.");
     } catch (caught) {
       setError(
         errorText(caught, "Could not upload that."),
@@ -64,9 +66,14 @@ export default function ProfilePhoto() {
   async function remove() {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      await deletePhoto();
-      setVersion((n) => n + 1);
+      // The SERVER decides what happened. It answers whether there was
+      // anything there, because "removed" and "there was nothing to remove"
+      // look identical from here and only one of them is worth celebrating.
+      const { removed } = await deletePhoto();
+      photoChanged();
+      setNotice(removed ? "Photo removed." : "There was no photo to remove.");
     } catch (caught) {
       setError(
         errorText(caught, "Could not remove it."),
@@ -78,15 +85,24 @@ export default function ProfilePhoto() {
 
   return (
     <div className="flex flex-wrap items-center gap-5">
-      <Avatar userId={user.id} name={user.name} size="xl" version={version} />
+      <Avatar
+        userId={user.id}
+        name={user.name}
+        size="xl"
+        version={photoVersion}
+        onPhotoState={setHasPhoto}
+      />
 
       <div>
         <p className="mb-1 font-medium text-gray-800 dark:text-white/90">
           Profile photo
         </p>
         <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-          JPEG, PNG, GIF or WebP, up to 2MB. Shown beside your name to people
-          you share an organisation or a message with.
+          JPEG, PNG, GIF or WebP, up to 2MB. People you work with or message see
+          it next to your name.
+          {hasPhoto === false
+            ? " You have not added one, so we show your initial instead."
+            : ""}
         </p>
 
         {/* Hidden and opened by the button below, so nothing visible is
@@ -112,14 +128,20 @@ export default function ProfilePhoto() {
           >
             {busy ? "Working…" : "Choose a photo"}
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void remove()}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
-          >
-            Remove
-          </button>
+          {/* Hidden rather than disabled when there is nothing to remove.
+              A greyed-out button still asks to be clicked; an absent one
+              answers the question. The letter in the square is a fallback we
+              draw, not a picture anybody uploaded. */}
+          {hasPhoto !== false ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void remove()}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              Remove
+            </button>
+          ) : null}
         </div>
 
         {error ? (
@@ -128,6 +150,16 @@ export default function ProfilePhoto() {
             className="mt-3 rounded-lg border border-error-500 bg-error-50 px-3 py-2 text-sm text-error-700 dark:bg-error-500/10 dark:text-error-400"
           >
             {error}
+          </p>
+        ) : null}
+        {/* Removing a photo you never had looks exactly like a broken button.
+            Saying so is the whole fix. */}
+        {notice && !error ? (
+          <p
+            role="status"
+            className="mt-3 text-sm text-success-700 dark:text-success-400"
+          >
+            {notice}
           </p>
         ) : null}
       </div>

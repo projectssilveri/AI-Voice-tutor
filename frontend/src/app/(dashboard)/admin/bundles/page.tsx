@@ -11,7 +11,7 @@ import {
 } from "@/components/dashboard/Tiles";
 import { useAuth } from "@/context/AuthContext";
 import { type Bundle, createBundle, listBundles } from "@/lib/adminBundles";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { type CourseRow, listCourses } from "@/lib/authoring";
 import { counted } from "@/lib/plural";
 

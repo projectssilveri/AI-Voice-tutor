@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import Logo, { LogoMark } from "@/components/marketing/ui/Logo";
 import { useAuth } from "@/context/AuthContext";
 import { getMyOrganizationSlug } from "@/lib/orgPortal";
+import { listMyCourses } from "@/lib/student";
 import { useSidebar } from "@/context/SidebarContext";
 import {
   BoxCubeIcon,
@@ -59,14 +60,6 @@ export const navItems: NavItem[] = [
 // URL still gets a 403.
 export const othersItems: NavItem[] = [
   { icon: <GridIcon />, name: "Overview", path: "/admin" },
-  // OUR courses. The marketplace catalogue everyone can buy — as distinct
-  // from an organization's own private training, which its admins build in
-  // their own portal and which is listed separately below for a super admin.
-  {
-    icon: <FolderIcon />,
-    name: "Add or modify courses",
-    path: "/admin/courses",
-  },
   { icon: <TaskIcon />, name: "Submissions", path: "/admin/assignments" },
   // Two inboxes, two entries. They are genuinely different things — one is
   // strangers with no account writing in from the public form, the other is
@@ -91,9 +84,26 @@ export const othersItems: NavItem[] = [
 // nav item that always lands on "not available to your account" is a menu
 // entry that exists only to be refused.
 export const superAdminItems: NavItem[] = [
-  // Bundles first: it is the money screen, and it sits with the rest of the
-  // owner-only things rather than beside "Add or modify courses" — authoring a
-  // course and pricing a package are different jobs.
+  // APPROVALS FIRST, because it is the only item here that represents somebody
+  // else being blocked. It had no menu entry at all — the queue was embedded on
+  // the Website screen and rendered nothing when empty, so the feature was
+  // invisible unless work happened to be waiting. Issues 34 and 35.
+  {
+    icon: <TaskIcon />,
+    name: "Course approvals",
+    path: "/admin/reviews",
+  },
+  // MOVED UP FROM THE ADMIN MENU (issue 11). Writing the catalogue is a super
+  // admin job now, and a platform admin who could still see this link would
+  // find out by pressing it and being refused.
+  {
+    icon: <FolderIcon />,
+    name: "Add or modify courses",
+    path: "/admin/courses",
+  },
+  // Bundles: the money screen, sitting with the rest of the owner-only things
+  // rather than beside "Add or modify courses" — authoring a course and pricing
+  // a package are different jobs.
   {
     icon: <TableIcon />,
     name: "Bundles and packages",
@@ -134,6 +144,51 @@ const AppSidebar: React.FC = () => {
   const adminItems = isSuperAdmin
     ? othersItems.filter((item) => item.path !== "/admin")
     : othersItems;
+  // DOES THIS PERSON ACTUALLY LEARN HERE?
+  //
+  // Courses, Assignments and Certificates were shown to everybody, so a
+  // super admin whose job is running the business opened the app to a menu
+  // offering them their own coursework — three links to screens that, for them,
+  // are permanently empty. Issue 9.
+  //
+  // NOT decided by role. A super admin may genuinely be enrolled in something,
+  // and hiding a course somebody is actually taking because of their job title
+  // would be the same mistake pointed the other way. So it is decided by
+  // whether they have any enrolments: staff who learn keep the menu, staff who
+  // do not lose it, and every student has at least the free course.
+  //
+  // Dashboard always stays. It is the page they land on.
+  const [enrolments, setEnrolments] = useState<number | null>(null);
+  const isStaff = user?.role === "admin" || user?.role === "super_admin";
+
+  useEffect(() => {
+    if (!user || !isStaff) {
+      // A student is a student. No request, no flicker.
+      setEnrolments(null);
+      return;
+    }
+    let cancelled = false;
+    listMyCourses()
+      .then((courses) => {
+        if (!cancelled) setEnrolments(courses.length);
+      })
+      .catch(() => {
+        // Show the menu rather than hide it on a failed request. Hiding
+        // navigation because one call failed is worse than an extra link.
+        if (!cancelled) setEnrolments(1);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, isStaff]);
+
+  // `null` means "not staff, so not in question". `0` means staff with nothing
+  // enrolled, which is the only case that hides anything.
+  const learnerItems =
+    isStaff && enrolments === 0
+      ? navItems.filter((item) => item.path === "/dashboard")
+      : navItems;
+
   const inOrganization = user?.organization_id != null;
   // The slug is not on the session — it is the organization's, not the
   // person's — so it is fetched once when there is an organization to fetch
@@ -381,7 +436,8 @@ const AppSidebar: React.FC = () => {
       >
         <Link href="/dashboard">
           {isExpanded || isHovered || isMobileOpen ? (
-            <Logo />
+            // Same as the header beside it: `Logo` inherits now.
+            <Logo className="text-gray-900 dark:text-white" />
           ) : (
             <LogoMark className="size-8" />
           )}
@@ -416,7 +472,7 @@ const AppSidebar: React.FC = () => {
                   <HorizontaLDots />
                 )}
               </div>
-              {renderMenuItems(navItems, "main")}
+              {renderMenuItems(learnerItems, "main")}
 
               {/* A way back to the organization portal. An org member arrives
                   here from /org/{slug} and would otherwise have no route
@@ -440,7 +496,7 @@ const AppSidebar: React.FC = () => {
             </div>
 
             {isAdmin ? (
-              <div role="group" aria-label="Admin menu">
+              <div role="group" aria-label="Platform admin menu">
                 {/* Same as above: a category label for the eye, named for
                     assistive tech by the group rather than by a heading. */}
                 <div
@@ -452,7 +508,7 @@ const AppSidebar: React.FC = () => {
                   }`}
                 >
                   {isExpanded || isHovered || isMobileOpen ? (
-                    "Admin"
+                    "Platform"
                   ) : (
                     <HorizontaLDots />
                   )}

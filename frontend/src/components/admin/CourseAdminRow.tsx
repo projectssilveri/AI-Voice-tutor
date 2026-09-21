@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import ExamBadge from "@/components/admin/ExamBadge";
 import ReviewBadge from "@/components/admin/ReviewBadge";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { type CourseRow, type ModuleRow, listModules } from "@/lib/authoring";
 import { accessLabel } from "@/lib/catalogue";
 import { counted } from "@/lib/plural";
@@ -99,6 +100,7 @@ export default function CourseAdminRow({
               {course.title}
             </h3>
             <ReviewBadge course={course} />
+            <ExamBadge course={course} />
           </div>
           <p className="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
             {course.description ||
@@ -113,7 +115,13 @@ export default function CourseAdminRow({
           ) : null}
         </div>
 
-        <div className="flex shrink-0 flex-wrap gap-2">
+        {/* `shrink-0` ONLY FROM sm UP. On a phone it stopped this button group
+        narrowing at all, so three buttons held the row at their own
+        width and pushed the whole page 121px wider than the screen —
+        `flex-wrap` could not help, because nothing was allowed to
+        shrink enough to wrap. Full width below sm, so the buttons
+        wrap onto their own line instead. */}
+        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0">
           {course.is_published ? (
             <Link
               href={`/courses/${course.id}`}

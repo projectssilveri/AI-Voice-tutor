@@ -4,8 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
-import ThemeTogglerTwo from "@/components/common/ThemeTogglerTwo";
+import { ThemeToggleButton } from "@/components/common/ThemeToggleButton";
 import Logo from "@/components/marketing/ui/Logo";
+import Avatar from "@/components/ui/Avatar";
 import { useAuth } from "@/context/AuthContext";
 import { roleLabel } from "@/lib/orgPortal";
 
@@ -42,7 +43,7 @@ export default function OrgShell({
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const { user } = useAuth();
+  const { user, photoVersion } = useAuth();
 
   // THREE SEPARATE PERMISSIONS, not one "admin" flag.
   //
@@ -101,7 +102,11 @@ export default function OrgShell({
             </Link>
 
             <div className="flex items-center gap-3">
-              <ThemeTogglerTwo />
+              {/* The same control as the dashboard header. This used to be
+                  `ThemeTogglerTwo`, the big solid-blue one built to float
+                  alone on the sign-in page, and at 56px it was taller than
+                  the avatar and louder than the company name. */}
+              <ThemeToggleButton />
               <div className="hidden text-right sm:block">
                 <p className="text-sm font-medium text-gray-800 dark:text-white/90">
                   {user?.name}
@@ -112,9 +117,12 @@ export default function OrgShell({
                   </p>
                 ) : null}
               </div>
-              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-500 text-sm font-semibold text-white">
-                {user?.name?.charAt(0).toUpperCase() ?? "?"}
-              </span>
+              <Avatar
+                userId={user?.id}
+                name={user?.name}
+                size="sm"
+                version={photoVersion}
+              />
             </div>
           </div>
 

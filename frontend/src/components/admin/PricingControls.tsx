@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { useAuth } from "@/context/AuthContext";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import {
   type CourseRow,
   updateCoursePricing,

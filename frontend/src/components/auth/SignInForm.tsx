@@ -66,29 +66,30 @@ export default function SignInForm() {
 
     try {
       await login(email, password);
-      // Refresh so the session is populated before the workspace loads, and
-      // so the role is known here — where they should land depends on it.
-      const signedIn = await refresh();
+      // Refresh so the session is populated before the next page renders —
+      // the header reads it to decide whether to draw the account menu, and a
+      // page that loads first shows "Sign in" to somebody who just did.
+      await refresh();
       // Only same-origin paths are honoured, so `next` cannot be used to
       // hand somebody off to another site after they sign in. The rule
       // lives in `lib/safeNext` because RedirectIfSignedIn needs it too.
       const resuming = safeNext(next, "") || null;
-      // WHERE THEY LAND DEPENDS ON WHY THEY SIGNED IN.
+      // SIGNING IN RETURNS YOU TO THE WEBSITE, SIGNED IN.
       //
-      // A STUDENT goes back to the site. Signing in is something they do in
-      // the middle of reading — looking at a course, checking a price — and
-      // being thrown into a workspace loses whatever they were doing. The
-      // header carries a Dashboard link from the moment they are signed in.
+      // Signing in is something people do in the middle of reading — looking
+      // at a course, checking a price — and being thrown into a workspace
+      // loses whatever they were doing. The header carries the account menu
+      // and a Dashboard link from the moment the session exists, so the way
+      // in is one click for anybody who wanted it.
       //
-      // AN ADMIN goes to the dashboard, because that is the whole reason they
-      // signed in. Staff do not browse the marketing site; landing them on it
-      // and making them find the way in was one click on every single login.
-      // `/dashboard` rather than `/admin`: it renders the admin view by role
-      // and is the one URL that works for every kind of staff.
+      // This used to branch on role, then stopped branching and sent everybody
+      // to `/dashboard` while the comment went on describing the branch. One
+      // rule now, for everybody, which is the version that can be read off the
+      // code.
       //
-      // `next` still wins over both: somebody bounced here from a protected
-      // page is finishing a redirect, and that page is where they were going.
-      const target = resuming ?? "/dashboard";
+      // `next` still wins: somebody bounced here by a route guard is finishing
+      // a redirect, and that page is where they were going.
+      const target = resuming ?? "/";
 
       // No new tab either. That existed to keep the public page alive behind
       // the workspace; now that signing in RETURNS you to the public site,

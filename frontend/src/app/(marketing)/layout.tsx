@@ -1,3 +1,4 @@
+import { CartProvider } from "@/context/CartContext";
 import Footer from "@/components/marketing/Footer";
 import Header from "@/components/marketing/Header";
 import ScrollToTop from "@/components/marketing/common/ScrollToTop";
@@ -23,7 +24,14 @@ export default function MarketingLayout({
   return (
     <div
       data-surface="marketing"
-      className="relative flex min-h-screen flex-col overflow-x-hidden bg-[var(--mk-canvas)] text-[var(--mk-text)]"
+      // `overflow-x-clip`, NOT `hidden`. `overflow-x: hidden` forces the
+      // computed `overflow-y` to `auto`, which makes this div a scroll
+      // container — and `position: sticky` inside a scroll container sticks to
+      // THAT box, which never scrolls. So the header did not stick to the top
+      // of the screen on any marketing page, and neither did the course page's
+      // section tabs; both simply scrolled away. `clip` trims the same
+      // horizontal overflow without creating a scroll container.
+      className="relative flex min-h-screen flex-col overflow-x-clip bg-[var(--mk-canvas)] text-[var(--mk-text)]"
     >
       {/* Background ambient lighting and grid pattern across all marketing pages */}
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
@@ -36,10 +44,15 @@ export default function MarketingLayout({
         <div className="absolute top-[60%] left-[5%] h-[500px] w-[500px] rounded-full bg-cyan-600/8 blur-[150px]" />
       </div>
 
-      <Header />
-      <main className="flex-1">
-        <PageTransition>{children}</PageTransition>
-      </main>
+      {/* The cart is one shared copy per surface, not a fetch per card.
+          Without it the header badge would still say 2 after adding a third
+          course on the catalogue page, until a reload. */}
+      <CartProvider>
+        <Header />
+        <main className="flex-1">
+          <PageTransition>{children}</PageTransition>
+        </main>
+      </CartProvider>
       <Footer />
       <ScrollToTop />
     </div>

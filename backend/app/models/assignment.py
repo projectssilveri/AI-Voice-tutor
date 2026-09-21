@@ -7,13 +7,16 @@ assignment against a module with the answers it will accept, the student
 submits a text answer, and grading is a **deterministic match against those
 accepted answers**.
 
-No AI grades anything here. The original tech-stack listed the Anthropic API
-for "grading open-ended answers", but that was overridden on instruction: a
-student's mark must be reproducible and explainable, and an LLM asked the same
+No AI grades anything here. The original tech-stack listed an LLM for
+"grading open-ended answers", but that was overridden on instruction: a
+student's mark must be reproducible and explainable, and a model asked the same
 question twice can disagree with itself. Matching is instant, free, and gives
-the same answer every time — the same reason the brief already specifies
-deterministic grading for quizzes. The Anthropic API remains available for the
-non-live authoring work it is listed for elsewhere.
+the same answer every time, which is the reason the brief already specifies
+deterministic grading for quizzes.
+
+The SDK that line implied was removed once it became clear nothing had ever
+imported it. The only model this product calls is Gemini Live, and it teaches;
+it marks nothing.
 
 Resubmission is UNLIMITED. The spec caps certification exams and nothing else,
 so `attempt_number` here is a counter for display, never a limit — the same

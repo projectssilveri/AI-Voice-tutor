@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
@@ -17,7 +16,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.deps import CurrentUser, DbSession
 from app.models.course import Course
-from app.models.order import Order, OrderStatus
+from app.models.order import OrderStatus
 from app.models.subscription import SubscriptionPlan
 from app.services import access, payments
 
@@ -170,15 +169,21 @@ async def start_plan_checkout(
     )
 
 
-@router.post("/confirm", response_model=OrderRead)
+@router.post("/confirm", response_model=list[OrderRead])
 async def confirm(
     payload: ConfirmRequest, session: DbSession, user: CurrentUser
-) -> OrderRead:
-    """Verify Razorpay's callback and, only then, mark the order paid."""
+) -> list[OrderRead]:
+    """Verify Razorpay's callback and, only then, mark the orders paid.
+
+    A LIST, because one payment can settle a whole basket. It was a single
+    object while a payment could only buy one thing; a cart of three courses
+    returns three rows, and the page that opened the widget needs all of them
+    to know what it just bought.
+    """
     _require_payments()
 
     try:
-        order = await payments.confirm_payment(
+        orders = await payments.confirm_payment(
             session,
             user=user,
             provider_order_id=payload.razorpay_order_id,
@@ -196,14 +201,17 @@ async def confirm(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from None
 
-    return OrderRead(
-        id=order.id,
-        status=order.status.value,
-        amount_minor=order.amount_minor,
-        currency=order.currency,
-        course_id=order.course_id,
-        plan_id=order.plan_id,
-    )
+    return [
+        OrderRead(
+            id=order.id,
+            status=order.status.value,
+            amount_minor=order.amount_minor,
+            currency=order.currency,
+            course_id=order.course_id,
+            plan_id=order.plan_id,
+        )
+        for order in orders
+    ]
 
 
 @router.post("/webhook", include_in_schema=False)
@@ -243,33 +251,31 @@ async def razorpay_webhook(request: Request, session: DbSession) -> Response:
         provider_payment_id = entity.get("id")
 
         if provider_order_id:
-            from sqlalchemy import select
-
-            order = await session.scalar(
-                select(Order).where(Order.provider_order_id == provider_order_id)
+            # EVERY ROW THE PAYMENT COVERS, not the first one found. A cart
+            # checkout writes one row per course against a single provider
+            # order, and this is the path that runs when the customer closed
+            # the tab — so getting it wrong here means somebody paid for three
+            # courses, saw nothing, and got one.
+            orders = await payments.orders_for_provider_order(
+                session, provider_order_id
             )
-            if order is not None and order.status is not OrderStatus.PAID:
-                from datetime import datetime
-
-                order.status = OrderStatus.PAID
-                order.provider_payment_id = provider_payment_id
-                order.paid_at = datetime.now(UTC)
-
-                # AND ACTUALLY GIVE THEM THE PLAN.
-                #
-                # This path marked the order paid and stopped there, while
-                # `confirm_payment` — the browser path — called
-                # `fulfil_plan_order` as well. So the one case this webhook
-                # exists for, a customer who closed the tab mid-redirect,
-                # ended with a paid order and no subscription: the access check
-                # reads `subscriptions`, not `orders`, so they were charged for
-                # a bundle that unlocked nothing. Silent, because everything
-                # looked right on the revenue screen.
-                if order.plan_id is not None:
-                    await payments.fulfil_plan_order(session, order)
-
+            unpaid = [
+                order for order in orders if order.status is not OrderStatus.PAID
+            ]
+            if unpaid:
+                # The same body the browser callback uses. These two drifted
+                # apart once — the webhook marked an order paid and never
+                # started the subscription it bought — and sharing the code is
+                # what stops that happening again.
+                await payments.mark_paid(
+                    session, orders, provider_payment_id=provider_payment_id
+                )
                 await session.commit()
-                logger.info("Order %s marked paid by webhook", order.id)
+                logger.info(
+                    "Payment %s marked %d order(s) paid by webhook",
+                    provider_order_id,
+                    len(unpaid),
+                )
 
     # Always 200 once verified, so Razorpay does not retry an event we have
     # deliberately ignored.

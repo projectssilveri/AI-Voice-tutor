@@ -8,7 +8,7 @@ import CourseAdminRow from "@/components/admin/CourseAdminRow";
 import ReviewQueue from "@/components/admin/ReviewQueue";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { ApiError } from "@/lib/api";
 import {
   type CourseRow,
@@ -206,10 +206,14 @@ function WebsiteConsole() {
         </p>
       ) : null}
 
-      {/* WHAT IS WAITING ON YOU, above the catalogue. Approving is the same
-          decision as publishing, and publishing already lives on this screen —
-          a separate approvals page would mean checking two places to answer
-          one question. Renders nothing when the queue is empty. */}
+      {/* WHAT IS WAITING ON YOU, above the catalogue. Still here, because
+          approving is the same decision as publishing and publishing lives on
+          this screen — but it is no longer the ONLY place it lives. It renders
+          nothing when the queue is empty, which meant that with nothing pending
+          the approval workflow left no trace in the product at all and was
+          reported as missing. It now has its own page and menu entry too
+          (issues 34 and 35); this stays as the shortcut for somebody already
+          looking at the catalogue. */}
       <ReviewQueue onDecided={() => void load()} />
 
       {adding ? (
@@ -304,6 +308,9 @@ function WebsiteConsole() {
                 currency: "INR",
                 is_published: false,
                 module_count: 0,
+                // No exam yet, because there is no course yet. Not rendered by
+                // this card either way.
+                has_certification: false,
                 // Required by the type; NOT rendered by this card. Deliberately
                 // left at zero rather than filled with today's default figures
                 // — a preview that stated an allowance would be a third place

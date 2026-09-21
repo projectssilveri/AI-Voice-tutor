@@ -4,6 +4,7 @@ import { Outfit } from "next/font/google";
 import { AuthProvider } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import "./globals.css";
+import StackedTableLabels from "@/components/ui/StackedTableLabels";
 
 // Self-hosted via next/font — the templates pulled fonts from a Google CDN at
 // runtime, which costs a round trip and leaks a request per visitor.
@@ -60,6 +61,12 @@ export default function RootLayout({
       </head>
       <body className={`${outfit.variable} dark:bg-gray-900`}>
         <ThemeProvider>
+          {/* Gives every wide table's cells their column name, which is
+              what lets them stack into cards on a phone. At the root rather
+              than in the dashboard shell because the refund table on /terms
+              needs it too. Renders nothing, and does nothing on a page with
+              no such table. */}
+          <StackedTableLabels />
           <AuthProvider>{children}</AuthProvider>
         </ThemeProvider>
       </body>

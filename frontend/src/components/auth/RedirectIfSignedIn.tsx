@@ -18,12 +18,9 @@ import { safeNext } from "@/lib/safeNext";
  *
  * "ALREADY" IS THE WHOLE WORD. The first version of this fired on any signed-in
  * state, which included the state that exists one tick AFTER the form on the
- * same page succeeds — so it raced `SignInForm`'s own redirect and won. A
- * student who signed in was thrown to `/dashboard`, when the form deliberately
- * returns students to the site they were reading: "signing in is something
- * they do in the middle of reading, and being thrown into a workspace loses
- * whatever they were doing." Caught by signing in as a real student and
- * watching them land in the wrong place.
+ * same page succeeds — so it raced `SignInForm`'s own redirect and won, and
+ * whoever signed in landed somewhere the form had not chosen. Caught by signing
+ * in as a real student and watching them land in the wrong place.
  *
  * So the decision is made once, on the FIRST settled answer from the session
  * check. Signed in then: redirect. Signed out then: this component is finished,
@@ -48,8 +45,9 @@ export default function RedirectIfSignedIn() {
     if (!hadSessionOnArrival.current) return;
 
     // Same-origin paths only. See `lib/safeNext` for what is rejected; the
-    // rule is shared with SignInForm so the two cannot drift.
-    router.replace(safeNext(params.get("next"), "/dashboard"));
+    // rule is shared with SignInForm so the two cannot drift — and so is the
+    // destination: the website, signed in, unless `next` names somewhere.
+    router.replace(safeNext(params.get("next"), "/"));
   }, [loading, user, params, router]);
 
   return null;

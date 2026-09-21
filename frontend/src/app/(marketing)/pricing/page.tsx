@@ -1,7 +1,14 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import Breadcrumb from "@/components/marketing/common/Breadcrumb";
-import { type PublicPlan, listPublicPlans } from "@/lib/catalogue";
+import {
+  type PublicPlan,
+  intervalLabel,
+  listPublicPlans,
+  splitPlans,
+} from "@/lib/catalogue";
+import { formatMoney as money } from "@/lib/money";
 import OrgRedirectNotice from "@/components/org/OrgRedirectNotice";
 import PlanPurchase from "@/components/marketing/PlanPurchase";
 import RefundPolicyNote from "@/components/marketing/RefundPolicyNote";
@@ -9,25 +16,49 @@ import RefundPolicyNote from "@/components/marketing/RefundPolicyNote";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Buy a course outright, or subscribe for access to everything. One free course to start with.",
+    "One subscription for every course on the platform, including the ones added while it runs.",
 };
 
-function money(minor: number, currency = "INR"): string {
-  const symbol = currency === "INR" ? "₹" : `${currency} `;
-  return `${symbol}${(minor / 100).toLocaleString("en-IN")}`;
-}
+// `money` and `interval` used to be written out here. Both already existed —
+// one in `lib/money`, one in `lib/catalogue` — and the local copies rounded
+// differently from the Subscribe button rendered inside these very cards.
 
-function interval(value: string): string {
-  return value === "yearly" ? "year" : "month";
+/**
+ * What a plan works out at per month, whatever it is billed in.
+ *
+ * "Best value" used to be whichever card sat last in the grid, i.e. the
+ * dearest one. That happened to land on the yearly plan, so it happened to be
+ * right, and it would have gone on being printed on whatever became most
+ * expensive. A badge on a price has to be a claim the reader can check, and
+ * the only comparable figure between a ₹1,499 month and a ₹14,999 year is what
+ * each costs per month.
+ */
+function perMonthMinor(plan: PublicPlan): number {
+  if (plan.billing_interval !== "yearly") return plan.price_minor;
+  // To the whole rupee, not the paisa. A twelfth of 14,999 is 1,249.92, and
+  // "works out at Rs 1,249.92 a month" is a number nobody asked for on a
+  // price they will never be charged. Hence "About" in the line that shows it.
+  return Math.round(plan.price_minor / 12 / 100) * 100;
 }
 
 /**
- * Pricing — subscription plans only.
+ * Pricing — All Access only.
  *
- * Single-course prices live on the course card in `/courses`, which is the one
- * surface a course price appears on. Listing them here as well meant two
- * places to read a price from and two places for it to go stale, and it
- * duplicated a catalogue the visitor already has a nav link to.
+ * ONE PLAN, ONE PAGE. Two things used to be listed here that are priced
+ * elsewhere, and both were removed for the same reason: a price that appears
+ * on two surfaces is a price that can disagree with itself.
+ *
+ *   Single-course prices went to the course card in `/courses`.
+ *
+ *   Stack bundles went to `/bundles` — except the filter that was supposed to
+ *   leave them out of this page was never added, so for a while every bundle
+ *   was priced twice, and the copy here was the poorer of the two: a course
+ *   COUNT where the bundle card lists the actual stack. `splitPlans` is the
+ *   same call `/bundles` makes, from the other side, so neither page can pick
+ *   up a plan the other one is showing.
+ *
+ * What is left is the whole catalogue on one subscription, which is what the
+ * heading below has always said this page was for.
  *
  * Plans are read from the database, so a price change by a super admin shows
  * up here without a deploy. The catalogue is no longer fetched at all — one
@@ -35,23 +66,49 @@ function interval(value: string): string {
  */
 export default async function PricingPage() {
   let plans: PublicPlan[] = [];
+  let bundleCount = 0;
+  let bundlesFrom: number | null = null;
+  let currency = "INR";
   let failed = false;
 
   try {
-    plans = await listPublicPlans();
+    const split = splitPlans(await listPublicPlans());
+    plans = split.allAccess;
+    // Quoted at the foot, so somebody who only wants one stack is not left
+    // choosing between All Access and nothing. The mirror of the "See All
+    // Access" card on /bundles.
+    bundleCount = split.bundles.length;
+    bundlesFrom = split.bundles.length
+      ? Math.min(...split.bundles.map((plan) => plan.price_minor))
+      : null;
+    currency = plans[0]?.currency ?? split.bundles[0]?.currency ?? "INR";
   } catch {
     // The page still renders; a pricing page that 500s is worse than one that
     // says it cannot reach the catalogue.
     failed = true;
   }
 
-  const bestValue = plans.length > 1 ? plans[plans.length - 1].id : null;
+  // Only when one plan is genuinely cheaper per month than the rest. Two plans
+  // at the same monthly rate and the badge says nothing true about either, so
+  // it is not printed — same rule as "Most complete" on /bundles.
+  const cheapestPerMonth = plans.length
+    ? Math.min(...plans.map(perMonthMinor))
+    : 0;
+  const atCheapest = plans.filter(
+    (plan) => perMonthMinor(plan) === cheapestPerMonth,
+  );
+  const bestValue =
+    plans.length > 1 && atCheapest.length === 1 ? atCheapest[0].id : null;
 
   return (
     <>
+      {/* It said "Buy a single course, or subscribe and get the lot" —
+          offering, at the top of the page, the one thing that is priced on
+          /courses. The sentence outlived both the single-course prices and the
+          bundles it used to sit above. */}
       <Breadcrumb
         pageName="Pricing"
-        description="Buy a single course, or subscribe and get the lot. Every course includes the voice tutor, quizzes, assignments and a certification exam."
+        description="One subscription, every course on the platform. Each one includes the voice tutor, quizzes, assignments and a certification exam."
       />
       <OrgRedirectNotice context="pricing" />
 
@@ -71,8 +128,8 @@ export default async function PricingPage() {
           {failed || plans.length === 0 ? (
             <p className="text-center text-base text-[var(--mk-muted)]">
               {failed
-                ? "Pricing is unavailable right now. Please try again shortly."
-                : "Subscription plans are on the way."}
+                ? "We could not load the prices. That is our end, not yours. Reload in a moment."
+                : "All Access is on the way."}
             </p>
           ) : (
             <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3">
@@ -101,18 +158,29 @@ export default async function PricingPage() {
                       {plan.description}
                     </p>
 
-                    <div className="mb-6 flex items-baseline gap-1.5">
+                    <div className="mb-1 flex items-baseline gap-1.5">
                       <span className="text-4xl font-bold tracking-tight text-white">
                         {money(plan.price_minor, plan.currency)}
                       </span>
                       <span className="text-sm font-medium text-slate-400">
-                        /{interval(plan.billing_interval)}
+                        /{intervalLabel(plan.billing_interval)}
                       </span>
                     </div>
+                    {/* The figure the "Best value" badge is claiming, printed
+                        where it can be read, rather than asserted and left for
+                        the reader to divide by twelve. */}
+                    {plan.billing_interval === "yearly" ? (
+                      <p className="mb-6 text-[13px] text-slate-400">
+                        About {money(perMonthMinor(plan), plan.currency)} a
+                        month, billed once a year.
+                      </p>
+                    ) : (
+                      <div className="mb-6" />
+                    )}
 
                     <ul className="mb-8 space-y-3 border-t border-white/5 pt-6 text-[14.5px] text-slate-300">
                       {[
-                        `${plan.course_titles.length} courses included`,
+                        `Every course on the platform, all ${plan.course_titles.length} of them`,
                         "Voice tutor on every module",
                         "Quizzes and assignments, marked instantly",
                         "Certification exam and certificate",
@@ -149,6 +217,29 @@ export default async function PricingPage() {
               })}
             </div>
           )}
+
+          {/* The other direction of the /bundles signpost. Somebody who
+              only wants the stack they are learning should not have to guess
+              that a cheaper page exists. No per-bundle price here — one "from"
+              figure is a signpost, not a second price list. */}
+          {bundleCount > 0 ? (
+            <div className="mx-auto mt-14 max-w-[620px] rounded-2xl border border-[var(--mk-line)] p-8 text-center">
+              <h3 className="mb-2 text-xl font-semibold text-[var(--mk-text)]">
+                Only learning one stack?
+              </h3>
+              <p className="mb-6 text-base text-[var(--mk-muted)]">
+                {bundlesFrom !== null
+                  ? `Full-stack bundles group the courses that get used together: a language, a database and the framework they run on. From ${money(bundlesFrom, currency)} a month.`
+                  : "Full-stack bundles group the courses that get used together: a language, a database and the framework they run on."}
+              </p>
+              <Link
+                href="/bundles"
+                className="inline-flex rounded-lg bg-[var(--mk-brand)] px-6 py-3 text-base font-semibold text-white transition hover:bg-[var(--mk-brand)]/90"
+              >
+                See the bundles
+              </Link>
+            </div>
+          ) : null}
 
           <p className="mt-12 text-center text-sm text-[var(--mk-muted)]">
             Prices in Indian rupees, inclusive of taxes. Razorpay handles the

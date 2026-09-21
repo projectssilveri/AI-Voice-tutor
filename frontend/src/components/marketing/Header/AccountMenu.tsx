@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { buttonClasses } from "@/components/marketing/ui/MarketingButton";
+import Avatar from "@/components/ui/Avatar";
 import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/cn";
 
@@ -20,7 +21,7 @@ import { cn } from "@/lib/cn";
  * after every page load.
  */
 export default function AccountMenu() {
-  const { user, loading, signOut } = useAuth();
+  const { user, loading, photoVersion, signOut } = useAuth();
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const wrapper = useRef<HTMLDivElement>(null);
@@ -64,8 +65,12 @@ export default function AccountMenu() {
     );
   }
 
-  const firstName = (user.name || "").split(" ")[0] || "Account";
-  const initial = (user.name || user.email || "?").charAt(0).toUpperCase();
+  // THE WHOLE NAME. This cut at the first space, so "Super Admin" read
+  // "Super" and "Priya Sharma" read "Priya". The `truncate` on the span
+  // below already handles a name too long for the space, so the split was
+  // solving the same problem a second time and losing half the name to do
+  // it.
+  const displayName = user.name?.trim() || user.email || "Account";
 
   return (
     <div ref={wrapper} className="relative">
@@ -76,11 +81,18 @@ export default function AccountMenu() {
         aria-haspopup="menu"
         className="flex items-center gap-2 rounded-xl border border-[var(--mk-line)] py-1.5 pl-1.5 pr-3 text-[15px] text-[var(--mk-text)] transition-colors hover:border-[var(--mk-line-lift)] hover:bg-white/5"
       >
-        <span className="grid size-8 place-items-center rounded-lg bg-[var(--mk-brand)] text-sm font-semibold text-white">
-          {initial}
-        </span>
-        <span className="hidden max-w-[8rem] truncate sm:block">
-          {firstName}
+        {/* This was the only square avatar on the site, and the only one
+            the other five were not copied from. It keeps its shape; the rest
+            now share it. The colour is the person's own rather than the brand,
+            so the same face is the same colour here and in the dashboard. */}
+        <Avatar
+          userId={user.id}
+          name={user.name || user.email}
+          size="sm"
+          version={photoVersion}
+        />
+        <span className="hidden max-w-[11rem] truncate sm:block" title={displayName}>
+          {displayName}
         </span>
         <span
           aria-hidden="true"

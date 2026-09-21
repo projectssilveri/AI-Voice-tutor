@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { type PublicPlan, listPublicPlans, splitPlans } from "@/lib/catalogue";
+import { formatMoney } from "@/lib/money";
 import { counted } from "@/lib/plural";
 
 /**
@@ -31,9 +32,7 @@ export default async function BundleStrip() {
   if (bundles.length === 0) return null;
 
   const cheapest = Math.min(...bundles.map((plan) => plan.price_minor));
-  const currency = bundles[0].currency;
-  const symbol = currency === "INR" ? "₹" : `${currency} `;
-  const from = `${symbol}${(cheapest / 100).toLocaleString("en-IN")}`;
+  const from = formatMoney(cheapest, bundles[0].currency);
 
   // The names alone tell somebody whether their stack is here. Three, so the
   // row stays a signpost rather than becoming a second listing.
@@ -55,7 +54,7 @@ export default async function BundleStrip() {
           </div>
           <Link
             href="/bundles"
-            className="shrink-0 rounded-lg bg-[var(--mk-brand)] px-6 py-3 text-base font-semibold text-white transition hover:bg-[var(--mk-brand)]/90"
+            className="w-full rounded-lg bg-[var(--mk-brand)] px-6 py-3 text-center text-base font-semibold text-white transition hover:bg-[var(--mk-brand)]/90 sm:w-auto sm:shrink-0"
           >
             See the bundles
           </Link>

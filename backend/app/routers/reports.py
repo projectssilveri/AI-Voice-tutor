@@ -103,12 +103,24 @@ class TrainingReport(BaseModel):
 MAX_ROWS = 5_000
 
 
-async def _scope(session: AsyncSession, user: User, organization_id: uuid.UUID | None):
+async def _scope(
+    session: AsyncSession,
+    user: User,
+    organization_id: uuid.UUID | None,
+    public_only: bool = False,
+):
     """Which people this caller may see, as a filter on `User`.
 
     Returns (filters, label). Refuses rather than silently narrowing when
     somebody asks for an organization that is not theirs — quietly returning
     their own data instead would make the report look wrong rather than refused.
+
+    `public_only` is the third thing a super admin can ask for and could not.
+    The choice used to be every person on the platform, or one named customer;
+    our own B2C learners had no option of their own, so reading our own numbers
+    meant reading a list with every customer's staff mixed into it. It is
+    ignored for anybody else, because nobody else can see across the line in
+    the first place.
     """
     filters: list[ColumnElement[bool]] = [User.closed_at.is_(None)]
 
@@ -128,6 +140,9 @@ async def _scope(session: AsyncSession, user: User, organization_id: uuid.UUID |
             filters.append(User.organization_id == organization_id)
             organization = await session.get(Organization, organization_id)
             return filters, (organization.name if organization else None)
+        if public_only:
+            filters.append(User.organization_id.is_(None))
+            return filters, "Our own learners"
         return filters, None
 
     # An ordinary platform admin: public B2C accounts only (decision 171).
@@ -147,7 +162,6 @@ def _require_reporter(user: User) -> None:
         UserRole.SUPER_ADMIN,
         UserRole.ORG_ADMIN,
         UserRole.BRANCH_MANAGER,
-        UserRole.TEACHER,
     }
     if user.role not in allowed:
         raise HTTPException(
@@ -161,11 +175,12 @@ async def _build(
     user: User,
     *,
     organization_id: uuid.UUID | None,
+    public_only: bool = False,
     course_id: uuid.UUID | None,
     status_filter: Status | None,
     search: str | None,
 ) -> TrainingReport:
-    people_filters, _ = await _scope(session, user, organization_id)
+    people_filters, _ = await _scope(session, user, organization_id, public_only)
 
     # A branch manager reports on their own branch. Failing closed as the
     # member list does: no branch assigned means themselves, not everyone.
@@ -448,6 +463,7 @@ async def training_report(
     session: DbSession,
     user: CurrentUser,
     organization_id: uuid.UUID | None = None,
+    public_only: bool = False,
     course_id: uuid.UUID | None = None,
     status_filter: Annotated[Status | None, Query(alias="status")] = None,
     search: str | None = None,
@@ -458,6 +474,7 @@ async def training_report(
         session,
         user,
         organization_id=organization_id,
+        public_only=public_only,
         course_id=course_id,
         status_filter=status_filter,
         search=search,
@@ -469,6 +486,7 @@ async def export_training_report(
     session: DbSession,
     user: CurrentUser,
     organization_id: uuid.UUID | None = None,
+    public_only: bool = False,
     course_id: uuid.UUID | None = None,
     status_filter: Annotated[Status | None, Query(alias="status")] = None,
     search: str | None = None,
@@ -489,6 +507,7 @@ async def export_training_report(
         session,
         user,
         organization_id=organization_id,
+        public_only=public_only,
         course_id=course_id,
         status_filter=status_filter,
         search=search,
@@ -581,6 +600,7 @@ async def reportable_courses(
     session: DbSession,
     user: CurrentUser,
     organization_id: uuid.UUID | None = None,
+    public_only: bool = False,
 ) -> list[ReportCourse]:
     """Courses with anybody enrolled, for the report's course filter.
 
@@ -588,7 +608,7 @@ async def reportable_courses(
     lists courses that would actually produce rows.
     """
     _require_reporter(user)
-    people_filters, _ = await _scope(session, user, organization_id)
+    people_filters, _ = await _scope(session, user, organization_id, public_only)
 
     rows = (
         await session.execute(

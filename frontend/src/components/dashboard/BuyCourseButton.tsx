@@ -3,8 +3,12 @@
 import { useState } from "react";
 
 import { useAuth } from "@/context/AuthContext";
-import { formatMoney } from "@/lib/analytics";
-import { payWithRazorpay, startCourseCheckout } from "@/lib/payments";
+import { formatMoney } from "@/lib/money";
+import {
+  CHECKOUT_FAILED,
+  payWithRazorpay,
+  startCourseCheckout,
+} from "@/lib/payments";
 import { errorText } from "@/lib/api";
 
 /**
@@ -65,9 +69,7 @@ export default function BuyCourseButton({
       });
     } catch (caught) {
       setBusy(false);
-      setError(
-        errorText(caught, "Could not start checkout. Please try again."),
-      );
+      setError(errorText(caught, CHECKOUT_FAILED));
     }
   }
 

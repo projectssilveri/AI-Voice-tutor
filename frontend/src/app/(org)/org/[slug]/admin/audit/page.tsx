@@ -8,7 +8,7 @@ import { ApiError } from "@/lib/api";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { Action } from "@/components/ui/Action";
 import OrgShell from "@/components/org/OrgShell";
-import { actionLabel, actionTone } from "@/lib/audit";
+import { actionTone, eventLabel, orgPageOpened } from "@/lib/audit";
 import {
   type OrgAuditEvent,
   type OrgProfile,
@@ -168,6 +168,7 @@ export default function OrgAuditPage() {
               <ul className="divide-y divide-gray-100 dark:divide-gray-800">
                 {events.map((event) => {
                   const at = new Date(event.created_at);
+                  const opened = orgPageOpened(event.metadata);
                   return (
                     <li
                       key={event.id}
@@ -179,15 +180,20 @@ export default function OrgAuditPage() {
                         </span>
                         <span className="block">{at.toLocaleDateString()}</span>
                       </div>
-                      <span
-                        className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                          TONE[actionTone(event.action)]
-                        }`}
-                      >
-                        {actionLabel(event.action)}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm text-gray-800 dark:text-white/90">
+                      {/* THE BADGE SITS ABOVE THE NAME, not beside it. As
+                          siblings in the flex row, a forty-character label
+                          like "Platform staff opened a customer's portal"
+                          took the whole line and squeezed the name into a
+                          column two words wide. */}
+                      <div className="min-w-[14rem] flex-1">
+                        <span
+                          className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            TONE[actionTone(event.action)]
+                          }`}
+                        >
+                          {eventLabel(event.action, event.metadata)}
+                        </span>
+                        <p className="mt-1.5 text-sm text-gray-800 dark:text-white/90">
                           {event.actor_name ?? (
                             <span className="italic text-gray-500">
                               Not signed in
@@ -200,9 +206,28 @@ export default function OrgAuditPage() {
                             </span>
                           ) : null}
                         </p>
+                        {/* WHICH PAGE. Opening the portal fires several calls
+                            at once and each one is recorded, which is the
+                            point: somebody reading a customer's people should
+                            leave a mark. Without this they were five identical
+                            lines at the same second. */}
+                        {opened ? (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Opened {opened}
+                          </p>
+                        ) : null}
                       </div>
+                      {/* Labelled. It read "Not recorded" on its own at the
+                          end of a line, with no column heading and nothing
+                          beside it to say what had not been recorded. */}
                       <span className="shrink-0 font-mono text-xs text-gray-500 dark:text-gray-400">
-                        {event.ip_address ?? "Not recorded"}
+                        {event.ip_address ? (
+                          `From ${event.ip_address}`
+                        ) : (
+                          <span className="font-sans italic">
+                            Address not recorded
+                          </span>
+                        )}
                       </span>
                     </li>
                   );

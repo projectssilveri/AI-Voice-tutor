@@ -13,6 +13,7 @@ from fastapi_users import schemas
 from pydantic import EmailStr, Field, field_validator
 
 from app.models.user import UserRole
+from app.schemas.text import NonBlankName, OptionalNonBlankName
 
 
 def _clean_phone(value: str | None) -> str | None:
@@ -39,7 +40,7 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
 
 
 class UserCreate(schemas.BaseUserCreate):
-    name: str = Field(min_length=1, max_length=255)
+    name: NonBlankName
     email: EmailStr
 
     # `role` is intentionally absent. If it were accepted here, anyone could
@@ -48,7 +49,7 @@ class UserCreate(schemas.BaseUserCreate):
 
 
 class UserUpdate(schemas.BaseUserUpdate):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
+    name: OptionalNonBlankName
     # Deliberately unvalidated beyond a length cap. E.164, national formats,
     # extensions and in-country spacing are all legitimate, and a regex that
     # guesses wrong stops someone saving their own number.

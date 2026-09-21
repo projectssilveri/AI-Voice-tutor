@@ -55,17 +55,38 @@ async def upload_photo(
     await session.commit()
 
 
-@router.delete("/profile/photo", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_photo(session: DbSession, user: CurrentUser) -> None:
-    if await avatars.remove(session, user.id):
-        await audit.record_safely(
-            session,
-            action="profile.photo_removed",
-            actor=user,
-            target_type="user",
-            target_id=user.id,
-        )
+class PhotoRemoved(BaseModel):
+    """Whether there was anything to take off."""
+
+    removed: bool
+
+
+@router.delete("/profile/photo", response_model=PhotoRemoved)
+async def delete_photo(session: DbSession, user: CurrentUser) -> PhotoRemoved:
+    """Take the caller's photo off, and say whether there was one.
+
+    IT USED TO RETURN 204 AND NOTHING ELSE, so the browser could not tell
+    "removed your photo" from "you had no photo". It reported success either
+    way, which meant an account showing its fallback initial — a coloured
+    square with a letter, not a picture — answered Remove with "Photo removed."
+    and changed nothing. A button that lies is worse than a button that fails.
+
+    RECORDED EITHER WAY, since the middleware net no longer covers this path.
+    The event used to be written only when something was deleted, which was
+    fine while the net caught the rest; now this route is the only record of
+    the request, so a removal that found nothing is recorded as exactly that.
+    """
+    removed = await avatars.remove(session, user.id)
+    await audit.record_safely(
+        session,
+        action="profile.photo_removed",
+        actor=user,
+        target_type="user",
+        target_id=user.id,
+        metadata={"had_photo": removed},
+    )
     await session.commit()
+    return PhotoRemoved(removed=removed)
 
 
 @router.get("/users/{user_id}/photo")
@@ -280,6 +301,17 @@ async def close_account(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
+
+    # AND THE PLATFORM'S OWN FLOOR, which this door did not check.
+    #
+    # The same argument as the organization floor directly above, one level
+    # up: the last super admin walking out leaves nobody able to promote
+    # anyone, and the platform cannot be recovered from inside the product.
+    # It is enforced on demotion and on deletion; closing your own account
+    # reached the same end state and asked nobody.
+    from app.routers.admin_users import assert_super_admin_floor
+
+    await assert_super_admin_floor(session, user)
 
     user.is_active = False
     user.closed_at = datetime.now(UTC)

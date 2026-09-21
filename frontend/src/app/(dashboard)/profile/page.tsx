@@ -8,9 +8,11 @@ import CloseAccount from "@/components/profile/CloseAccount";
 import NotificationSettings from "@/components/profile/NotificationSettings";
 import ProfilePhoto from "@/components/profile/ProfilePhoto";
 import TutorVoice from "@/components/profile/TutorVoice";
+import Avatar from "@/components/ui/Avatar";
 import { useAuth } from "@/context/AuthContext";
 import { updateMe } from "@/lib/auth";
 import { errorText } from "@/lib/api";
+import { roleLabel } from "@/lib/roles";
 
 const FIELD =
   "h-11 w-full rounded-lg border border-gray-300 bg-transparent px-4 text-sm text-gray-800 placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/25 disabled:opacity-60 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90";
@@ -25,7 +27,7 @@ const FIELD =
  * change the address they sign in with is worse than not offering it.
  */
 function Profile() {
-  const { user, refresh } = useAuth();
+  const { user, photoVersion, refresh } = useAuth();
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -41,6 +43,21 @@ function Profile() {
       setName(user.name);
       setPhone(user.phone ?? "");
     }
+  }, [user]);
+
+  // JUMP TO #help-and-support ONCE IT EXISTS.
+  //
+  // Following the link on this page worked; opening it in a new tab did not.
+  // The browser looks for the element as the document loads, and at that point
+  // this page is still a sign-in check with no panel in it — so it finds
+  // nothing and stays at the top. By the time the panel renders, the browser
+  // has stopped caring. This asks again, after the content is there.
+  useEffect(() => {
+    if (!user) return;
+    const id = window.location.hash.slice(1);
+    if (!id) return;
+    const target = document.getElementById(id);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [user]);
 
   async function handleSaveName(event: React.FormEvent<HTMLFormElement>) {
@@ -130,9 +147,15 @@ function Profile() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="rounded-2xl border border-gray-200 bg-white shadow-raised p-6 dark:border-gray-800 dark:bg-white/[0.03]">
           <div className="flex items-center gap-4">
-            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-brand-500 text-xl font-semibold text-white">
-              {(user?.name ?? "?").charAt(0).toUpperCase()}
-            </span>
+            {/* The card above this one shows your photo, and this one drew
+                a letter — the same person, twice, on one page, looking like
+                two different people. */}
+            <Avatar
+              userId={user?.id}
+              name={user?.name}
+              size="lg"
+              version={photoVersion}
+            />
             <div className="min-w-0">
               <p className="truncate font-semibold text-gray-800 dark:text-white/90">
                 {user?.name}
@@ -146,8 +169,12 @@ function Profile() {
             <div className="flex justify-between">
               <dt className="text-gray-500 dark:text-gray-400">Role</dt>
               <dd>
-                <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 capitalize dark:bg-gray-800 dark:text-gray-400">
-                  {user?.role}
+                {/* The NAME of the role, not the column. This read
+                    "admin" here and "Platform Admin" on every other screen,
+                    which is how somebody ends up unsure whether they are a
+                    platform admin or an organisation one. */}
+                <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                  {roleLabel(user?.role)}
                 </span>
               </dd>
             </div>
@@ -200,12 +227,16 @@ function Profile() {
                 />
                 {/* This used to say "contact an admin" and give no way to do
                     it — a dead end on the one field people most often need
-                    changed. The link goes to the Help and support panel below,
-                    which is a real message to a real person. */}
+                    changed. The link goes to the Help panel below, which is a
+                    real message to a real person.
+
+                    An absolute path, not a bare "#", so the middle-click and
+                    the right-click menu open a URL that stands on its own. The
+                    effect above does the scrolling once the panel exists. */}
                 <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                   To change the address you sign in with,{" "}
                   <a
-                    href="#help-and-support"
+                    href="/profile#help-and-support"
                     className="font-medium text-brand-500 dark:text-brand-400 hover:text-brand-600"
                   >
                     send us a message
@@ -325,8 +356,8 @@ function Profile() {
         className="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-raised dark:border-gray-800 dark:bg-white/[0.03]"
       >
         <MessageCentre
-          title="Help and support"
-          intro="Ask a question, report a problem, or request a change to your account. Replies come back here."
+          title="Help"
+          intro="Ask us anything about your account or your courses. Replies land here."
         />
       </div>
 

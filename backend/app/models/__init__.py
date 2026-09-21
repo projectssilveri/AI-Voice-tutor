@@ -16,6 +16,7 @@ from app.models.assignment import (
 )
 from app.models.audit import AuditAction, AuditEvent
 from app.models.base import Base, TimestampMixin, uuid_pk
+from app.models.cart import CartItem
 from app.models.certification import (
     AttemptGrant,
     CertAttempt,
@@ -24,6 +25,7 @@ from app.models.certification import (
 )
 from app.models.contact import ContactMessage
 from app.models.course import Course, Module
+from app.models.deletion import DeletionRequest, DeletionStatus, DeletionTarget
 from app.models.enrollment import Enrollment, ModuleProgress, ProgressStatus
 from app.models.material import ModuleMaterial
 from app.models.message import DirectMessage
@@ -53,11 +55,15 @@ __all__ = [
     "Base",
     "BillingInterval",
     "Branch",
+    "CartItem",
     "CertAttempt",
     "CertExam",
     "Certificate",
     "ContactMessage",
     "Course",
+    "DeletionRequest",
+    "DeletionStatus",
+    "DeletionTarget",
     "Department",
     "DirectMessage",
     "DocumentVisibility",

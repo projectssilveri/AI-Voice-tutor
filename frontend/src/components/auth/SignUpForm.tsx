@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import React, { useState } from "react";
 
 import Input from "@/components/form/input/InputField";
 import Label from "@/components/form/Label";
 import Button from "@/components/ui/button/Button";
 import { useAuth } from "@/context/AuthContext";
+import { safeNext } from "@/lib/safeNext";
 import {
   passwordChecks,
   validateEmail,
@@ -66,6 +67,9 @@ export default function SignUpForm() {
   const checks = passwordChecks(password);
 
   const router = useRouter();
+  // Set by whatever sent them here — the pricing page's subscribe button, or
+  // a route guard. `safeNext` is what decides whether it is usable.
+  const next = useSearchParams().get("next");
   const { refresh } = useAuth();
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -100,7 +104,14 @@ export default function SignUpForm() {
       // otherwise a new account lands on the sign-in page.
       await login(email, password);
       await refresh();
-      router.push("/dashboard");
+      // The same landing rule as signing in: the website, signed in, unless
+      // `next` names somewhere.
+      //
+      // `next` was READ BY NOBODY here until now, while /pricing was busy
+      // sending people to `/signup?next=/pricing?plan=…` from its "Create an
+      // account to subscribe" button. They picked a plan, made an account, and
+      // arrived at a dashboard with no mention of it.
+      router.push(safeNext(next, "/"));
       router.refresh();
     } catch (caught) {
       setError(

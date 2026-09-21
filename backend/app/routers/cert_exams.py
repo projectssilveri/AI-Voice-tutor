@@ -12,6 +12,7 @@ Flagged as a decision.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -31,9 +32,22 @@ from app.services import access, audit, certificate_pdf, certification
 from app.services import courses as course_service
 from app.services import quizzes as quiz_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["certification"])
 
 admin_only = Depends(require_role(UserRole.ADMIN))
+
+# AUTHORING IS SUPER ADMIN ONLY (issue 11). `require_role(ADMIN)` widens
+# upwards to include super admins; this one does not widen, because the point
+# is to exclude the platform admin who previously satisfied it.
+#
+# The ORGANISATION portal is untouched. An org admin writes their own company's
+# training through `/org/{slug}/courses`, a different router with its own scope
+# check — what a customer may write about their own business is not this rule's
+# business.
+super_admin_only = Depends(require_role(UserRole.SUPER_ADMIN))
+
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -54,6 +68,16 @@ class CertExamRead(BaseModel):
     course_id: uuid.UUID
     title: str
     default_max_attempts: int
+    #: The score that passes. It lives in `certification.PASS_MARK` and was
+    #: never sent to the screen, so a student sat the exam without knowing
+    #: whether 60 was a pass. Issue 16.
+    pass_mark: float = certification.PASS_MARK
+    # Whether the course has been finished, and how far off if not. A locked
+    # exam is SHOWN, not hidden: a student needs to know what is left.
+    modules_total: int = 0
+    modules_completed: int = 0
+    unlocked: bool = True
+    locked_reason: str | None = None
 
 
 class AttemptStanding(BaseModel):
@@ -67,6 +91,11 @@ class AttemptStanding(BaseModel):
     granted_attempts: int
     passed: bool
     certificate_issued_at: datetime | None
+    #: An unsubmitted paper waiting to be resumed, and how many times they have
+    #: already left it. Null when nothing is open.
+    open_attempt_number: int | None = None
+    lapses_used: int = 0
+    lapses_allowed: int = certification.ALLOWED_LAPSES
 
 
 class CertExamDetail(CertExamRead):
@@ -122,6 +151,10 @@ async def _standing(
 ) -> AttemptStanding:
     allowance = await certification.get_allowance(session, user_id, exam_id)
     certificate = await certification.get_certificate(session, user_id, exam_id)
+    # The paper they walked away from, if there is one. Resuming is not a new
+    # attempt, so the screen has to be able to say "carry on" rather than
+    # "start", and the proctor has to pick the lapse count up where it left it.
+    open_attempt = await certification.open_attempt_for(session, user_id, exam_id)
     return AttemptStanding(
         allowed_attempts=allowance.allowed_attempts,
         used_attempts=allowance.used_attempts,
@@ -131,6 +164,8 @@ async def _standing(
         granted_attempts=allowance.granted_attempts,
         passed=certificate is not None,
         certificate_issued_at=certificate.issued_at if certificate else None,
+        open_attempt_number=open_attempt.attempt_number if open_attempt else None,
+        lapses_used=open_attempt.lapses if open_attempt else 0,
     )
 
 
@@ -160,12 +195,17 @@ async def list_course_exams(
         ) from None
 
     exams = await certification.list_exams_for_course(session, course_id)
+    standing = await certification.course_standing(session, user, course_id)
     return [
         CertExamRead(
             id=e.id,
             course_id=e.course_id,
             title=e.title,
             default_max_attempts=e.default_max_attempts,
+            modules_total=standing.modules_total,
+            modules_completed=standing.modules_completed,
+            unlocked=standing.unlocked,
+            locked_reason=standing.reason,
         )
         for e in exams
     ]
@@ -202,11 +242,18 @@ async def get_exam(
         ) from None
 
     questions = await _exam_questions(session, exam.course_id)
+    course_progress = await certification.course_standing(
+        session, user, exam.course_id
+    )
     return CertExamDetail(
         id=exam.id,
         course_id=exam.course_id,
         title=exam.title,
         default_max_attempts=exam.default_max_attempts,
+        modules_total=course_progress.modules_total,
+        modules_completed=course_progress.modules_completed,
+        unlocked=course_progress.unlocked,
+        locked_reason=course_progress.reason,
         standing=await _standing(session, user.id, exam_id),
         question_count=len(questions),
     )
@@ -292,7 +339,7 @@ async def download_certificate(
     target_id = user.id
     if user_id is not None and user_id != user.id:
         # SUPER_ADMIN was excluded by the old `is not UserRole.ADMIN`, which
-        # locked the platform owner out of a screen their own console links to.
+        # locked the super admin out of a screen their own console links to.
         # Decision 50's rule is that ADMIN widens upwards; a raw comparison is
         # the one place it does not happen automatically.
         if user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
@@ -316,14 +363,33 @@ async def download_certificate(
     attempts = await certification.list_attempts(session, target_id, exam_id)
     best = max((float(a.score) for a in attempts if a.passed), default=None)
 
-    pdf = certificate_pdf.render_certificate(
-        certificate_id=certificate.id,
-        student_name=holder.name if holder else "",
-        course_title=course.title if course else "",
-        exam_title=exam.title,
-        score=best,
-        issued_at=certificate.issued_at,
-    )
+    # THE ONE THING THEY PASSED FOR. Nine hostile names were tried against
+    # the renderer — Devanagari, Arabic, an emoji, 600 characters, control
+    # bytes — and none of them broke it, so this is not a known fault. It is
+    # here because if it ever does fail, "Internal server error" is what a
+    # student who earned a certificate would be told, and the log would not
+    # say which certificate.
+    try:
+        pdf = certificate_pdf.render_certificate(
+            certificate_id=certificate.id,
+            student_name=holder.name if holder else "",
+            course_title=course.title if course else "",
+            exam_title=exam.title,
+            score=best,
+            issued_at=certificate.issued_at,
+        )
+    except Exception:
+        logger.exception(
+            "Could not render certificate %s for exam %s", certificate.id, exam_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "We could not build your certificate just now. It is still "
+                "yours and nothing has been lost. Try again, and tell us if "
+                "it keeps happening."
+            ),
+        ) from None
 
     filename = _safe_filename(course.title if course else "certificate")
     return Response(
@@ -371,16 +437,17 @@ async def get_exam_questions(
             status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
         ) from None
 
-    allowance = await certification.get_allowance(session, user.id, exam_id)
-    if not allowance.can_attempt:
+    # BEFORE the attempt allowance, so an unfinished course is told to go and
+    # finish rather than being handed a paper it cannot legitimately sit.
+    try:
+        await certification.assert_course_complete(session, user, exam.course_id)
+    except certification.CourseIncompleteError as exc:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"You have used all {allowance.allowed_attempts} attempts for "
-                "this exam. Contact an admin to request more."
-            ),
-        )
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from None
 
+    # THE QUESTIONS FIRST, THE ATTEMPT SECOND. An exam with nothing in it must
+    # not spend one: the student would be charged a sitting for an empty page.
     questions = await _exam_questions(session, exam.course_id)
     if not questions:
         raise HTTPException(
@@ -388,10 +455,81 @@ async def get_exam_questions(
             detail="This exam has no questions yet.",
         )
 
+    # LEAVING ENDS IT, AND THE SERVER HAS TO SAY SO TOO.
+    #
+    # The proctor covers the paper and submits the moment somebody leaves, and
+    # the attempt carries the lapse that proves it (migration 0027). This route
+    # then handed the same paper straight back on a reload, so the rule lived
+    # entirely in the browser: refreshing the page, or opening the exam in a
+    # second tab, put the student back inside an attempt they had already lost.
+    # Verified against the running API before this check existed. Issue 29.
+    #
+    # Only the paper is refused, not the submission. The browser still holds
+    # the answers written before they left and posts them straight after, which
+    # is what "this attempt is being submitted as it stands" promises them. A
+    # student who reloads instead loses those answers, which is what leaving
+    # costs.
+    lapsed = await certification.open_attempt_for(session, user.id, exam_id)
+    if lapsed is not None and lapsed.lapses > certification.ALLOWED_LAPSES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "You left this exam, so that attempt is over. Start a new "
+                "attempt if you have one left."
+            ),
+        )
+
+    # HANDING THE PAPER OVER IS WHAT SPENDS THE ATTEMPT, since migration 0026.
+    # It used to be spent at submission, so the questions could be read as
+    # often as anybody liked and the cap only limited how many times they were
+    # marked. Resuming an unsubmitted paper returns the same attempt, so this
+    # is charged once however many times they come back to it.
+    try:
+        await certification.open_attempt(session, user_id=user.id, exam_id=exam_id)
+    except certification.AttemptLimitReachedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from None
+
     return [
         QuizQuestionForStudent(id=q.id, question=q.question, options=list(q.options))
         for q in questions
     ]
+
+
+class LapseResult(BaseModel):
+    """What the browser is told after reporting that the student left."""
+
+    lapses_used: int
+    lapses_allowed: int
+    #: True when they have gone past the allowance and the paper must be
+    #: submitted as it stands.
+    must_submit: bool
+
+
+@router.post("/cert-exams/{exam_id}/lapse", response_model=LapseResult)
+async def record_lapse(
+    exam_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> LapseResult:
+    """The student left the exam. Count it against the attempt.
+
+    ON THE SERVER BECAUSE PAPERS ARE RESUMABLE. The proctor used to hold this
+    in a React ref and clear it every time a paper opened, so leaving twice and
+    reopening started the budget again. Migration 0027 put it on the attempt.
+
+    Deliberately forgiving about an exam that is not open: the page exits full
+    screen on its way out of a submission, which fires the same browser event a
+    student switching tabs does, and that must not answer an error to somebody
+    who has just finished.
+    """
+    used, must_submit = await certification.record_lapse(
+        session, user_id=user.id, exam_id=exam_id
+    )
+    return LapseResult(
+        lapses_used=used,
+        lapses_allowed=certification.ALLOWED_LAPSES,
+        must_submit=must_submit,
+    )
 
 
 @router.post(
@@ -429,6 +567,22 @@ async def submit_exam(
             status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
         ) from None
 
+    # AND THE COURSE ITSELF, checked here as well as on `/questions`. This is
+    # the call that issues a CERTIFICATE, so it cannot lean on the earlier
+    # request having been made honestly — the whole hole in issue 14 was that a
+    # student reached the paper by a route nobody had gated.
+    #
+    # THE SAME GATE AS THE PAPER, now. This route used to be the strict one and
+    # `/questions` the lenient one, so staff were shown a paper they could
+    # never submit and refused at the last step. One question, one answer —
+    # see `certification.course_standing`.
+    try:
+        await certification.assert_course_complete(session, user, exam.course_id)
+    except certification.CourseIncompleteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from None
+
     questions = await _exam_questions(session, exam.course_id)
     if not questions:
         raise HTTPException(
@@ -443,17 +597,30 @@ async def submit_exam(
         attempt, certificate = await certification.submit_attempt(
             session, user_id=user.id, exam_id=exam_id, score=graded.score
         )
-    except certification.AttemptLimitReachedError as exc:
+    except (
+        certification.AttemptLimitReachedError,
+        certification.NoOpenAttemptError,
+    ) as exc:
         # A refused attempt is recorded too. "Why does this student say they
         # could not sit the exam" is exactly the question this trail is asked,
         # and an audit log that only holds successes cannot answer it.
+        #
+        # NoOpenAttemptError joins it because since migration 0026 the paper is
+        # what spends the attempt: a submission with nothing open means the
+        # client called out of order, and scoring it would record a sitting
+        # nobody was charged for.
+        refusal = (
+            "attempt_limit_reached"
+            if isinstance(exc, certification.AttemptLimitReachedError)
+            else "no_open_attempt"
+        )
         await audit.record_safely(
             session,
             action=AuditAction.EXAM_SUBMITTED,
             actor=user,
             target_type="cert_exam",
             target_id=exam_id,
-            metadata={"outcome": "refused", "reason": "attempt_limit_reached"},
+            metadata={"outcome": "refused", "reason": refusal},
         )
         await session.commit()
         raise HTTPException(
@@ -538,7 +705,7 @@ async def list_my_attempts(
     "/courses/{course_id}/cert-exams",
     response_model=CertExamRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[admin_only],
+    dependencies=[super_admin_only],
 )
 async def create_exam(
     course_id: uuid.UUID,

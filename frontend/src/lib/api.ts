@@ -213,7 +213,31 @@ export async function apiFetch<T>(
     }
     // The reader gets `detail`; whoever has to fix it gets the rest, here,
     // where the URL and status are still in scope.
-    console.error(`[api] ${response.status} ${url}`, { code });
+    //
+    // EXCEPT THE TWO THAT ARE ANSWERS RATHER THAN FAULTS.
+    //
+    // 401 means "not signed in", which is the ordinary state of every visitor
+    // who has not signed in yet — and several callers ask a question before
+    // they know the answer to that. `UserDropdown` reads the unread count on
+    // mount and catches the failure on purpose, with a comment saying it is
+    // "not worth an error on a menu"; this line then wrote one to the console
+    // anyway, in red, on the home page, for everybody signed out.
+    //
+    // 402 means "you have not bought this". It is a PRICE TAG, never a defect:
+    // decision 60 chose it over 403 precisely so `PaywallNotice` could turn it
+    // into a Buy button rather than a red sentence. The certificates page asks
+    // every enrolled course for its exams and catches the refusals, with its
+    // own comment saying an entitlement that lapsed answers 402 here — and got
+    // a console error per locked course for its trouble. Reported from a real
+    // session, on an account that had just stopped being staff.
+    //
+    // 403 STILL LOGS, and should. That one means signed in and refused, which
+    // is a rule disagreeing with the screen that offered the action — how the
+    // certification exam's two-gates bug was spotted.
+    const EXPECTED = new Set([401, 402]);
+    if (!EXPECTED.has(response.status)) {
+      console.error(`[api] ${response.status} ${url}`, { code });
+    }
     throw new ApiError(
       response.status,
       detail,

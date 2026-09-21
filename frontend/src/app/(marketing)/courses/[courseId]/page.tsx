@@ -156,7 +156,9 @@ export default async function PublicCoursePage({ params }: PageProps) {
 
       <section
         id="about"
-        className="scroll-mt-16 bg-[var(--mk-canvas)] py-16 md:py-20"
+        /* The header AND the tab bar sit above an anchored section, so 16
+           left the heading underneath both. */
+        className="scroll-mt-36 bg-[var(--mk-canvas)] py-16 md:py-20"
       >
         <div className="container">
           <div className="grid gap-10 lg:grid-cols-[8fr_4fr] lg:gap-14">
@@ -170,7 +172,7 @@ export default async function PublicCoursePage({ params }: PageProps) {
 
               <h2
                 id="curriculum"
-                className="mb-3 scroll-mt-20 text-2xl font-bold text-white sm:text-3xl"
+                className="mb-3 scroll-mt-36 text-2xl font-bold text-white sm:text-3xl"
               >
                 Curriculum
               </h2>

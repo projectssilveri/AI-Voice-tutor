@@ -49,8 +49,12 @@ export async function uploadPhoto(file: File): Promise<void> {
   }
 }
 
-export function deletePhoto(): Promise<void> {
-  return apiFetch<void>("/profile/photo", { ...authed, method: "DELETE" });
+/** True when there was a photo to take off, false when there was not. */
+export function deletePhoto(): Promise<{ removed: boolean }> {
+  return apiFetch<{ removed: boolean }>("/profile/photo", {
+    ...authed,
+    method: "DELETE",
+  });
 }
 
 // ---------------------------------------------------------------------------

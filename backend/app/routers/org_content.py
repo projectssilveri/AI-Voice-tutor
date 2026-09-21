@@ -23,10 +23,11 @@ from sqlalchemy.exc import IntegrityError
 from app.deps import DbSession, OrgAuthorScope, OrgScope
 from app.models.audit import AuditAction
 from app.models.course import Course, Module
+from app.models.deletion import DeletionTarget
 from app.models.org_document import DocumentVisibility
 from app.models.organization import Branch, Department
 from app.models.user import User, UserRole
-from app.services import audit, limits, materials
+from app.services import audit, deletions, limits, materials
 from app.services import courses as course_service
 from app.services import org_documents as doc_service
 
@@ -328,13 +329,22 @@ async def download_document(
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
-    document_id: uuid.UUID, session: DbSession, scope: OrgAuthorScope
+    document_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAuthorScope,
+    response: Response,
+    reason: str = "",
 ) -> None:
-    """Remove a file. Whose file decides who may.
+    """Remove a file, or ask an administrator to. Whose file decides who may.
 
     Read BEFORE deleting, rather than deleting and checking: the service would
     otherwise have removed another department's document by the time anything
     looked at whose it was.
+
+    AN ADMINISTRATOR REMOVES; ANYBODY ELSE ASKS. A document is a customer's
+    data, and a department author deleting one is the same class of act as a
+    department manager deleting a colleague — small, irreversible, and until now
+    unsupervised. 202 and no body when it is queued.
     """
     document = await doc_service.get_with_data(
         session, scope.organization.id, document_id
@@ -343,20 +353,75 @@ async def delete_document(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
         )
-    if not _may_manage_document(scope, document.visibility, document.department_id):
-        if _document_readable(
-            scope, document.visibility, document.branch_id, document.department_id
-        ):
-            # They can see it, so 404 would be a lie. It is the company's file.
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "This document is for the whole organization. Ask an administrator."
-                ),
-            )
+    # CAN THEY SEE IT AT ALL? That is the only question this answers now.
+    #
+    # It used to answer two: "may you manage it" and, if not but you can read
+    # it, 403 "This document is for the whole organization. Ask an
+    # administrator." The advice was sound and impossible to follow — there was
+    # nowhere to ask. Now the asking exists, so a reader who cannot manage the
+    # file raises a request like anybody else and the message becomes true.
+    #
+    # The 404 branch stays exactly as it was: somebody who cannot see a
+    # document must not learn it exists by having their request accepted.
+    if not _document_readable(
+        scope, document.visibility, document.branch_id, document.department_id
+    ) and not _may_manage_document(
+        scope, document.visibility, document.department_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
         )
+
+    # An organisation admin removes it outright; everybody else asks — including
+    # an author who could manage it, since the file is still the company's.
+    if scope.user.role is not UserRole.ORG_ADMIN or not _may_manage_document(
+        scope, document.visibility, document.department_id
+    ):
+        try:
+            request = await deletions.request_deletion(
+                session,
+                organization=scope.organization,
+                target_type=DeletionTarget.DOCUMENT,
+                target_id=document_id,
+                target_label=document.filename,
+                actor=scope.user,
+                reason=reason,
+            )
+        except deletions.DeletionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+        await audit.record(
+            session,
+            action=AuditAction.DELETION_REQUESTED,
+            actor=scope.user,
+            organization_id=scope.organization.id,
+            target_type="organization_document",
+            target_id=document_id,
+            metadata={"name": document.filename, "request": str(request.id)},
+        )
+        await session.commit()
+        response.status_code = status.HTTP_202_ACCEPTED
+        return
+
+    # An administrator acting alone. Recorded as raised and approved in the same
+    # moment, so the history of a document has one shape whoever removed it.
+    try:
+        await deletions.request_deletion(
+            session,
+            organization=scope.organization,
+            target_type=DeletionTarget.DOCUMENT,
+            target_id=document_id,
+            target_label=document.filename,
+            actor=scope.user,
+            reason=reason or "Removed by an organisation administrator.",
+            pre_approved=True,
+        )
+    except deletions.DeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
 
     removed = await doc_service.delete_document(
         session, scope.organization.id, document_id
@@ -600,8 +665,8 @@ async def create_org_course(
 
     Open to a DEPARTMENT ADMIN as well as an org admin — writing their own
     department's training is half of what that role is for — and their course
-    is stamped with their own department, which is the other half. An org
-    TEACHER still cannot create courses: the admin floor and the audit trail
+    is stamped with their own department, which is the other half. An ordinary
+    LEARNER still cannot create courses: the admin floor and the audit trail
     both attribute content to a named administrator, and widening that is a
     decision for the customer, not a default.
     """

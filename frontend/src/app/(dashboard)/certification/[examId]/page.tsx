@@ -18,6 +18,7 @@ import {
   getExam,
   getExamQuestions,
   listExamAttempts,
+  recordLapse,
   submitExam,
 } from "@/lib/assessments";
 import { counted } from "@/lib/plural";
@@ -60,6 +61,14 @@ export default function CertExamPage() {
   // does not go through until they press again.
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // WAS FULL SCREEN EVER GRANTED? Only then does leaving it hide the paper.
+  //
+  // `requestFullscreen` can be refused — an iframe without the permission, a
+  // browser that wants a different gesture — and `requestFullscreen` below
+  // already calls that survivable. Treating "not full screen" as "left the
+  // exam" without this would put an unclearable cover over the paper of a
+  // student whose browser never offered full screen in the first place.
+  const [fullscreenGranted, setFullscreenGranted] = useState(false);
   const [leaving, setLeaving] = useState(false);
   // Set when the proctor ended the paper, so the result can say why.
   // Not a count and not a policy — just what happened, once.
@@ -94,7 +103,13 @@ export default function CertExamPage() {
   // The browser is the source of truth for fullscreen: the student can leave
   // it with Escape at any time and no event of ours would fire.
   useEffect(() => {
-    const sync = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    const sync = () => {
+      const on = Boolean(document.fullscreenElement);
+      setIsFullscreen(on);
+      // One-way for the life of the page: once it has been held, leaving it
+      // is a departure rather than a browser that cannot do it.
+      if (on) setFullscreenGranted(true);
+    };
     document.addEventListener("fullscreenchange", sync);
     sync();
     return () => document.removeEventListener("fullscreenchange", sync);
@@ -196,6 +211,13 @@ export default function CertExamPage() {
 
   const proctor = useExamProctor({
     active: questions !== null && result === null,
+    // Reported to the server, which keeps the count on the attempt row and
+    // answers whether the allowance is gone. The browser used to decide, with
+    // a counter that reset every time the paper was reopened.
+    onLapse: async () => {
+      const seen = await recordLapse(examId);
+      return { used: seen.lapses_used, over: seen.must_submit };
+    },
     onLimitReached: (lapses) => {
       // Submitted as it stands. Saying nothing here and letting the
       // result screen appear would look like a bug; the result screen
@@ -205,7 +227,9 @@ export default function CertExamPage() {
     },
   });
   proctorRef.current = proctor;
-  const { warning, dismissWarning } = proctor;
+  // `dismissWarning` is gone with the Continue button: there is nothing to
+  // dismiss now that leaving ends the attempt rather than pausing it.
+  const { warning } = proctor;
 
   /** Abandon without submitting. Costs nothing — attempts are spent on submit. */
   async function handleLeave() {
@@ -252,6 +276,17 @@ export default function CertExamPage() {
   const unanswered = questions ? questions.length - answeredCount : 0;
 
   // ---------------------------------------------------------------- exam mode
+  // IS THE EXAM THE THING ON SCREEN? While it is not, the paper is not
+  // rendered — see the note at the top of `fix_exam_cover` and the proctor's
+  // own docstring. Submitting and leaving exit full screen themselves, so
+  // neither counts: without that, pressing Submit flashes "you left the exam"
+  // at a student on their way out.
+  const ourOwnExit = submitting || leaving;
+  const paperCovered =
+    questions !== null &&
+    !ourOwnExit &&
+    (warning !== null || (fullscreenGranted && !isFullscreen));
+
   if (questions) {
     return (
       <div className="fixed inset-0 z-999999 flex flex-col bg-white dark:bg-gray-900">
@@ -269,15 +304,20 @@ export default function CertExamPage() {
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  isFullscreen ? void leaveFullscreen() : requestFullscreen()
-                }
-                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-white/[0.03]"
-              >
-                {isFullscreen ? "Exit full screen" : "Full screen"}
-              </button>
+              {/* ONLY THE WAY IN. This used to toggle, and "Exit full screen"
+                  recorded a lapse against the student the moment they pressed
+                  it — a control this page gave them, that cost them a strike,
+                  with nothing on it saying so. Submit and Leave are the ways
+                  out, and both say what they do. */}
+              {!isFullscreen ? (
+                <button
+                  type="button"
+                  onClick={requestFullscreen}
+                  className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-white/[0.03]"
+                >
+                  Full screen
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => setLeaving(true)}
@@ -288,28 +328,18 @@ export default function CertExamPage() {
             </div>
           </div>
 
-          {warning ? (
-            // Shown every time they come back, in the same words. A sterner
-            // second message would tell them a count is being kept and roughly
-            // where they are in it, which is an invitation to spend the rest.
-            <div
-              role="alert"
-              className="mx-auto mt-3 flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-2xl border border-warning-400 bg-warning-50 p-4 text-sm font-medium text-warning-900 dark:border-warning-500/50 dark:bg-warning-500/15 dark:text-warning-300"
-            >
-              <span>{warning}</span>
-              <button
-                type="button"
-                onClick={dismissWarning}
-                className="shrink-0 rounded-lg border border-warning-400 px-3 py-1.5 text-xs font-semibold text-warning-900 transition hover:bg-warning-100 dark:border-warning-500/50 dark:text-warning-300 dark:hover:bg-warning-500/20"
-              >
-                Continue
-              </button>
-            </div>
-          ) : null}
+          {/* The warning moved into the cover below, which is the thing
+              that now carries it. A banner over a readable paper was the
+              whole complaint. */}
 
           {/* Jump to any question; filled means answered. Useful precisely
-              because submitting with blanks is what costs an attempt. */}
-          <div className="mx-auto mt-3 flex max-w-3xl flex-wrap gap-1.5">
+              because submitting with blanks is what costs an attempt. Hidden
+              with the paper: how many are answered is the paper's business. */}
+          <div
+            className={`mx-auto mt-3 flex max-w-3xl flex-wrap gap-1.5 ${
+              paperCovered ? "hidden" : ""
+            }`}
+          >
             {questions.map((question, index) => {
               const done = selections[question.id] !== undefined;
               return (
@@ -335,7 +365,34 @@ export default function CertExamPage() {
           </div>
         </header>
 
-        {/* The paper */}
+        {/* The paper — or nothing at all, while the exam is not on screen.
+            NOT RENDERED rather than blurred or faded: a covered paper that is
+            still in the document can be screenshotted, selected, copied, or
+            read straight out of the page source. */}
+        {paperCovered ? (
+          <div className="flex flex-1 items-center justify-center px-5 py-6">
+            <div
+              role="alert"
+              className="mx-auto max-w-lg rounded-2xl border border-warning-400 bg-warning-50 p-6 text-center dark:border-warning-500/50 dark:bg-warning-500/15"
+            >
+              <h2 className="mb-2 text-lg font-semibold text-warning-900 dark:text-warning-300">
+                The exam has ended
+              </h2>
+              <p className="mb-5 text-sm font-medium text-warning-900 dark:text-warning-300">
+                {warning ??
+                  "The exam has to be the thing on your screen. This attempt " +
+                    "is being submitted as it stands."}
+              </p>
+              {/* NO WAY BACK IN. There was a "Return to the exam" button here
+                  while leaving was survivable. It is not: the attempt ends on
+                  the way out, and a button offering to resume it would be
+                  offering something that no longer exists. */}
+              <p className="text-sm text-warning-900 dark:text-warning-300">
+                Your score will appear in a moment.
+              </p>
+            </div>
+          </div>
+        ) : (
         <div className="flex-1 overflow-y-auto px-5 py-6">
           <div className="mx-auto max-w-3xl">
             {error ? (
@@ -358,6 +415,7 @@ export default function CertExamPage() {
             />
           </div>
         </div>
+        )}
 
         {/* Submit stays in reach without scrolling to the bottom. */}
         <footer className="shrink-0 border-t border-gray-200 bg-white px-5 py-4 dark:border-gray-800 dark:bg-gray-900">
@@ -369,9 +427,8 @@ export default function CertExamPage() {
                   the paper above.
                 </p>
                 <p className="mt-0.5 text-sm text-warning-700 dark:text-warning-400">
-                  Submitting now uses one of your{" "}
-                  {counted(standing.remaining_attempts, "remaining attempt")}{" "}
-                  and scores the blanks wrong.
+                  The blanks will be scored wrong. This attempt is already
+                  spent, so leaving instead does not get it back.
                 </p>
               </div>
             ) : null}
@@ -415,9 +472,12 @@ export default function CertExamPage() {
                 </button>
               ) : null}
 
+              {/* WAS "Submitting uses one attempt". Opening the paper is what
+                  spends it now, so that read as though leaving were free when
+                  the attempt had already gone. */}
               <span className="text-sm text-gray-500 dark:text-gray-400">
-                Submitting uses one attempt.{" "}
-                {counted(standing.remaining_attempts, "attempt")} left.
+                Attempt {standing.used_attempts} of {standing.allowed_attempts}.
+                Leaving the exam ends it.
               </span>
             </div>
           </div>
@@ -430,10 +490,17 @@ export default function CertExamPage() {
               <h2 className="mb-2 font-semibold text-gray-800 dark:text-white/90">
                 Leave the exam?
               </h2>
+              {/* IT IS NOT FREE ANY MORE. Opening the paper spent the
+                  attempt, and this dialog used to promise the opposite. What
+                  leaving does cost is the answers; the attempt itself stays
+                  open, so they can come back to this same paper. */}
+              {/* PRESSING LEAVE IS NOT A VIOLATION. `handleSubmit` and this
+                  both pause the proctor first, so using the door we provided
+                  does not end the attempt the way walking out of it does. */}
               <p className="mb-5 text-sm text-gray-500 dark:text-gray-400">
-                This costs you nothing. An attempt is only used when you submit.
                 Your {counted(answeredCount, "answer")} so far will be
-                discarded.
+                discarded. The attempt stays open, so you can come back to this
+                same paper.
               </p>
               <div className="flex gap-3">
                 <button
@@ -476,14 +543,36 @@ export default function CertExamPage() {
           remaining={standing.remaining_attempts}
         />
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          {exam.question_count} questions. Every submitted attempt counts,
-          whether you pass or fail.
+          {exam.question_count} questions.{" "}
+          <strong className="font-semibold text-gray-700 dark:text-gray-200">
+            {exam.pass_mark}% or better passes.
+          </strong>{" "}
+          Opening the paper uses an attempt, and leaving the exam ends it.
         </p>
       </div>
 
       {error ? (
         <div className="rounded-2xl border border-error-500 bg-error-50 p-4 text-sm text-error-700 dark:bg-error-500/10 dark:text-error-400">
           {error}
+        </div>
+      ) : null}
+
+      {/* THE COURSE ITSELF. Shown before the attempt counts, because "you have
+          3 attempts" beside a locked exam reads as an invitation. The server
+          refuses both the paper and the submission, so this is the explanation
+          rather than the enforcement. */}
+      {!exam.unlocked ? (
+        <div className="rounded-2xl border border-warning-300 bg-warning-50 p-5 dark:border-warning-500/40 dark:bg-warning-500/10">
+          <p className="font-semibold text-warning-800 dark:text-warning-400">
+            Finish the course first
+          </p>
+          <p className="mt-1 text-sm text-warning-800 dark:text-warning-400">
+            {exam.locked_reason ??
+              "This exam opens once every module is complete."}
+          </p>
+          <p className="mt-2 text-xs font-medium text-warning-800 dark:text-warning-400">
+            {exam.modules_completed} of {exam.modules_total} modules completed
+          </p>
         </div>
       ) : null}
 
@@ -587,15 +676,52 @@ export default function CertExamPage() {
         </div>
       ) : null}
 
-      {standing.can_attempt ? (
+      {/* `exam.unlocked` as well as the attempt count. The server refuses a
+          locked exam on both `/questions` and the submit route, so pressing
+          Start would only produce a red sentence. */}
+      {standing.can_attempt && exam.unlocked ? (
         <div className="rounded-2xl border border-gray-200 bg-white shadow-raised p-6 dark:border-gray-800 dark:bg-white/[0.03]">
-          <p className="mb-1 text-sm text-gray-600 dark:text-gray-300">
-            {/* Kept, and kept short. This is the one fact that stops a
-                student hesitating to open the paper, and the exam takes over
-                the screen the moment they do — which is worth a warning. */}
-            An attempt is only used when you submit. The exam opens full screen;
-            you can leave any time before submitting.
-          </p>
+          {/* BEFORE YOU START, NOT AFTER YOU LOSE ONE.
+              Any departure from the exam ends the attempt, and most of the
+              ways that happens are accidents somebody could have prevented
+              five minutes earlier: a notification stealing the window, a
+              laptop going to sleep, a habit of alt-tabbing. Telling them
+              afterwards is an apology; telling them here is a checklist.
+
+              Plain actions, not policy. "Turn on Do Not Disturb" is something
+              a person can go and do; "avoid interruptions" is not. */}
+          <div className="mb-4 rounded-xl border border-warning-300 bg-warning-50 p-4 dark:border-warning-500/40 dark:bg-warning-500/10">
+            <p className="mb-2 text-sm font-semibold text-warning-800 dark:text-warning-400">
+              Before you start
+            </p>
+            <p className="mb-3 text-sm text-warning-800 dark:text-warning-400">
+              Opening the paper uses one of your {standing.allowed_attempts}{" "}
+              attempts, and leaving the exam ends that attempt on the spot.
+              Exiting full screen, switching tab or hiding the window all count,
+              whether you meant to or not. Take a minute to sort these out
+              first:
+            </p>
+            <ul className="mb-3 space-y-1.5 text-sm text-warning-800 dark:text-warning-400">
+              {[
+                "Turn on Do Not Disturb, and silence your phone. A notification that steals the window ends the exam.",
+                "Close the other tabs and apps you might switch to out of habit.",
+                "Plug the laptop in, and check it is not set to sleep after a few minutes.",
+                "Go to the loo, get a drink, and tell anyone nearby you will be a while.",
+                "Make sure your connection is steady. Your answers are sent when you submit.",
+              ].map((item) => (
+                <li key={item} className="flex gap-2">
+                  <span aria-hidden="true" className="select-none">
+                    &bull;
+                  </span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-sm text-warning-800 dark:text-warning-400">
+              There is no timer, so take as long as you need once you are in.
+              The one thing you must not do is leave.
+            </p>
+          </div>
           <button
             type="button"
             onClick={handleStart}

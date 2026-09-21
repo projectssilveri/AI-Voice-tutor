@@ -16,9 +16,16 @@ import ProductPanel from "@/components/marketing/ProductPanel";
  */
 export default function Hero() {
   return (
-    <section className="relative isolate overflow-hidden pb-16 pt-16 sm:pb-24 sm:pt-24">
+    // `overflow-x-clip`, not `overflow-hidden`. The orbs below hang off
+    // both edges and the clipping is there to stop them widening the page.
+    // Clipping BOTH axes also cut the glow off in a straight line at the
+    // section's top edge, which is exactly where the sticky header sits, so
+    // the header sat on a black band while the page below it was lit.
+    <section className="relative isolate overflow-x-clip pb-16 pt-16 sm:pb-24 sm:pt-24">
       {/* Floating gradient orbs — decoration only */}
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+      {/* Starts ABOVE this section so the light carries up behind the
+          header instead of stopping at its bottom edge. */}
+      <div aria-hidden="true" className="pointer-events-none absolute -top-32 inset-x-0 bottom-0">
         {/* Indigo orb — top left */}
         <div className="animate-float absolute -left-32 -top-32 size-[600px] rounded-full opacity-25 blur-[100px]"
           style={{ background: "radial-gradient(circle, #6366f1, #4338ca)" }} />
@@ -71,15 +78,26 @@ export default function Hero() {
 
           {/* CTA buttons */}
           <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
-            {/* Shimmer-enhanced primary CTA wrapper */}
-            <span className="relative inline-flex overflow-hidden rounded-xl">
-              <PrimaryCta />
+            {/* The shimmer is positioned against THIS wrapper, so the
+                wrapper has to be exactly the button. In a `flex-col` row —
+                which is what phones get — a flex child stretches to the full
+                column width by default, so the wrapper became 335px around a
+                179px button and the sweep ran 156px out into empty space
+                beside it. `w-full` on both wrapper and button on phones, auto
+                from `sm` up, keeps the two the same size at every width. */}
+            <span className="relative inline-flex w-full overflow-hidden rounded-xl sm:w-auto">
+              <PrimaryCta className="w-full sm:w-auto" />
               <span
                 aria-hidden="true"
                 className="animate-btn-shimmer pointer-events-none absolute inset-0 w-1/3 bg-gradient-to-r from-transparent via-white/20 to-transparent"
               />
             </span>
-            <MarketingButton href="/how-it-works" variant="secondary" size="large">
+            <MarketingButton
+              href="/how-it-works"
+              variant="secondary"
+              size="large"
+              className="w-full sm:w-auto"
+            >
               See how it works
               <span aria-hidden="true">→</span>
             </MarketingButton>

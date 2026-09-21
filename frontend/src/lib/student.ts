@@ -109,6 +109,30 @@ export function getModule(moduleId: string): Promise<ModuleDetail> {
  * tutor stays available. The spec caps certification attempts and nothing
  * else.
  */
+/**
+ * What is still outstanding on a module before it counts as complete.
+ *
+ * The lesson is no longer the whole bar: a module with a quiz needs the quiz
+ * passed, and one with an assignment needs it submitted. The server refuses
+ * `setModuleProgress("completed")` otherwise, so the screen reads this first
+ * and says what is left rather than offering a button that will be rejected.
+ */
+export interface ModuleRequirements {
+  needs_quiz: boolean;
+  quiz_passed: boolean;
+  best_quiz_score: number | null;
+  needs_assignment: boolean;
+  assignment_submitted: boolean;
+  ready_to_complete: boolean;
+  outstanding: string[];
+}
+
+export function getModuleRequirements(
+  moduleId: string,
+): Promise<ModuleRequirements> {
+  return apiFetch(`/modules/${moduleId}/requirements`, authed);
+}
+
 export function setModuleProgress(
   moduleId: string,
   status: "completed" | "in_progress",

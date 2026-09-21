@@ -28,11 +28,12 @@ from app.schemas.quiz import (
 )
 from app.services import access
 from app.services import courses as course_service
+from app.services import enrollments as enrollment_service
 from app.services import quizzes as quiz_service
 
 router = APIRouter(tags=["quizzes"])
 
-staff_only = Depends(require_role(UserRole.ADMIN, UserRole.TEACHER))
+staff_only = Depends(require_role(UserRole.ADMIN))
 
 
 @router.get("/modules/{module_id}/quiz", response_model=ModuleQuiz)
@@ -131,6 +132,11 @@ async def submit_quiz(
         score=graded.score,
         correct_count=graded.correct_count,
         total_questions=graded.total,
+        # From the one constant that decides it. `module_requirements` gates
+        # completion on exactly this, so answering anything else here would be
+        # the screen and the gate disagreeing about the same quiz.
+        passed=graded.score >= enrollment_service.QUIZ_PASS_MARK,
+        pass_mark=enrollment_service.QUIZ_PASS_MARK,
         results=[
             QuizAnswerResult(
                 question_id=answer.question.id,
@@ -173,6 +179,18 @@ async def list_questions_with_answers(
     try:
         await access.require_module_in_tenant(session, user, module_id)
     except access.CourseOutsideTenantError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+
+    # AND THAT IT EXISTS. `require_module_in_tenant` returns early for a module
+    # that is not there, on the grounds that "the caller's own 404 is the
+    # better error" — and this caller had no 404, so it answered an empty list
+    # instead. A module that was deleted and a module with nothing in it read
+    # the same, which is the one difference an authoring screen needs.
+    try:
+        await course_service.get_module(session, module_id)
+    except course_service.ModuleNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
         ) from None

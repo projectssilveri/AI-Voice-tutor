@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.organization import Branch, Department, Organization
 from app.models.user import User, UserRole
+from app.services import concurrency
 
 # The minimum number of org admins an organization must always have.
 #
@@ -212,9 +213,22 @@ async def assert_admin_floor_after_change(
     if still_admin:
         return
 
-    remaining = await count_org_admins(
-        session, user.organization_id, excluding=user.id
+    # LOCKED FOR THE DURATION OF THE DECISION. `count_org_admins` is still the
+    # answer to "how many are there" and is used for display; it is not safe on
+    # its own as a gate, because two admins being demoted at the same moment
+    # each see the other and both proceed. Locking the whole set makes the
+    # second wait and then re-read.
+    held = await concurrency.lock_and_list(
+        session,
+        select(User.id)
+        .where(
+            User.organization_id == user.organization_id,
+            User.role == UserRole.ORG_ADMIN,
+            User.is_active.is_(True),
+        )
+        .order_by(User.id),
     )
+    remaining = len([row for row in held if row != user.id])
     # `remaining` already excludes this user, so it IS the count after the
     # change. The comparison is against MIN_ORG_ADMINS directly — an earlier
     # draft used `MIN_ORG_ADMINS - 1` here, which would have permitted exactly

@@ -39,7 +39,7 @@ from app.services import courses as course_service
 
 router = APIRouter(tags=["assignments"])
 
-staff_only = Depends(require_role(UserRole.ADMIN, UserRole.TEACHER))
+staff_only = Depends(require_role(UserRole.ADMIN))
 
 
 def _for_student(assignment: Assignment) -> AssignmentForStudent:
@@ -236,6 +236,18 @@ async def list_module_assignments_admin(
             status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
         ) from None
 
+    # AND THAT IT EXISTS. `require_module_in_tenant` returns early for a module
+    # that is not there, on the grounds that "the caller's own 404 is the
+    # better error" — and this caller had no 404, so it answered an empty list
+    # instead. A module that was deleted and a module with nothing in it read
+    # the same, which is the one difference an authoring screen needs.
+    try:
+        await course_service.get_module(session, module_id)
+    except course_service.ModuleNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+
     assignments = await assignment_service.list_for_module(session, module_id)
     return [AssignmentAdmin.model_validate(a) for a in assignments]
 
@@ -350,13 +362,29 @@ async def delete_assignment(
 @router.get(
     "/admin/submissions",
     response_model=list[AdminSubmissionRow],
-    dependencies=[staff_only],
 )
 async def list_all_submissions(
-    session: DbSession, limit: int = 200
+    session: DbSession, admin: RequireAdmin, limit: int = 200
 ) -> list[AdminSubmissionRow]:
-    """Every submission, newest first, for the review queue."""
+    """Every submission IN SCOPE, newest first, for the review queue.
+
+    `staff_only` said "you are staff" and nothing about whose learners these
+    are, so this handed a customer's people, by name and email, together with
+    the work they wrote, to any platform admin. `override_submission` below has
+    checked tenancy since the day it was written; the listing that feeds it
+    never did, which is the same gap issues 46 and 58 report on the other
+    screens.
+
+    A super admin still reads across tenants, for support. An organisation
+    marks its own people's work in its own portal.
+    """
     grader = User.__table__.alias("grader")
+
+    course_scope = (
+        ()
+        if admin.role is UserRole.SUPER_ADMIN
+        else (Course.organization_id.is_(None),)
+    )
 
     result = await session.execute(
         select(
@@ -374,6 +402,7 @@ async def list_all_submissions(
         .join(Course, Course.id == Module.course_id)
         .join(User, User.id == AssignmentSubmission.user_id)
         .outerjoin(grader, grader.c.id == AssignmentSubmission.graded_by_user_id)
+        .where(*course_scope)
         .order_by(AssignmentSubmission.submitted_at.desc())
         .limit(min(limit, 500))
     )

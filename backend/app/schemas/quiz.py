@@ -14,6 +14,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas import ORMModel
+from app.schemas.text import NonBlankText, OptionalNonBlankText
 
 
 class QuizQuestionForStudent(BaseModel):
@@ -25,7 +26,7 @@ class QuizQuestionForStudent(BaseModel):
 
 
 class QuizQuestionAdmin(ORMModel):
-    """Admin/teacher view, including the answer."""
+    """The authoring view, including the answer."""
 
     id: uuid.UUID
     module_id: uuid.UUID
@@ -37,7 +38,7 @@ class QuizQuestionAdmin(ORMModel):
 
 
 class QuizQuestionCreate(BaseModel):
-    question: str = Field(min_length=1)
+    question: NonBlankText
     options: list[str] = Field(min_length=2, max_length=10)
     correct_answer: int = Field(ge=0)
 
@@ -56,7 +57,7 @@ class QuizQuestionCreate(BaseModel):
 
 
 class QuizQuestionUpdate(BaseModel):
-    question: str | None = Field(default=None, min_length=1)
+    question: OptionalNonBlankText
     options: list[str] | None = Field(default=None, min_length=2, max_length=10)
     correct_answer: int | None = Field(default=None, ge=0)
 
@@ -91,6 +92,18 @@ class QuizSubmission(BaseModel):
 
 
 class QuizAnswerResult(BaseModel):
+    """One question, as the student is shown it back after grading.
+
+    CARRIES THE ANSWER, and only on a PRACTICE quiz. Retakes are unlimited and
+    the quiz exists to teach, so telling somebody what the right answer was is
+    most of the point of them taking it.
+
+    The certification exam does not do this and never has: `CertExamResult` is
+    an attempt, a standing and a flag, and the paper itself comes back as
+    `QuizQuestionForStudent`, which has no answer field. That is the assessment
+    where revealing would matter, and it is already silent.
+    """
+
     question_id: uuid.UUID
     question: str
     options: list[str]
@@ -102,9 +115,10 @@ class QuizAnswerResult(BaseModel):
 class QuizResult(BaseModel):
     """Returned after submitting.
 
-    The answer key is included *here* deliberately — the attempt is over, and
-    showing what was right is the point of taking a quiz. Retakes are
-    unlimited, so nothing is protected by hiding it at this stage.
+    The answer key is included *here* deliberately, and only for a practice
+    quiz: the attempt is already recorded, retakes are unlimited, and a quiz a
+    student can learn nothing from is a quiz that only measures. The
+    certification exam reveals nothing, at any point.
     """
 
     attempt_id: uuid.UUID
@@ -112,6 +126,14 @@ class QuizResult(BaseModel):
     score: float
     correct_count: int
     total_questions: int
+    #: WHETHER THAT WAS A PASS, which this did not say. The screen printed a
+    #: percentage and a Retake button, and the student found out they had
+    #: failed later, from a different screen, when the module refused to tick
+    #: off. The server has always known; it just never answered the question.
+    passed: bool
+    #: The bar, sent rather than assumed. A second copy of 70 in the browser is
+    #: a copy that goes stale the day the mark moves.
+    pass_mark: float
     results: list[QuizAnswerResult]
 
 

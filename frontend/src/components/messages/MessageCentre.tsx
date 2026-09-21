@@ -14,6 +14,7 @@ import {
   markRead,
   sendMessage,
 } from "@/lib/messages";
+import { roleLabel } from "@/lib/roles";
 
 /**
  * Received, sent, and a box to write in.
@@ -28,6 +29,35 @@ import {
 
 const FIELD =
   "w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/25 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90";
+
+/**
+ * The picker, grouped.
+ *
+ * A flat list of names and addresses asks you to already know who everybody is.
+ * Ordered so the people who can act on an account question come first, because
+ * that is what this box is mostly used for.
+ */
+const ROLE_ORDER = [
+  "super_admin",
+  "admin",
+  "org_admin",
+  "branch_manager",
+  "dept_admin",
+  "student",
+];
+
+function groupByRole(people: Correspondent[]): [string, Correspondent[]][] {
+  const groups = new Map<string, Correspondent[]>();
+  for (const person of people) {
+    const bucket = groups.get(person.role);
+    if (bucket) bucket.push(person);
+    else groups.set(person.role, [person]);
+  }
+  return [...groups.entries()].sort(
+    ([a], [b]) =>
+      (ROLE_ORDER.indexOf(a) + 1 || 99) - (ROLE_ORDER.indexOf(b) + 1 || 99),
+  );
+}
 
 function when(iso: string): string {
   const date = new Date(iso);
@@ -288,22 +318,28 @@ export default function MessageCentre({
         ) : null}
       </div>
 
-      <div className="mb-4 flex gap-1 border-b border-gray-200 dark:border-gray-800">
+      {/* A segmented control, not three words with a hairline under one of
+          them. The old shape read as a heading — which is how a panel whose
+          entire purpose is writing to somebody ended up with its Write tab
+          being the hard one to find. */}
+      <div
+        role="tablist"
+        className="mb-4 inline-flex gap-1 rounded-xl bg-gray-100 p-1 dark:bg-white/[0.06]"
+      >
         {tabs.map((item) => (
           <button
             key={item.id}
             type="button"
+            role="tab"
+            aria-selected={tab === item.id}
             onClick={() => setTab(item.id)}
-            className={`relative px-4 py-2.5 text-sm font-medium transition-colors ${
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
               tab === item.id
-                ? "text-brand-600 dark:text-brand-400"
+                ? "bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-white"
                 : "text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
             }`}
           >
             {item.label}
-            {tab === item.id ? (
-              <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-brand-500" />
-            ) : null}
           </button>
         ))}
       </div>
@@ -340,19 +376,34 @@ export default function MessageCentre({
                 onChange={(event) => setRecipientId(event.target.value)}
                 className={FIELD}
               >
-                <option value="">Support</option>
-                {people.map((person) => (
-                  <option key={person.id} value={person.id}>
-                    {person.name} · {person.email}
-                  </option>
+                {/* Not a person, and it should not sit in the list looking
+                    like one. It is the shared inbox: whoever is on the desk
+                    picks it up. */}
+                <option value="">Support desk (whoever is free)</option>
+                {groupByRole(people).map(([role, members]) => (
+                  <optgroup key={role} label={roleLabel(role)}>
+                    {members.map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.name} · {person.email}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
+              <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {recipientId
+                  ? `Goes to ${
+                      people.find((person) => person.id === recipientId)?.name ??
+                      "them"
+                    } alone.`
+                  : "Goes to the shared support inbox, so it gets picked up even if one person is away."}
+              </p>
             </div>
           ) : (
             <p className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-600 dark:bg-white/[0.02] dark:text-gray-400">
-              This goes to the team who look after your account. They can change
-              your sign-in address, sort out access and answer anything about
-              your training.
+              Goes to the team who look after your account. They can change your
+              sign-in address, sort out access, or answer a question about your
+              courses.
             </p>
           )}
 
@@ -403,8 +454,8 @@ export default function MessageCentre({
         inbox.length === 0 ? (
           <EmptyState
             icon="📭"
-            title="No messages yet"
-            body="Anything sent to you shows up here."
+            title="Nothing here yet"
+            body="Replies and anything sent to you land in this tab."
           />
         ) : (
           <div className="space-y-3">
@@ -421,8 +472,8 @@ export default function MessageCentre({
       ) : sent.length === 0 ? (
         <EmptyState
           icon="✉️"
-          title="You have not written yet"
-          body="Use the Write tab to get in touch."
+          title="You have not written to us"
+          body="Whatever you send will be kept here so you can check back."
           action={
             <button
               type="button"

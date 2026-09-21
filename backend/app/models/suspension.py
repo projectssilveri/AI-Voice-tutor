@@ -4,7 +4,7 @@ An ordinary admin can see a problem — somebody abusing the tutor, a shared
 login, a chargeback — and could previously act on it alone: `is_active` was on
 the ordinary user-update schema. Switching off a paying customer's account is
 not an authoring decision, so it now goes the same way publishing does: the
-admin asks, with a reason, and the platform owner decides.
+admin asks, with a reason, and the super admin decides.
 
 The row is the record of that. It outlives the decision on purpose — "who
 asked for this, when, and what did they say" is the question that comes up

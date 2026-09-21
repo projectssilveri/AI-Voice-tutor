@@ -29,7 +29,7 @@ service, and shape a response.
 ```bash
 python -m uvicorn app.main:app --reload --port 8000
 ```
-1
+
 ## Database
 
 `DATABASE_URL` takes the connection string exactly as Neon or Supabase gives
@@ -53,7 +53,6 @@ Migrations:
 alembic upgrade head                                  # apply
 alembic revision --autogenerate -m "add x"            # after editing models
 alembic downgrade -1                                  # undo one
-python scripts/verify_migration.py                    # full check, see below
 ```
 
 ## Schema
@@ -81,20 +80,9 @@ Decisions worth knowing:
 - **`module_progress` has a composite primary key** `(user_id, module_id)` —
   one row per student per module, guaranteed by the database.
 
-### Verifying the schema
-
-```bash
-python scripts/verify_migration.py    # online: Postgres actually accepts it
-```
-
-`scripts/verify_migration.py` needs `DATABASE_URL`. It runs upgrade → downgrade
-→ upgrade and asserts the result each time. It **refuses to run** if the target
-database already contains application tables, so it cannot hit production by
-accident. Point it at a scratch database.
-
 ## Rules that are easy to get wrong
 
-- **Never expose `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` to the browser.** The
+- **Never expose `GEMINI_API_KEY` to the browser.** The
   frontend gets an ephemeral token or goes through this service.
 - **Certification attempts are consumed on submit**, pass or fail. Starting an
   exam and abandoning it costs nothing. See `routers/cert_exams.py`.

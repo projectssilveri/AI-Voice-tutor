@@ -64,10 +64,23 @@ export interface TrainingReport {
 
 export interface ReportQuery {
   organization_id?: string;
+  /**
+   * Our own learners, and no customer's staff.
+   *
+   * Super admin only, and ignored for anybody else — a platform admin already
+   * sees nothing but public accounts, and a customer's own staff already see
+   * nothing but their own. It exists because the super admin's choice used to
+   * be "everybody on the platform" or "one named company", so reading our own
+   * numbers meant reading a mixed table and counting by eye.
+   */
+  public_only?: boolean;
   course_id?: string;
   status?: TrainingStatus;
   search?: string;
 }
+
+/** The dropdown value that means public B2C. Not a uuid, so it cannot collide. */
+export const PUBLIC_SCOPE = "__public__";
 
 export interface ReportCourse {
   id: string;
@@ -78,6 +91,9 @@ export interface ReportCourse {
 function toParams(query: ReportQuery): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
+    // `false` is the default on the server and means nothing here, so it is
+    // left out rather than sent as the string "false".
+    if (value === false) continue;
     if (value !== undefined && value !== "") params.set(key, String(value));
   }
   const qs = params.toString();
@@ -95,9 +111,15 @@ export function getTrainingReport(
 
 export function listReportCourses(
   organizationId?: string,
+  publicOnly?: boolean,
 ): Promise<ReportCourse[]> {
+  // Scoped the same way as the table, so the course dropdown never offers a
+  // course that produces an empty report.
   return apiFetch<ReportCourse[]>(
-    `/reports/courses${organizationId ? `?organization_id=${organizationId}` : ""}`,
+    `/reports/courses${toParams({
+      organization_id: organizationId,
+      public_only: publicOnly,
+    })}`,
     authed,
   );
 }

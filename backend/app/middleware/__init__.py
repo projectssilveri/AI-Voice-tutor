@@ -6,5 +6,6 @@ everything below it (decision 21).
 """
 
 from app.middleware.audit import AuditMiddleware
+from app.middleware.nul_bytes import RejectNulBytes
 
-__all__ = ["AuditMiddleware"]
+__all__ = ["AuditMiddleware", "RejectNulBytes"]

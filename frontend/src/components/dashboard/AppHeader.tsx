@@ -1,6 +1,7 @@
 "use client";
 import { ThemeToggleButton } from "@/components/common/ThemeToggleButton";
 import HeaderSearch from "@/components/dashboard/HeaderSearch";
+import CartLink from "@/components/cart/CartLink";
 import UserDropdown from "@/components/header/UserDropdown";
 import { useSidebar } from "@/context/SidebarContext";
 import Logo from "@/components/marketing/ui/Logo";
@@ -67,7 +68,11 @@ const AppHeader: React.FC = () => {
           </button>
 
           <Link href="/" className="lg:hidden">
-            <Logo />
+            {/* The colour is set here. `Logo` inherits, so that the marketing
+                site can paint it from its own always-dark tokens; a dashboard
+                that says nothing gets whatever it inherits, which was black
+                on a dark header. */}
+            <Logo className="text-gray-900 dark:text-white" />
           </Link>
 
           {/* The three-dot menu on narrow screens. It held nothing but an SVG,
@@ -155,6 +160,11 @@ const AppHeader: React.FC = () => {
             {/* Below `lg` the whole cluster already collapses into the
                 application menu, where a full-width row has space for the
                 label — so there is no icon-only variant to maintain. */}
+
+            {/* The same cart as the website's. It links to /cart out on
+                the marketing side rather than growing a second one in here —
+                one basket, whichever door you came through. */}
+            <CartLink tone="dashboard" />
 
             {/* <!-- Dark Mode Toggler --> */}
             <ThemeToggleButton />

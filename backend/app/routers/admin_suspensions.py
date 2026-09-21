@@ -1,4 +1,4 @@
-"""Suspension requests: an admin asks, the platform owner decides.
+"""Suspension requests: an admin asks, the super admin decides.
 
 An ordinary admin used to be able to switch an account off alone — `is_active`
 was on the ordinary user-update schema. Locking a paying customer out is not an
@@ -27,6 +27,7 @@ from sqlalchemy.orm import aliased
 from app.deps import DbSession, RequireAdmin, RequireSuperAdmin
 from app.models.suspension import SuspensionRequest, SuspensionStatus
 from app.models.user import User
+from app.routers.admin_users import _manageable
 from app.services import audit, suspensions
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ async def ask_to_suspend(
     session: DbSession,
     admin: RequireAdmin,
 ) -> SuspensionRow:
-    """Ask the platform owner to switch an account off.
+    """Ask the super admin to switch an account off.
 
     Nothing happens to the account here. That is the point of the request: an
     admin seeing a problem can raise it immediately without being able to lock
@@ -146,6 +147,15 @@ async def ask_to_suspend(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
+
+    # THIS ROUTE NEVER CHECKED WHO THE TARGET WAS. It took any user id and
+    # raised a request against it, which was survivable while a platform admin
+    # could only see public accounts — they had no way to learn anybody else's
+    # id from the product. Now that organisation admins appear in their list,
+    # an unguarded id is an unguarded id, and "raise a suspension request
+    # against the person who runs Acme" is exactly the reach the directory is
+    # not meant to give.
+    _manageable(admin, target)
 
     try:
         request = await suspensions.request_suspension(
@@ -246,7 +256,7 @@ async def set_user_active(
     session: DbSession,
     admin: RequireSuperAdmin,
 ) -> SuspensionRow | None:
-    """Suspend or restore an account directly. Platform owner only.
+    """Suspend or restore an account directly. Super admin only.
 
     They are the decider, so waiting for their own request would be theatre.
     Suspending this way still writes the record — raised and approved together

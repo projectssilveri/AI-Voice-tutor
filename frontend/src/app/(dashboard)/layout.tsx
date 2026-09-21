@@ -7,6 +7,7 @@ import AppHeader from "@/components/dashboard/AppHeader";
 import AppSidebar from "@/components/dashboard/AppSidebar";
 import Backdrop from "@/components/dashboard/Backdrop";
 import PageTransition from "@/components/ui/PageTransition";
+import { CartProvider } from "@/context/CartContext";
 import { SidebarProvider, useSidebar } from "@/context/SidebarContext";
 
 /**
@@ -60,9 +61,11 @@ export default function DashboardLayout({
 }) {
   return (
     <SidebarProvider>
-      <DashboardShell>
-        <RequireAuth>{children}</RequireAuth>
-      </DashboardShell>
+      <CartProvider>
+        <DashboardShell>
+          <RequireAuth>{children}</RequireAuth>
+        </DashboardShell>
+      </CartProvider>
     </SidebarProvider>
   );
 }

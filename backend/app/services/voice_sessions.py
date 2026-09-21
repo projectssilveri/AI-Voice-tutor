@@ -65,6 +65,14 @@ async def start_session(
 
 
 async def end_session(session: AsyncSession, voice_session_id: uuid.UUID) -> None:
+    # A LESSON THAT ENDED BADLY leaves this session mid-failed-transaction, and
+    # every statement after that raises PendingRollbackError. Which meant the
+    # one write that records how long the lesson ran was the write most likely
+    # to be skipped, precisely when it mattered. Roll back first: whatever was
+    # pending is already lost, and the closing timestamp is worth more than it.
+    if session.in_transaction() and not session.is_active:
+        await session.rollback()
+
     record = await session.get(VoiceSession, voice_session_id)
     if record is None:
         return
@@ -205,7 +213,20 @@ async def close_open_sessions_for(
 
     stale = (await session.scalars(select(VoiceSession).where(*filters))).all()
     for record in stale:
-        record.ended_at = record.started_at
+        # THE LAST TURN THAT WAS ACTUALLY SPOKEN, not the moment the session
+        # opened. `started_at` was the honest answer when nothing else was
+        # known, but something else IS known: every completed turn wrote a
+        # transcript row with a timestamp. A twenty-minute lecture whose tab
+        # was closed without a clean goodbye used to be recorded as zero
+        # minutes; now it is recorded as twenty.
+        #
+        # Still conservative — it never counts the silence after the last turn,
+        # so a session left open overnight is billed to its last word and not
+        # to the morning.
+        last_turn = await session.scalar(
+            select(func.max(Transcript.ts)).where(Transcript.session_id == record.id)
+        )
+        record.ended_at = last_turn or record.started_at
 
     if stale:
         await session.commit()

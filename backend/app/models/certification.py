@@ -7,9 +7,19 @@ This is the only place in the schema with an attempt cap. The rule:
     used    = COUNT(cert_attempts for this user + exam)
     block when used >= allowed
 
-CONFIRMED: an attempt is consumed on SUBMIT — every submitted attempt counts,
-pass or fail. Opening an exam and abandoning it costs nothing, so a row is
-inserted here at submission time, never at start.
+AN ATTEMPT IS CONSUMED ON OPEN, as of migration 0026. It used to be consumed
+on submit, and opening a paper cost nothing: the questions could be read as
+often as anybody liked, so the cap limited how many times they could be MARKED
+rather than how many times they could be seen.
+
+A row is therefore inserted when the paper is handed over, with `submitted_at`
+NULL. Submitting fills that in and scores it. An open row still counts against
+the allowance, which is the whole point.
+
+RESUMABLE, so that a misclick does not cost a third of somebody's allowance.
+Returning to an unsubmitted paper reopens the SAME row; only submitting it, or
+running out, moves you on. `uq_cert_attempts_one_open` is what makes "the same
+row" true under two tabs.
 
 `allowed` is recomputed server-side on every attempt request (step 8). A count
 sent by the frontend is never trusted.
@@ -33,6 +43,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -79,7 +90,11 @@ class CertExam(TimestampMixin, Base):
 
 
 class CertAttempt(Base):
-    """A submitted certification attempt. Inserted on submit, pass or fail."""
+    """One sitting of an exam: inserted when the paper opens, scored on submit.
+
+    `submitted_at` is NULL while it is open. Both an open and a submitted row
+    count against the allowance, because opening is what now costs.
+    """
 
     __tablename__ = "cert_attempts"
     __table_args__ = (
@@ -95,11 +110,24 @@ class CertAttempt(Base):
         CheckConstraint(
             "score >= 0 AND score <= 100", name="ck_cert_attempts_score_range"
         ),
+        CheckConstraint("lapses >= 0", name="ck_cert_attempts_lapses_non_negative"),
         Index("ix_cert_attempts_user_id", "user_id"),
         Index("ix_cert_attempts_cert_exam_id", "cert_exam_id"),
         # The attempt-limit check counts by (user, exam) on every request, so
         # this index is on the hot path of the gate.
         Index("ix_cert_attempts_user_exam", "user_id", "cert_exam_id"),
+        # AT MOST ONE OPEN PAPER per student per exam. Two tabs pressing Start
+        # together would otherwise spend two attempts, and only one of them
+        # could ever be reached again. Created in migration 0026 as a partial
+        # index, which is the only shape that expresses "unique among the open
+        # ones".
+        Index(
+            "uq_cert_attempts_one_open",
+            "user_id",
+            "cert_exam_id",
+            unique=True,
+            postgresql_where=text("submitted_at IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -110,11 +138,36 @@ class CertAttempt(Base):
         ForeignKey("cert_exams.id", ondelete="CASCADE"), nullable=False
     )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
-    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # Zero until it is marked. NOT NULL either way: an unsubmitted paper has
+    # genuinely scored nothing, and a null there would have every caller
+    # deciding for itself what that meant.
+    score: Mapped[float] = mapped_column(
+        Numeric(5, 2), nullable=False, default=0, server_default="0"
+    )
+    passed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: When the paper was handed over. This is the moment the attempt is spent.
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: NULL while the paper is open. Set when it is marked.
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: How many times they left the exam during THIS attempt.
+    #:
+    #: On the row rather than in the browser, because papers are resumable: a
+    #: count held in a React ref reset every time one was reopened, so the
+    #: warning budget was per opening and openings are unlimited.
+    lapses: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     ts: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    @property
+    def is_open(self) -> bool:
+        return self.submitted_at is None
 
     user: Mapped[User] = relationship(back_populates="cert_attempts")
     cert_exam: Mapped[CertExam] = relationship(back_populates="attempts")

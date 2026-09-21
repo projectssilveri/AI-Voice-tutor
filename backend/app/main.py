@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine
-from app.middleware import AuditMiddleware
+from app.middleware import AuditMiddleware, RejectNulBytes
 from app.routers import (
     admin,
     admin_bundles,
@@ -32,6 +32,7 @@ from app.routers import (
     assignments,
     audit_log,
     auth,
+    cart,
     cert_exams,
     courses,
     enrollments,
@@ -116,6 +117,12 @@ def create_app() -> FastAPI:
     # a trace of having been attempted; inside CORS for the reason above.
     app.add_middleware(AuditMiddleware, api_prefix=settings.api_v1_prefix)
 
+    # ABOVE THE AUDIT NET, so a refused request is still recorded as attempted,
+    # and below the catch-all. A NUL byte in a query parameter reached asyncpg,
+    # which refuses to bind one, and nine endpoints answered 500 to a URL any
+    # signed-in person could type. See middleware/nul_bytes.py.
+    app.add_middleware(RejectNulBytes)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -140,6 +147,7 @@ def create_app() -> FastAPI:
     for module in (
         public,
         auth,
+        cart,
         courses,
         modules,
         materials,

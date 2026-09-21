@@ -8,7 +8,7 @@ import {
   listBundleHolders,
   updateBundle,
 } from "@/lib/adminBundles";
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import { type CourseRow } from "@/lib/authoring";
 import { counted } from "@/lib/plural";
 

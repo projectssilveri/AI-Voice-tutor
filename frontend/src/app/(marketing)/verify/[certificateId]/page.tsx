@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 
 interface PageProps {
   params: Promise<{ certificateId: string }>;
@@ -49,11 +49,19 @@ export default async function VerifyCertificatePage({ params }: PageProps) {
       `/public/certificates/${certificateId}`,
       { next: { revalidate: 0 } },
     );
-  } catch {
-    // A malformed id answers 422, which is simply "not valid". Anything else
-    // means we could not check — and saying "not valid" then would brand a
-    // real certificate a fake because our own service was down.
-    unreachable = true;
+  } catch (caught) {
+    // A MALFORMED ID ANSWERS 422, AND THAT IS AN ANSWER: there is no such
+    // certificate. The comment here always said so; the code did not, and
+    // lumped it in with a real outage — so somebody who mistyped an ID was
+    // told "we could not check" rather than "no certificate with this ID".
+    //
+    // Anything else genuinely means we could not check, and saying "not valid"
+    // then would brand a real certificate a fake because our own service was
+    // down. That distinction is the whole point of this branch.
+    const status = caught instanceof ApiError ? caught.status : 0;
+    if (status !== 404 && status !== 422) {
+      unreachable = true;
+    }
   }
 
   return (

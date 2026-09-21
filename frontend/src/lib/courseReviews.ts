@@ -1,5 +1,5 @@
 /**
- * The course approval queue, for the platform owner.
+ * The course approval queue, for the super admin.
  *
  * Super admin only on both sides. An ordinary admin submits a course from the
  * course editor; this is the other half — seeing what is waiting, and deciding.

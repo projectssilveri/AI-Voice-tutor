@@ -1,7 +1,7 @@
 import { type CourseRow } from "@/lib/authoring";
 
 /**
- * Where a course stands with the platform owner.
+ * Where a course stands with the super admin.
  *
  * One badge rather than the old "Unpublished" flag, because unpublished was
  * four different situations wearing one word: still being written, waiting on

@@ -12,6 +12,7 @@ import {
   type AuditFacets,
   type AuditQuery,
   actionLabel,
+  describeRequest,
   actionTone,
   auditExportUrl,
   listAuditActors,
@@ -19,6 +20,7 @@ import {
   listAuditFacets,
 } from "@/lib/audit";
 import { counted } from "@/lib/plural";
+import { roleLabel } from "@/lib/roles";
 
 /**
  * The compliance audit console.
@@ -67,15 +69,6 @@ const FAMILIES = [
   { value: "http.request", label: "Other changes" },
 ];
 
-const ROLE_LABELS: Record<string, string> = {
-  student: "Student",
-  teacher: "Tutor",
-  admin: "Admin",
-  super_admin: "Super admin",
-  org_admin: "Organisation admin",
-  branch_manager: "Branch manager",
-};
-
 /** Today, and N days back, as the YYYY-MM-DD a date input wants. */
 function isoDay(offsetDays = 0): string {
   const day = new Date();
@@ -98,13 +91,98 @@ function when(iso: string): { date: string; time: string } {
   };
 }
 
+/** One field that moved, written as it reads out loud: was this, now that. */
+function Change({
+  field,
+  from,
+  to,
+}: {
+  field: string;
+  from: unknown;
+  to: unknown;
+}) {
+  const show = (value: unknown) =>
+    value === null || value === undefined || value === ""
+      ? "empty"
+      : typeof value === "boolean"
+        ? value
+          ? "yes"
+          : "no"
+        : String(value);
+  return (
+    <span className="block">
+      <span className="text-gray-500 dark:text-gray-400">
+        {field.replace(/_/g, " ")}:
+      </span>{" "}
+      <span className="text-gray-500 line-through dark:text-gray-500">
+        {show(from)}
+      </span>{" "}
+      <span aria-hidden="true" className="text-gray-400">
+        →
+      </span>{" "}
+      <span className="font-medium text-gray-800 dark:text-white/90">
+        {show(to)}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The details column: what was touched, and what moved.
+ *
+ * IT USED TO PRINT THE RAW METADATA, every key joined with a dot, which is how
+ * "Changed something · status: 200 · method: PATCH · path: /courses/8f3a..."
+ * came to be the most common row in the trail. Three separate complaints came
+ * out of that one line: nobody could tell what changed (issues 41, 59, 60),
+ * nobody could tell what it changed TO (60), and the request path was on screen
+ * for admins who have no use for it (issue 65).
+ *
+ * So: the name of the thing first, then each field that moved as "was → now",
+ * then whatever is left over. `method`, `path` and `status` are dropped
+ * entirely — `actionLabel` has already turned them into a sentence by the time
+ * this renders, and repeating the plumbing underneath it adds nothing.
+ */
+const PLUMBING = new Set(["method", "path", "status"]);
+
 function Meta({ data }: { data: Record<string, unknown> | null }) {
   if (!data || Object.keys(data).length === 0) return null;
+
+  const name = typeof data.name === "string" ? data.name : null;
+  const moved =
+    data.changes && typeof data.changes === "object"
+      ? (data.changes as Record<string, { from?: unknown; to?: unknown }>)
+      : null;
+
+  const rest = Object.entries(data).filter(
+    ([key]) => !PLUMBING.has(key) && key !== "name" && key !== "changes",
+  );
+
+  if (!name && !moved && rest.length === 0) return null;
+
   return (
-    <span className="text-xs text-gray-500 dark:text-gray-400">
-      {Object.entries(data)
-        .map(([key, value]) => `${key.replace(/_/g, " ")}: ${String(value)}`)
-        .join(" · ")}
+    <span className="block text-xs text-gray-500 dark:text-gray-400">
+      {name ? (
+        <span className="block font-medium text-gray-800 dark:text-white/90">
+          {name}
+        </span>
+      ) : null}
+      {moved
+        ? Object.entries(moved).map(([field, value]) => (
+            <Change
+              key={field}
+              field={field}
+              from={value?.from}
+              to={value?.to}
+            />
+          ))
+        : null}
+      {rest.length > 0 ? (
+        <span className="block">
+          {rest
+            .map(([key, value]) => `${key.replace(/_/g, " ")}: ${String(value)}`)
+            .join(" · ")}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -335,7 +413,7 @@ function AuditConsole() {
                 <option value="">Any role</option>
                 {(facets?.roles ?? []).map((role) => (
                   <option key={role} value={role}>
-                    {ROLE_LABELS[role] ?? role}
+                    {roleLabel(role)}
                   </option>
                 ))}
               </select>
@@ -379,21 +457,28 @@ function AuditConsole() {
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="filter-path"
-                className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400"
-              >
-                Request path
-              </label>
-              <input
-                id="filter-path"
-                value={filters.path ?? ""}
-                onChange={(event) => set("path", event.target.value)}
-                placeholder="/api/v1/admin"
-                className={`${FIELD} w-full`}
-              />
-            </div>
+            {/* SUPER ADMIN ONLY. Searching by API path is a debugging tool,
+                not an administrative one — an ordinary admin has no way to
+                know what to type in it, and issue 65 objects to backend
+                plumbing being on this screen at all. It stays for whoever
+                actually investigates an incident. */}
+            {isSuperAdmin ? (
+              <div>
+                <label
+                  htmlFor="filter-path"
+                  className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400"
+                >
+                  Request path
+                </label>
+                <input
+                  id="filter-path"
+                  value={filters.path ?? ""}
+                  onChange={(event) => set("path", event.target.value)}
+                  placeholder="/api/v1/admin"
+                  className={`${FIELD} w-full`}
+                />
+              </div>
+            ) : null}
 
             {isSuperAdmin && (facets?.organizations.length ?? 0) > 0 ? (
               <div>
@@ -475,7 +560,9 @@ function AuditConsole() {
                     until: isoDay(0),
                   }));
                 }}
-                className="rounded-full border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
+                // `min-h-11` is the touch target; `sm:` puts the compact
+                // chip back for a mouse, where 26px was never the problem.
+                className="inline-flex min-h-11 items-center rounded-full border border-gray-300 px-4 text-sm font-medium text-gray-700 transition hover:bg-gray-50 sm:min-h-0 sm:px-3 sm:py-1 sm:text-xs dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
               >
                 {range.label}
               </button>
@@ -487,7 +574,7 @@ function AuditConsole() {
                   setOffset(0);
                   setFilters({});
                 }}
-                className="ml-auto rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
+                className="ml-auto inline-flex min-h-11 items-center rounded-lg border border-gray-300 px-4 text-sm font-medium text-gray-700 transition hover:bg-gray-50 sm:min-h-0 sm:px-3 sm:py-1.5 sm:text-xs dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
               >
                 Clear {counted(active, "filter")}
               </button>
@@ -521,7 +608,7 @@ function AuditConsole() {
         <>
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[62rem]">
+              <table className="table-wide w-full min-w-[62rem]">
                 <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:border-gray-800 dark:bg-white/[0.02] dark:text-gray-400">
                   <tr>
                     <th className="px-4 py-3">When</th>
@@ -556,7 +643,11 @@ function AuditConsole() {
                                     event.actor_user_id ?? "",
                                   )
                                 }
-                                className="font-medium text-gray-800 hover:text-brand-500 dark:text-white/90"
+                                // 49 of these on one screen at 20px tall.
+                                // The padding is negative-margined back out so
+                                // the bigger hit area does not push the row
+                                // apart — the target grows, the layout does not.
+                                className="-mx-1 -my-2 inline-flex min-h-11 items-center px-1 py-2 text-left font-medium text-gray-800 hover:text-brand-500 sm:mx-0 sm:my-0 sm:min-h-0 sm:px-0 sm:py-0 dark:text-white/90"
                                 title="Show only this person"
                               >
                                 {event.actor_name}
@@ -577,7 +668,9 @@ function AuditConsole() {
                               TONE[actionTone(event.action)]
                             }`}
                           >
-                            {actionLabel(event.action)}
+                            {(event.action === "http.request"
+                              ? describeRequest(event.metadata)
+                              : null) ?? actionLabel(event.action)}
                           </span>
                         </td>
                         <td className="px-4 py-3 align-top text-sm">

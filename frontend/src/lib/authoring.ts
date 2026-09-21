@@ -43,6 +43,14 @@ export interface CourseRow {
   is_published: boolean;
   /** Present on the list endpoint; null when a single course is fetched. */
   module_count: number | null;
+  /**
+   * Whether finishing this course earns a certificate.
+   *
+   * List endpoint only, like `module_count`. Null means "not stated here",
+   * which is not the same as "no exam", so the badge stays off rather than
+   * claiming a course has nothing.
+   */
+  has_certification: boolean | null;
 
   // --- What the AI tutor may do -------------------------------------------
   /** Per-course override: plays per module. Null means the platform default. */
@@ -143,7 +151,7 @@ export function updateCourseLimits(
 }
 
 /**
- * Hand a course to the platform owner for approval.
+ * Hand a course to the super admin for approval.
  *
  * What an ordinary admin does instead of publishing — publishing is the
  * owner's, and always was. Refused on a course with no modules: there would be

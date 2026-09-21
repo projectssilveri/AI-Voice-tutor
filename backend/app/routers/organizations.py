@@ -1,9 +1,24 @@
-"""Creating and structuring organizations. Platform super admin only.
+"""Creating and structuring organizations.
 
-Behind `RequireSuperAdmin`, not `RequireAdmin`. Decision 50 established that
-gate as the one an ordinary admin must not pass: it guards revenue and role
-management. Creating a tenant belongs with those — it decides who exists on the
-platform at all, and later phases hang paid training off it.
+WHO MAY DO WHAT HERE, and the line is between reading and writing rather than
+between two roles:
+
+  * READING is open to any platform admin — the list, one organization in full,
+    its branches and departments, its seat limits and usage, and every
+    customer's training. The ladder is super admin > platform admin >
+    organisation admin, and a platform admin is above the person who runs the
+    company, so answering "what has Acme actually built" and "how many seats
+    are they using" is ordinary support work. It used to require signing in as
+    one of the customer's own admins, which is worse for the customer than
+    reading the data honestly.
+  * WRITING stays with the super admin: creating an organization, renaming or
+    deactivating it, adding branches and departments, and setting limits.
+    Decision 50 put that gate around revenue and role management, and creating
+    a tenant decides who exists on the platform at all.
+
+NOTHING HERE DELETES. An organization's people, training and documents can only
+be destroyed with that organization's own administrator agreeing — see
+`services/deletions.py`.
 
 Phase 2 scope: the structure. Nothing here reads the tenancy columns for access
 control yet; that rule lands in `services/access.py` in phase 4. Until then no
@@ -19,11 +34,12 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from app.deps import DbSession, RequireSuperAdmin
+from app.deps import DbSession, RequireAdmin, RequireSuperAdmin
 from app.models.audit import AuditAction
 from app.models.organization import Branch, Department, Organization
 from app.models.user import User, UserRole
-from app.services import audit
+from app.schemas.text import NonBlankName
+from app.services import audit, conflicts
 from app.services import organizations as org_service
 
 router = APIRouter(prefix="/admin/organizations", tags=["organizations"])
@@ -35,7 +51,7 @@ router = APIRouter(prefix="/admin/organizations", tags=["organizations"])
 
 
 class OrganizationCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: NonBlankName
     # Validated and normalised in the service, not here: a Pydantic pattern
     # would reject "Acme" outright, where the rule is to lowercase it.
     slug: str = Field(min_length=1, max_length=63)
@@ -50,7 +66,7 @@ class OrganizationUpdate(BaseModel):
 
 
 class BranchCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: NonBlankName
 
 
 class BranchUpdate(BaseModel):
@@ -59,7 +75,7 @@ class BranchUpdate(BaseModel):
 
 
 class DepartmentCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
+    name: NonBlankName
     # None means a company-wide department rather than a missing value.
     branch_id: uuid.UUID | None = None
 
@@ -192,13 +208,51 @@ def _row(organization: Organization, counts: dict[str, int]) -> OrganizationRead
 
 @router.get("", response_model=list[OrganizationRead])
 async def list_organizations(
-    session: DbSession, _: RequireSuperAdmin
+    session: DbSession, _: RequireAdmin
 ) -> list[OrganizationRead]:
+    """Every customer, with what each one holds. Read-only."""
     organizations = (
         await session.scalars(select(Organization).order_by(Organization.name))
     ).all()
     counts = await _counts(session)
     return [_row(org, counts.get(org.id, {})) for org in organizations]
+
+
+class OrganizationName(BaseModel):
+    """Just enough to name a company in a dropdown."""
+
+    id: uuid.UUID
+    name: str
+
+
+@router.get("/names", response_model=list[OrganizationName])
+async def list_organization_names(
+    session: DbSession, _: RequireAdmin
+) -> list[OrganizationName]:
+    """Every organisation, as id and name and nothing else.
+
+    A platform admin appoints a customer's first administrator, so they have to
+    be able to name the customer. Every other route on this router is super
+    admin only and stays that way — seat counts, AI limits, member lists and
+    private courses are a customer's business and ours, not our support staff's.
+
+    A SEPARATE ROUTE rather than trimming `list_organizations` by role: that one
+    returns headcounts and course counts, and a response whose shape depends on
+    who asked is a response somebody will eventually forget to trim. This one
+    cannot leak what it never selects.
+
+    Declared above `/{organization_id}` because that route would otherwise match
+    "names" and fail on it as a malformed uuid — the same ordering point the
+    `/courses/all` route makes below.
+    """
+    rows = (
+        await session.execute(
+            select(Organization.id, Organization.name)
+            .where(Organization.is_active.is_(True))
+            .order_by(Organization.name)
+        )
+    ).all()
+    return [OrganizationName(id=row[0], name=row[1]) for row in rows]
 
 
 @router.post("", response_model=OrganizationRead, status_code=status.HTTP_201_CREATED)
@@ -230,8 +284,9 @@ async def create_organization(
 
 @router.get("/{organization_id}", response_model=OrganizationDetail)
 async def get_organization(
-    organization_id: uuid.UUID, session: DbSession, _: RequireSuperAdmin
+    organization_id: uuid.UUID, session: DbSession, _: RequireAdmin
 ) -> OrganizationDetail:
+    """One customer in full: branches, departments and the admin floor."""
     organization = await _load(session, organization_id)
     counts = (await _counts(session)).get(organization_id, {})
 
@@ -335,19 +390,26 @@ async def create_branch(
     actor: RequireSuperAdmin,
 ) -> BranchRead:
     await _load(session, organization_id)
-    branch = await org_service.create_branch(
-        session, organization_id=organization_id, name=payload.name
-    )
-    await audit.record_safely(
-        session,
-        action=AuditAction.BRANCH_CREATED,
+    # A NAME THIS ORGANISATION ALREADY USES answered 500 before this. There was
+    # no check of any kind: the insert went straight to the unique index, which
+    # refused it, and the admin got "Internal server error" for typing a name
+    # that was already in the list in front of them.
+    async with conflicts.as_conflict(
+        session, default="This organisation already has a branch with that name."
+    ):
+        branch = await org_service.create_branch(
+            session, organization_id=organization_id, name=payload.name
+        )
+        await audit.record_safely(
+            session,
+            action=AuditAction.BRANCH_CREATED,
         actor=actor,
         organization_id=organization_id,
-        target_type="branch",
-        target_id=branch.id,
-        metadata={"name": branch.name},
-    )
-    await session.commit()
+            target_type="branch",
+            target_id=branch.id,
+            metadata={"name": branch.name},
+        )
+        await session.commit()
     return BranchRead(
         id=branch.id, name=branch.name, is_active=branch.is_active, user_count=0
     )
@@ -411,22 +473,31 @@ async def create_department(
             )
         branch_name = branch.name
 
-    department = await org_service.create_department(
-        session,
-        organization_id=organization_id,
-        name=payload.name,
-        branch_id=payload.branch_id,
-    )
-    await audit.record_safely(
-        session,
-        action=AuditAction.DEPARTMENT_CREATED,
-        actor=actor,
-        organization_id=organization_id,
-        target_type="department",
-        target_id=department.id,
-        metadata={"name": department.name, "branch_id": str(payload.branch_id or "")},
-    )
-    await session.commit()
+    # Same as branches above, and with the extra wrinkle that there are TWO
+    # indexes here — one for a department under a branch, one for a
+    # company-wide one — so the message depends on which refused it.
+    async with conflicts.as_conflict(
+        session, default="This organisation already has a department with that name."
+    ):
+        department = await org_service.create_department(
+            session,
+            organization_id=organization_id,
+            name=payload.name,
+            branch_id=payload.branch_id,
+        )
+        await audit.record_safely(
+            session,
+            action=AuditAction.DEPARTMENT_CREATED,
+            actor=actor,
+            organization_id=organization_id,
+            target_type="department",
+            target_id=department.id,
+            metadata={
+                "name": department.name,
+                "branch_id": str(payload.branch_id or ""),
+            },
+        )
+        await session.commit()
     return DepartmentRead(
         id=department.id,
         name=department.name,
@@ -461,13 +532,13 @@ class CustomerCourseRow(BaseModel):
 @router.get("/courses/all", response_model=list[CustomerCourseRow])
 async def list_customer_courses(
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
     organization_id: uuid.UUID | None = None,
 ) -> list[CustomerCourseRow]:
     """Every organization's own training, in one list.
 
-    SUPER ADMIN ONLY, and read-only. This exists so support can answer "what has
-    Acme actually built" without signing in as one of their admins — and it is
+    ANY PLATFORM ADMIN, and read-only. This exists so support can answer "what
+    has Acme actually built" without signing in as one of their admins — and it is
     deliberately separate from `/courses`, which is OUR catalogue.
 
     Keeping the two in one screen is what let an ordinary admin rename and then
@@ -584,9 +655,14 @@ class OrganizationUsage(BaseModel):
 
 @router.get("/{organization_id}/limits", response_model=OrganizationUsage)
 async def get_limits(
-    organization_id: uuid.UUID, session: DbSession, admin: RequireSuperAdmin
+    organization_id: uuid.UUID, session: DbSession, admin: RequireAdmin
 ) -> OrganizationUsage:
-    """What they may have, and what they have used this month."""
+    """What they may have, and what they have used this month.
+
+    Readable by any platform admin: "are Acme about to run out of seats" is a
+    support question, and the answer is not a commercial secret from the people
+    running the platform. SETTING them is still the super admin's, below.
+    """
     from app.core.config import settings
     from app.services import limits as limit_service
 

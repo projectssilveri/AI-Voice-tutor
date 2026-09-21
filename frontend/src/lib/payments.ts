@@ -8,6 +8,17 @@
 
 import { apiFetch } from "@/lib/api";
 
+/**
+ * What to say when a checkout will not start.
+ *
+ * Written out three times before this, twice word for word and once with an
+ * extra "the" in it, and all three said "Please try again." and stopped. The
+ * question somebody actually has at that moment is whether they have been
+ * charged. So that is what it answers.
+ */
+export const CHECKOUT_FAILED =
+  "We could not open the payment window. Nothing has been charged. Try again, and if it keeps happening, tell us.";
+
 const authed = { withCredentials: true, cache: "no-store" } as const;
 
 export interface CheckoutSession {
@@ -55,12 +66,48 @@ export function startPlanCheckout(planId: string): Promise<CheckoutSession> {
   });
 }
 
+/**
+ * One payment for everything in the cart.
+ *
+ * The amount is summed server-side from the course rows. Nothing about the
+ * price or the contents is sent from here, for the same reason as every other
+ * checkout: the browser does not get to name what it owes.
+ */
+export function startCartCheckout(): Promise<CheckoutSession> {
+  return apiFetch<CartCheckoutSession>("/cart/checkout", {
+    ...authed,
+    method: "POST",
+  }).then((session) => ({
+    // The cart route has no single order to point at, so it returns the ids of
+    // all of them. `payWithRazorpay` only needs the provider's id and the
+    // total, which are the same shape either way.
+    order_id: session.order_ids[0] ?? "",
+    provider_order_id: session.provider_order_id,
+    amount_minor: session.amount_minor,
+    currency: session.currency,
+    key_id: session.key_id,
+    item_name: session.item_name,
+  }));
+}
+
+interface CartCheckoutSession {
+  provider_order_id: string;
+  amount_minor: number;
+  currency: string;
+  key_id: string;
+  item_name: string;
+  order_ids: string[];
+}
+
 export function confirmPayment(result: {
   razorpay_order_id: string;
   razorpay_payment_id: string;
   razorpay_signature: string;
-}): Promise<OrderRead> {
-  return apiFetch<OrderRead>("/payments/confirm", {
+}): Promise<OrderRead[]> {
+  // A LIST, because one payment can settle a whole cart. A single course or
+  // plan comes back as a list of one; three courses bought together come back
+  // as three, and the caller has to be right about all of them.
+  return apiFetch<OrderRead[]>("/payments/confirm", {
     ...authed,
     method: "POST",
     body: result,
@@ -146,7 +193,9 @@ export interface PayOptions {
   session: CheckoutSession;
   customerName?: string;
   customerEmail?: string;
-  onSuccess: (order: OrderRead) => void;
+  /** Every order the payment settled — one for a single purchase, several
+      for a cart. */
+  onSuccess: (orders: OrderRead[]) => void;
   onFailure: (message: string) => void;
   onDismiss?: () => void;
 }
@@ -177,20 +226,28 @@ export async function payWithRazorpay({
     key: session.key_id,
     amount: session.amount_minor,
     currency: session.currency,
-    name: "Voice Tutor LMS",
+    // THE ENTITY TAKING THE MONEY, not the product's working title. This is
+    // what Razorpay shows on the payment sheet and what tends to reach a card
+    // statement, so a name here that does not match the registered business is
+    // how a legitimate charge comes to look unfamiliar and gets disputed.
+    name: "Silveri Consulting Services Pvt Ltd",
     description: session.item_name,
     order_id: session.provider_order_id,
     prefill: { name: customerName ?? "", email: customerEmail ?? "" },
     theme: { color: "#465FFF" },
     handler: async (response: RazorpayResponse) => {
       try {
-        const order = await confirmPayment({
+        const orders = await confirmPayment({
           razorpay_order_id: response.razorpay_order_id,
           razorpay_payment_id: response.razorpay_payment_id,
           razorpay_signature: response.razorpay_signature,
         });
-        if (order.status === "paid") {
-          onSuccess(order);
+        // EVERY order, not the first. A cart of three that came back with two
+        // paid is not a success with a footnote — it is a state the server
+        // should never produce, and treating it as success would hand over
+        // courses that were not paid for.
+        if (orders.length > 0 && orders.every((o) => o.status === "paid")) {
+          onSuccess(orders);
         } else {
           onFailure(
             "Payment could not be verified. You have not been charged.",

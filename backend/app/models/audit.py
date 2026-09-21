@@ -78,6 +78,13 @@ class AuditAction:
     ORG_DOCUMENT_DELETED = "org.document_deleted"
     ORG_COURSE_CREATED = "org.course_created"
     ORG_COURSE_UPDATED = "org.course_updated"
+    # ASKING TO DESTROY SOMETHING, AND THE ANSWER. Three events rather than
+    # one, because the three moments are separated in time and by person: who
+    # asked, and then who agreed or refused and what they said about it.
+    DELETION_REQUESTED = "org.deletion_requested"
+    DELETION_APPROVED = "org.deletion_approved"
+    DELETION_DECLINED = "org.deletion_declined"
+
     # Platform staff reaching into a customer's tenant.
     PLATFORM_ACCESSED_ORG = "org.platform_access"
     ORG_UPDATED = "org.updated"

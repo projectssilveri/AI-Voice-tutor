@@ -117,7 +117,13 @@ export default function SuspensionQueue({
                 </p>
               </div>
 
-              <div className="flex shrink-0 flex-wrap gap-2">
+              {/* `shrink-0` ONLY FROM sm UP. On a phone it stopped this button group
+                  narrowing at all, so three buttons held the row at their own
+                  width and pushed the whole page 121px wider than the screen —
+                  `flex-wrap` could not help, because nothing was allowed to
+                  shrink enough to wrap. Full width below sm, so the buttons
+                  wrap onto their own line instead. */}
+              <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0">
                 <button
                   type="button"
                   disabled={busyId === row.id}

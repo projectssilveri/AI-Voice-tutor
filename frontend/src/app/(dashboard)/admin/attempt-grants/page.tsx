@@ -42,12 +42,15 @@ function AttemptGrantsAdmin() {
   const load = useCallback(async () => {
     try {
       const [u, e, g, s] = await Promise.all([
-        listUsers(),
+        // ASKED FOR, not filtered afterwards. This pulled every account on
+        // the platform and kept the students, which on a platform of any size
+        // is most of a megabyte to fill one dropdown.
+        listUsers({ role: "student", limit: 500 }),
         listExams(),
         listGrants(),
         listAttemptStats(),
       ]);
-      setUsers(u.filter((row) => row.role === "student"));
+      setUsers(u.items);
       setExams(e);
       setGrants(g);
       setStats(s);
@@ -210,7 +213,7 @@ function AttemptGrantsAdmin() {
           </p>
         </div>
         <div className="max-w-full overflow-x-auto custom-scrollbar">
-          <table className="min-w-full text-sm">
+          <table className="table-wide min-w-full text-sm">
             <thead className="border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-white/[0.02]">
               <tr>
                 {["Student", "Exam", "Attempts", "Best score", "Passed"].map(

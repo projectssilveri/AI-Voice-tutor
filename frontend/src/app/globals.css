@@ -370,6 +370,12 @@
   --mk-glass: rgb(255 255 255 / 3%);
   --mk-glass-border: rgb(255 255 255 / 10%);
 
+  /* How far down the page the floating header's pill ends: its 16px top gap
+     plus the pill itself. Anything else that sticks to the top has to park
+     BELOW that rather than slide under it, and hard-coding 83px in each of
+     them is how they come apart the next time the header is touched. */
+  --mk-header-h: 83px;
+
   background-color: var(--mk-canvas);
   color: var(--mk-text);
   color-scheme: dark;
@@ -871,4 +877,165 @@
 }
 .apexcharts-gridline {
   @apply !stroke-gray-100 dark:!stroke-gray-800;
+}
+
+/* ---------------------------------------------------------------------------
+   WIDE TABLES ON NARROW SCREENS
+
+   The admin tables carry six to ten columns. They already sit in a horizontal
+   scroller, so the page never breaks — but left alone every cell wraps, and a
+   row becomes as tall as its most cramped column. Measured at 375px: rows of
+   183 to 221px, of which two columns were visible.
+
+   A table that scrolls sideways should scroll sideways. These two classes say
+   that: nothing wraps, and the first column stays put so you can see whose row
+   you are reading while the rest moves under it.
+
+   `--color-white` / `--color-gray-900` rather than a literal, so the sticky
+   column keeps matching its table if the surface colour ever moves.
+--------------------------------------------------------------------------- */
+/* --- 768px and up: a table, made to scroll sideways properly ------------- */
+@media (min-width: 768px) {
+  .table-wide th,
+  .table-wide td {
+    white-space: nowrap;
+  }
+
+  /* The buttons in an actions cell. Wrapping them stacks five on top of each
+     other and sets the height of the whole row — including rows whose actions
+     column is off screen entirely. */
+  .table-wide .cell-actions {
+    flex-wrap: nowrap;
+  }
+
+  .table-wide th:first-child,
+  .table-wide td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background-color: var(--color-white);
+  }
+
+  .dark .table-wide th:first-child,
+  .dark .table-wide td:first-child {
+    background-color: var(--color-gray-900);
+  }
+
+  /* A cell that spans the row is an inline editor, not a column: it must not
+     be pinned to the left edge, and it is the one place wrapping is wanted. */
+  .table-wide td[colspan] {
+    position: static;
+    white-space: normal;
+  }
+}
+
+/* --- below 768px: one card per row --------------------------------------- */
+/*
+   A ten-column table on a 375px screen is two columns and a scrollbar. Sideways
+   scrolling to read one person's row is a thing people do not discover and do
+   not enjoy, so below this width the table stops being a table: every row
+   becomes a card, and every cell carries its own column name.
+
+   The labels come from `StackedTableLabels`, which reads the `<thead>` that
+   already holds them rather than asking sixty cells to repeat themselves.
+
+   `display: block` on table elements is what does it. The roles are restored
+   explicitly so assistive technology still reads a table — losing the table
+   semantics to gain a layout would be a poor trade.
+*/
+@media (max-width: 767px) {
+  .table-wide,
+  .table-wide tbody,
+  .table-wide tr,
+  .table-wide td {
+    display: block;
+    width: auto;
+  }
+
+  /* These tables carry a `min-w-[68rem]` so they keep their shape inside the
+     desktop scroller. As cards that is exactly backwards — it made a 375px
+     screen render a 1088px card and put the sideways scrollbar back. */
+  .table-wide {
+    min-width: 0;
+  }
+
+  /* The header row is what the per-cell labels replace. */
+  .table-wide thead {
+    display: none;
+  }
+
+  .table-wide tr {
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--color-gray-200);
+    border-radius: 0.75rem;
+    padding: 0.25rem 0.75rem;
+    background-color: var(--color-white);
+  }
+
+  .dark .table-wide tr {
+    border-color: var(--color-gray-800);
+    background-color: rgb(255 255 255 / 0.03);
+  }
+
+  /* Label left, value right, on one line each — the shape of a detail list,
+     which is what a single row actually is. */
+  .table-wide td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    text-align: right;
+    border: 0;
+  }
+
+  .table-wide td + td {
+    border-top: 1px solid var(--color-gray-100);
+  }
+
+  .dark .table-wide td + td {
+    border-top-color: rgb(255 255 255 / 0.06);
+  }
+
+  .table-wide td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--color-gray-500);
+  }
+
+  .dark .table-wide td::before {
+    color: var(--color-gray-400);
+  }
+
+  /* A cell with no label of its own — the actions, or an empty one — takes the
+     whole width rather than sitting in a right-hand column against nothing. */
+  .table-wide td[data-label=""] {
+    justify-content: flex-end;
+  }
+
+  .table-wide td[data-label=""]::before {
+    content: none;
+  }
+
+  .table-wide .cell-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  /* The inline editors. They span the row, so they are the card rather than a
+     line in one. */
+  .table-wide td[colspan] {
+    display: block;
+    text-align: left;
+    padding: 0.5rem 0;
+  }
+
+  .table-wide td[colspan]::before {
+    content: none;
+  }
 }

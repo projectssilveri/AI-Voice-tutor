@@ -13,22 +13,24 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.deps import DbSession, RequireAdmin, RequireSuperAdmin, require_role
 from app.models.audit import AuditAction
 from app.models.certification import AttemptGrant, CertAttempt
 from app.models.contact import ContactMessage
 from app.models.course import Course, Module
+from app.models.deletion import DeletionTarget
 from app.models.enrollment import Enrollment
 from app.models.suspension import SuspensionRequest, SuspensionStatus
 from app.models.user import User, UserRole
 from app.models.voice import Transcript, VoiceSession
-from app.services import audit, certification
+from app.routers import admin_users
+from app.services import audit, certification, deletions
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +59,17 @@ class AdminUserRow(BaseModel):
     last_session_at: datetime | None
 
     # SOMEBODY HAS ALREADY ASKED for this account to be switched off, and the
-    # platform owner has not decided. Without it an ordinary admin has no way
+    # super admin has not decided. Without it an ordinary admin has no way
     # to tell a request they raised yesterday from one they never raised —
     # pressing the button again is the only feedback, and it is an error.
     suspension_pending: bool = False
+
+    # SOMEBODY HAS ALREADY ASKED for this account to be deleted, and the
+    # organisation's own administrator has not decided. Same reasoning as the
+    # flag above and a stronger case for it: pressing Delete twice queues
+    # nothing the second time and answers 409, so without this the console's
+    # only way to find out is to produce an error.
+    deletion_pending: bool = False
 
     # WHICH CUSTOMER THEY BELONG TO. Null for a public B2C account. Sent so the
     # console can filter by organisation and label the row — without it, a super
@@ -90,9 +99,14 @@ class UsagePoint(BaseModel):
 
 
 class ModuleUsageRow(BaseModel):
+    #: Seconds as well as whole minutes. A 40-second session floors to 0
+    #: minutes, and "1 session · 0 min" reads as a bug rather than a short
+    #: lesson — the screen needs the finer number to say "under a minute".
+
     module_title: str
     sessions: int
     minutes: int
+    seconds: int = 0
 
 
 class UsageOverview(BaseModel):
@@ -127,23 +141,127 @@ class GrantRow(BaseModel):
 _DURATION = func.extract("epoch", VoiceSession.ended_at - VoiceSession.started_at)
 
 
-@router.get("/users", response_model=list[AdminUserRow])
-async def list_users(session: DbSession, actor: RequireAdmin) -> list[AdminUserRow]:
-    """Platform users with their activity counts.
+class AdminUserPage(BaseModel):
+    """One screen of people, and how many there are altogether.
 
-    Counts come from grouped subqueries rather than a query per user, so this
-    stays a fixed number of round trips as the table grows.
-
-    SCOPED. An ordinary platform admin sees public B2C accounts only —
-    customers' staff are their own to manage, and listing them here handed an
-    admin eight people's names and work addresses across two organizations.
-    A super admin still sees everyone, for support; org admins manage their own
-    people at /org/{slug}/members.
+    THE TOTAL IS THE POINT. This route used to answer a bare list of everyone,
+    which meant a cap could never be added later without the screen silently
+    showing a truncated table and having no way to tell. Same shape as the
+    audit trail, which has answered {events, total, limit, offset} from the
+    start.
     """
+
+    items: list[AdminUserRow]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/users", response_model=AdminUserPage)
+async def list_users(
+    session: DbSession,
+    actor: RequireAdmin,
+    q: str | None = Query(default=None, description="Name, email or organisation"),
+    role: str | None = Query(default=None, description="Exactly this role"),
+    organization_id: Annotated[
+        uuid.UUID | None, Query(description="One customer")
+    ] = None,
+    public_only: bool = Query(
+        default=False, description="Only accounts belonging to no organisation"
+    ),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> AdminUserPage:
+    """Platform users with their activity counts, filtered and paged.
+
+    IT USED TO ANSWER WITH EVERYONE. The screen's search box and its two
+    dropdowns filtered in the browser, so narrowing a list of five thousand
+    people to one still downloaded five thousand people: a 1.9MB response to
+    draw ten rows, measured. The filters the screen offers are parameters now.
+
+    Counts come from grouped subqueries rather than a query per user, which was
+    already true and already right. What is new is that they are grouped over
+    THIS PAGE rather than over the whole of `enrollments` and `voice_sessions`.
+
+    SCOPED, and the rule is `admin_users.visible_filter` rather than a WHERE
+    clause written out here, so the table and the per-user routes cannot
+    disagree about who exists.
+
+    What a platform admin gets: everyone except the staff ladder above them —
+    B2C learners, and every customer's people in full, administrators and
+    managers and learners alike. The ladder is super admin > platform admin >
+    organisation admin and sight runs down it. What they do not get is other
+    platform admins or super admins.
+
+    SEEING IS NOT TOUCHING. The rows for a customer's people are read-only
+    here; `can_manage` refuses every write, their own admins manage them at
+    /org/{slug}/members, and deleting one goes through the approval queue.
+    """
+    from app.models.organization import Organization
+
+    # WHO THIS CALLER MAY SEE FIRST, then what they asked for. The order is not
+    # cosmetic: the scope is fixed and the filters may only narrow inside it.
+    conditions = list(admin_users.visible_filter(actor))
+    if role:
+        conditions.append(User.role == role)
+    if organization_id is not None:
+        conditions.append(User.organization_id == organization_id)
+    elif public_only:
+        conditions.append(User.organization_id.is_(None))
+    if q and q.strip():
+        pattern = f"%{q.strip()}%"
+        conditions.append(
+            or_(
+                User.name.ilike(pattern),
+                User.email.ilike(pattern),
+                Organization.name.ilike(pattern),
+            )
+        )
+
+    # An OUTER join, so a B2C account with no organisation still matches a
+    # search on a name. An inner one would quietly drop every public learner
+    # the moment somebody typed in the box.
+    scoped = (
+        select(User)
+        .outerjoin(Organization, Organization.id == User.organization_id)
+        .where(*conditions)
+    )
+
+    total = (
+        await session.scalar(
+            select(func.count()).select_from(scoped.subquery())
+        )
+    ) or 0
+
+    users = (
+        (
+            await session.execute(
+                # `id` breaks the tie. Accounts created in the same
+                # transaction share a `created_at`, and without a total
+                # order LIMIT/OFFSET reshuffles between pages: measured
+                # showing the same person on page one and page two while
+                # two other people appeared on neither.
+                scoped.order_by(User.created_at.desc(), User.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not users:
+        return AdminUserPage(items=[], total=total, limit=limit, offset=offset)
+
+    page_ids = [user.id for user in users]
+
+    # SCOPED TO THE PAGE. Each of these used to group over its whole table to
+    # decorate however many rows were on screen.
     enrollment_counts = dict(
         (
             await session.execute(
-                select(Enrollment.user_id, func.count()).group_by(Enrollment.user_id)
+                select(Enrollment.user_id, func.count())
+                .where(Enrollment.user_id.in_(page_ids))
+                .group_by(Enrollment.user_id)
             )
         ).all()
     )
@@ -155,17 +273,19 @@ async def list_users(session: DbSession, actor: RequireAdmin) -> list[AdminUserR
                 func.count(),
                 func.coalesce(func.sum(_DURATION), 0),
                 func.max(VoiceSession.started_at),
-            ).group_by(VoiceSession.user_id)
+            )
+            .where(VoiceSession.user_id.in_(page_ids))
+            .group_by(VoiceSession.user_id)
         )
     ).all()
     session_stats = {row[0]: (row[1], int(row[2] or 0), row[3]) for row in session_rows}
 
-    # One query for the whole table. There are rarely more than a handful open.
     pending_suspensions = set(
         (
             await session.execute(
                 select(SuspensionRequest.user_id).where(
-                    SuspensionRequest.status == SuspensionStatus.PENDING
+                    SuspensionRequest.status == SuspensionStatus.PENDING,
+                    SuspensionRequest.user_id.in_(page_ids),
                 )
             )
         )
@@ -173,16 +293,12 @@ async def list_users(session: DbSession, actor: RequireAdmin) -> list[AdminUserR
         .all()
     )
 
-    query = select(User).order_by(User.created_at.desc())
-    if actor.role is not UserRole.SUPER_ADMIN:
-        query = query.where(User.organization_id.is_(None))
-    users = (await session.execute(query)).scalars().all()
+    # Not narrowed: there are rarely more than a handful open at once, and the
+    # service owns the query.
+    pending_deletions = await deletions.pending_ids(session, DeletionTarget.MEMBER)
 
-    # One lookup for every organisation rather than one per user — there are a
-    # handful of customers and hundreds of accounts, so the whole table is
-    # cheaper than a join repeated per row.
-    from app.models.organization import Organization
-
+    # One lookup for every organisation rather than one per user. There are a
+    # handful of customers, so the whole table is cheaper than a join per row.
     org_names = dict(
         (await session.execute(select(Organization.id, Organization.name))).all()
     )
@@ -207,16 +323,28 @@ async def list_users(session: DbSession, actor: RequireAdmin) -> list[AdminUserR
                 organization_id=user.organization_id,
                 organization_name=org_names.get(user.organization_id),
                 suspension_pending=user.id in pending_suspensions,
+                deletion_pending=user.id in pending_deletions,
             )
         )
-    return rows
+    return AdminUserPage(items=rows, total=total, limit=limit, offset=offset)
 
 
-@router.get("/activity", response_model=list[ActivityLogRow], dependencies=[admin_only])
+@router.get("/activity", response_model=list[ActivityLogRow])
 async def list_activity(
-    session: DbSession, limit: int = Query(default=50, ge=1, le=500)
+    session: DbSession,
+    actor: RequireAdmin,
+    limit: int = Query(default=50, ge=1, le=500),
 ) -> list[ActivityLogRow]:
-    """Recent voice sessions, newest first."""
+    """Recent voice sessions IN SCOPE, newest first.
+
+    SCOPED BY WHOSE PERSON IT IS. The wall went up around a customer's content
+    and this row of their people was left outside it: an ordinary platform
+    admin could read a customer's staff by name and email, the module each one
+    sat with the tutor on, and when. Issue 52, and the same leak as 62.
+
+    The two transcript counts above are keyed by session id and only read for
+    rows that come back, so they need no scope of their own.
+    """
     turn_counts = dict(
         (
             await session.execute(
@@ -236,11 +364,18 @@ async def list_activity(
         ).all()
     )
 
+    people_scope = (
+        ()
+        if actor.role is UserRole.SUPER_ADMIN
+        else (User.organization_id.is_(None),)
+    )
+
     rows = (
         await session.execute(
             select(VoiceSession, User, Module)
             .join(User, User.id == VoiceSession.user_id)
             .join(Module, Module.id == VoiceSession.module_id)
+            .where(*people_scope)
             .order_by(VoiceSession.started_at.desc())
             .limit(limit)
         )
@@ -274,27 +409,63 @@ async def get_usage(
     days: int = Query(default=14, ge=1, le=90),
 ) -> UsageOverview:
     """Aggregates for the admin charts."""
-    total_users = await session.scalar(select(func.count()).select_from(User)) or 0
+    # WHOSE NUMBERS THESE ARE. `module_scope` further down kept a customer's
+    # module titles off this page, and every headline above it went on counting
+    # their people, their sessions and their minutes. A count is a smaller leak
+    # than a name and a larger one than nothing: it tells platform staff how
+    # hard a customer is using the product, which is that customer's business
+    # and the super admin's. Issues 44 and 52.
+    public_only = actor.role is not UserRole.SUPER_ADMIN
+    people_scope = (User.organization_id.is_(None),) if public_only else ()
+    # Sessions belonging to somebody in scope, as a subquery rather than a
+    # join, so each aggregate below keeps the shape it already had.
+    in_scope_sessions = select(User.id).where(User.organization_id.is_(None))
+    session_scope = (
+        (VoiceSession.user_id.in_(in_scope_sessions),) if public_only else ()
+    )
+    transcript_scope = (
+        (
+            Transcript.session_id.in_(
+                select(VoiceSession.id).where(*session_scope)
+            ),
+        )
+        if public_only
+        else ()
+    )
+
+    total_users = (
+        await session.scalar(
+            select(func.count()).select_from(User).where(*people_scope)
+        )
+        or 0
+    )
     total_sessions = (
-        await session.scalar(select(func.count()).select_from(VoiceSession)) or 0
+        await session.scalar(
+            select(func.count()).select_from(VoiceSession).where(*session_scope)
+        )
+        or 0
     )
     total_seconds = int(
         await session.scalar(
             select(func.coalesce(func.sum(_DURATION), 0)).where(
-                VoiceSession.ended_at.is_not(None)
+                VoiceSession.ended_at.is_not(None), *session_scope
             )
         )
         or 0
     )
     users_with_sessions = (
-        await session.scalar(select(func.count(func.distinct(VoiceSession.user_id))))
+        await session.scalar(
+            select(func.count(func.distinct(VoiceSession.user_id))).where(
+                *session_scope
+            )
+        )
         or 0
     )
     total_interruptions = (
         await session.scalar(
             select(func.count())
             .select_from(Transcript)
-            .where(Transcript.is_interruption.is_(True))
+            .where(Transcript.is_interruption.is_(True), *transcript_scope)
         )
         or 0
     )
@@ -307,7 +478,7 @@ async def get_usage(
                 func.count(),
                 func.coalesce(func.sum(_DURATION), 0),
             )
-            .where(VoiceSession.started_at >= since)
+            .where(VoiceSession.started_at >= since, *session_scope)
             .group_by("day")
             .order_by("day")
         )
@@ -334,7 +505,19 @@ async def get_usage(
             .join(Course, Course.id == Module.course_id)
             .where(*module_scope)
             .group_by(Module.title)
-            .order_by(func.count().desc())
+            # RANKED BY TIME, NOT BY SESSION COUNT.
+            #
+            # Counting sessions sounds like "most used" and is not: a student
+            # opens a module's tutor once, so on a real catalogue almost every
+            # module has exactly one session and the ranking is whatever order
+            # the database felt like. Measured: four modules, one session each,
+            # four identical bars — and the one that had eight minutes of
+            # lecture sat below one that had none.
+            #
+            # Minutes is the number that varies, and it is also the number this
+            # screen exists to watch: it is what the AI costs and what a
+            # customer's allowance is spent on. Sessions break the tie.
+            .order_by(func.coalesce(func.sum(_DURATION), 0).desc(), func.count().desc())
             .limit(10)
         )
     ).all()
@@ -357,16 +540,31 @@ async def get_usage(
             ModuleUsageRow(
                 module_title=title,
                 sessions=count,
+                # Floored, not rounded, and the screen says "under a minute"
+                # rather than "0 min" — a lesson that happened should not be
+                # reported as no time at all.
                 minutes=int(seconds or 0) // 60,
+                seconds=int(seconds or 0),
             )
             for title, count, seconds in per_module
         ],
     )
 
 
-@router.get("/attempt-grants", response_model=list[GrantRow], dependencies=[admin_only])
-async def list_grants(session: DbSession) -> list[GrantRow]:
+@router.get("/attempt-grants", response_model=list[GrantRow])
+async def list_grants(session: DbSession, actor: RequireAdmin) -> list[GrantRow]:
+    """Extra attempts handed out, for the people in scope.
+
+    Scoped for the reason `/activity` is: the row carries the learner's name
+    and email, and a customer's learner is not a platform admin's to read.
+    """
     from app.models.certification import CertExam
+
+    people_scope = (
+        ()
+        if actor.role is UserRole.SUPER_ADMIN
+        else (User.organization_id.is_(None),)
+    )
 
     granter = User.__table__.alias("granter")
     rows = (
@@ -375,6 +573,7 @@ async def list_grants(session: DbSession) -> list[GrantRow]:
             .join(User, User.id == AttemptGrant.user_id)
             .join(CertExam, CertExam.id == AttemptGrant.cert_exam_id)
             .join(granter, granter.c.id == AttemptGrant.granted_by)
+            .where(*people_scope)
             .order_by(AttemptGrant.ts.desc())
         )
     ).all()
@@ -442,16 +641,27 @@ async def grant_attempts(
     )
 
 
-@router.get("/cert-exams", response_model=list[dict], dependencies=[admin_only])
-async def list_all_exams(session: DbSession) -> list[dict]:
-    """Every exam, for the grant form's dropdown."""
+@router.get("/cert-exams", response_model=list[dict])
+async def list_all_exams(session: DbSession, actor: RequireAdmin) -> list[dict]:
+    """The exams in scope, for the grant form's dropdown.
+
+    A customer's course title is the thing the walled garden is built around,
+    and this dropdown was handing over every one of them.
+    """
     from app.models.certification import CertExam
     from app.models.course import Course
+
+    course_scope = (
+        ()
+        if actor.role is UserRole.SUPER_ADMIN
+        else (Course.organization_id.is_(None),)
+    )
 
     rows = (
         await session.execute(
             select(CertExam, Course.title)
             .join(Course, Course.id == CertExam.course_id)
+            .where(*course_scope)
             .order_by(Course.title, CertExam.title)
         )
     ).all()
@@ -467,9 +677,9 @@ async def list_all_exams(session: DbSession) -> list[dict]:
 
 
 class RoleUpdate(BaseModel):
-    # TEACHER is gone from the dropdown: nothing on the platform distinguishes
-    # a teacher from an admin today, so it was an option that changed nothing
-    # anyone could see. Existing teacher accounts keep the role.
+    # TEACHER is gone entirely now, not just off this dropdown. Taking it off
+    # the dropdown and leaving it in the code is what let a retired role keep
+    # the paywall bypass for months — see migration 0025.
     #
     # SUPER_ADMIN is now assignable, on request. The lockout guard that made it
     # unassignable is the one BELOW — a super admin still cannot demote another
@@ -508,11 +718,15 @@ async def set_user_role(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
 
-    if target.role is UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Another super admin cannot be demoted from here.",
-        )
+    # DEMOTING A SUPER ADMIN IS ALLOWED NOW, and it was not before. The old rule
+    # refused it outright to prevent a lockout, which worked but left role
+    # management contradicting itself: the top role could be handed out and
+    # never taken back. Issues 2, 4 and 6 are all that contradiction.
+    #
+    # What needs protecting is that somebody can always promote people, not that
+    # super admins are permanent, so the floor counts them instead.
+    if target.role is UserRole.SUPER_ADMIN and payload.role is not UserRole.SUPER_ADMIN:
+        await admin_users.assert_super_admin_floor(session, target)
 
     # An org admin demoted to student is an org admin the organization has
     # lost. The floor is theirs, not this console's, so it applies here too.
@@ -719,10 +933,20 @@ async def reply_to_contact_message(
     return _contact_row(message, admin.name)
 
 
-@router.get("/stats/attempts", response_model=list[dict], dependencies=[admin_only])
-async def attempts_overview(session: DbSession) -> list[dict]:
-    """Certification attempts per student, so admins can see who is stuck."""
+@router.get("/stats/attempts", response_model=list[dict])
+async def attempts_overview(session: DbSession, actor: RequireAdmin) -> list[dict]:
+    """Certification attempts per student in scope, so admins see who is stuck.
+
+    Name, email, exam title and score, one row per learner. Every one of those
+    columns is a customer's to hold, so the same wall as `/activity` goes here.
+    """
     from app.models.certification import CertExam
+
+    people_scope = (
+        ()
+        if actor.role is UserRole.SUPER_ADMIN
+        else (User.organization_id.is_(None),)
+    )
 
     rows = (
         await session.execute(
@@ -736,6 +960,7 @@ async def attempts_overview(session: DbSession) -> list[dict]:
             )
             .join(User, User.id == CertAttempt.user_id)
             .join(CertExam, CertExam.id == CertAttempt.cert_exam_id)
+            .where(*people_scope)
             .group_by(User.name, User.email, CertExam.title)
             .order_by(func.count(CertAttempt.id).desc())
         )

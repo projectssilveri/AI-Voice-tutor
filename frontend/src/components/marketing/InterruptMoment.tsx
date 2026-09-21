@@ -25,7 +25,7 @@ import Reveal from "@/components/ui/Reveal";
 const TURNS: { who: "Tutor" | "You"; text: string; cut?: boolean }[] = [
   {
     who: "Tutor",
-    text: "…so a promise is an object that stands in for a value you do not have yet. When the work finishes, the promise settles, and anything waiting on it—",
+    text: "…so a promise is an object that stands in for a value you do not have yet. When the work finishes, the promise settles, and anything waiting on it…",
     cut: true,
   },
   { who: "You", text: "hold on. settles?" },
@@ -150,7 +150,7 @@ export default function InterruptMoment() {
                   />
                 </svg>
                 <span>
-                  The lecture stopped ~500ms after you spoke &ldquo;hold&rdquo; — zero lag, zero missed context.
+                  The lecture stopped ~500ms after you spoke &ldquo;hold&rdquo;. No lag, and it kept its place.
                 </span>
               </div>
             </Panel>

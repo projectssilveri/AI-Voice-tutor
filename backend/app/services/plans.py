@@ -1,4 +1,4 @@
-"""Bundles and packages, from the platform owner's side.
+"""Bundles and packages, from the super admin's side.
 
 A "bundle" and a "package" are the same row: a `subscription_plans` record with
 some courses linked to it. What separates a stack bundle from All Access is how

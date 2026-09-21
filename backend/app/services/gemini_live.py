@@ -40,10 +40,35 @@ INPUT_MIME_TYPE = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"
 # up to ninety minutes, so two minutes of lecture meant eighty-eight minutes
 # of "shall we move on?". The material decides the length, not a stopwatch.
 LECTURE_TRIGGER = (
-    "Begin the lesson now. Open the way the instructions describe — greet me, "
+    "Begin the lesson now. Open the way the instructions describe. Greet me, "
     "say which course and which module this is and what we are about to cover "
-    "— and then teach the whole of the material. Start speaking immediately "
+    "and then teach the whole of the material. Start speaking immediately "
     "without waiting for me, and do not ask me whether to begin or continue."
+)
+
+#: Said at the end of the last turn, so the bridge knows to stop nudging.
+#:
+#: A SPOKEN SENTENCE RATHER THAN A TOKEN. Whatever goes here is read out loud —
+#: there is no channel to the model that the student cannot hear — so it has to
+#: be something a teacher would actually say at the end of a lesson. This one
+#: doubles as the closing line.
+LESSON_COMPLETE_PHRASE = "that is the whole of this module"
+
+# Sent when the tutor finishes a turn and the student has not spoken. Gemini
+# ends a turn when it has said a paragraph, the same as any chat model; without
+# this the lecture stopped there and waited to be asked to carry on.
+#
+# WRITTEN SO IT IS NOT AUDIBLE IN THE ANSWER. The model is told to continue
+# mid-thought, not to acknowledge being prompted — otherwise every turn began
+# "Sure! Continuing where we left off", which is its own kind of stopping.
+LECTURE_CONTINUE = (
+    "Keep teaching. Carry straight on from the sentence you stopped on, as if "
+    "you had never paused. Do not greet me again, do not recap what you just "
+    "said, do not acknowledge this message, and do not ask me anything.\n\n"
+    "If you have already taught the whole of the module material, do not pad "
+    "it out or repeat yourself. Instead say, in one or two sentences, that "
+    f"{LESSON_COMPLETE_PHRASE}, tell me what to do next: the practice quiz "
+    "and the assignment. Then stop."
 )
 
 
@@ -283,7 +308,7 @@ def module_system_instruction(
         f"{opening}\n\n"
         f"Say the opening differently every time. Do not use a set formula, "
         f"do not read the module title as a heading, and never say anything "
-        f"like 'Module 3, colon, Arrays and Objects' — say it the way a person "
+        f"like 'Module 3, colon, Arrays and Objects'. Say it the way a person "
         f"introducing a lesson out loud would. Keep it short: they came to "
         f"learn, and a two-minute welcome is a two-minute delay.\n\n"
         f"Do not ask whether they are ready. Greet them and begin.\n\n"
@@ -297,8 +322,15 @@ def module_system_instruction(
         f"questions?' or anything else that hands the decision back to the "
         f"student. Do not offer to teach a later topic and wait to be told "
         f"yes. Just teach the next part.\n\n"
-        f"Ask a question only when it is a real teaching question — one where "
-        f"working out the answer is how the student learns the point — and "
+        f"HOW TO FINISH\n"
+        f"When you have taught the whole of the material below and there is "
+        f"genuinely nothing left to cover, do not start again and do not "
+        f"stretch it out. Say in a sentence or two that "
+        f"{LESSON_COMPLETE_PHRASE}, point them at the practice quiz and the "
+        f"assignment, and stop there. Say those words plainly, because they are how "
+        f"the lesson knows it has ended.\n\n"
+        f"Ask a question only when it is a real teaching question, one where "
+        f"working out the answer is how the student learns the point, and "
         f"then only occasionally. A question you already know they will "
         f"answer 'yes' to is not a teaching question.\n\n"
         f"WHEN THE STUDENT SPEAKS\n"
@@ -307,14 +339,14 @@ def module_system_instruction(
         f"are stuck. Then go straight back to the lecture from where you were "
         f"cut off, without announcing that you are doing so and without "
         f"asking whether you may.\n\n"
-        f"If what they said is not a question — 'yes', 'okay', 'go on', a "
-        f"noise, or something the transcription clearly garbled — do not treat "
+        f"If what they said is not a question ('yes', 'okay', 'go on', a "
+        f"noise, or something the transcription clearly garbled), do not treat "
         f"it as a conversation. Simply carry on teaching.\n\n"
         f"SCOPE\n"
         f"Teach ONLY from the material below. If the student asks about "
         f"something outside it, say in one sentence that it is outside this "
         f"module, then return to the lecture. Never offer to teach something "
-        f"outside the material — you cannot, and offering it then refusing it "
+        f"outside the material. You cannot, and offering it then refusing it "
         f"a moment later is worse than not offering.\n\n"
         f"VOICE\n"
         f"You are speaking aloud. Use plain conversational sentences. No "
@@ -360,6 +392,36 @@ async def start_lecture(session: genai.live.AsyncSession) -> None:
         turns=types.Content(role="user", parts=[types.Part(text=LECTURE_TRIGGER)]),
         turn_complete=True,
     )
+
+
+async def continue_lecture(session: genai.live.AsyncSession) -> None:
+    """Send the tutor onward after it has finished a turn.
+
+    The same mechanism as `start_lecture`, and for the same reason: a text turn
+    is the only way to make the model speak without the student having to. It
+    produces no input transcription, so nothing here reaches the stored
+    transcript as words the student said.
+    """
+    await session.send_client_content(
+        turns=types.Content(role="user", parts=[types.Part(text=LECTURE_CONTINUE)]),
+        turn_complete=True,
+    )
+
+
+def sounds_finished(spoken: str) -> bool:
+    """Whether the tutor just said the lesson is over.
+
+    Matched loosely on purpose. The model is asked to say a sentence, not to
+    emit a token, and it will punctuate and inflect it however it likes — "and
+    that is the whole of this module", "so, that's the whole of this module!".
+    Apostrophes and spacing are flattened before comparing.
+
+    A miss costs one more nudge, and the model then says it again. A false
+    positive ends the nudging early and the student can still speak. Neither is
+    worth a stricter rule that breaks on a contraction.
+    """
+    flattened = " ".join(spoken.lower().replace("\u2019", "'").split())
+    return LESSON_COMPLETE_PHRASE in flattened or "that's the whole of this module" in flattened
 
 
 async def stream_from_gemini(
@@ -500,7 +562,7 @@ def should_resume(
         return ResumeDecision(
             False,
             "The tutor could not carry on from where it left off. "
-            "Your transcript is saved — start the module again to continue.",
+            "Your transcript is saved. Start the module again to carry on.",
         )
 
     if consecutive_failures >= limit:
@@ -510,7 +572,7 @@ def should_resume(
         return ResumeDecision(
             False,
             "The tutor lost its connection and could not get it back. "
-            "Your transcript is saved — start the module again to continue.",
+            "Your transcript is saved. Start the module again to carry on.",
         )
 
     return ResumeDecision(True)

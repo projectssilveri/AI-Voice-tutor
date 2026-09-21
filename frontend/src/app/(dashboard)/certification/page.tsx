@@ -110,7 +110,7 @@ export default function CertificatesPage() {
               <EmptyState
                 icon="🎓"
                 title="No certificates yet"
-                body="Finish a course, pass its certification exam, and the certificate appears here, with a link anyone can use to check it is genuine. No account needed."
+                body="Finish a course and pass its exam, and your certificate shows up here. It comes with a link an employer can open to check it is real, without signing in."
               />
             ) : (
               <ul className="grid gap-4 md:grid-cols-2">
@@ -166,47 +166,91 @@ export default function CertificatesPage() {
 
           <section>
             <h2 className="mb-3 text-base font-semibold text-gray-800 dark:text-white/90">
-              Exams you can sit
+              Certification exams
             </h2>
+            {/* LOCKED ONES ARE SHOWN, NOT HIDDEN. A student who cannot yet sit
+                an exam still needs to know it exists and what is left before
+                it opens. Hiding it makes the course look like it has no
+                certificate at all. */}
             {openExams.length === 0 ? (
               <div className="rounded-2xl border border-gray-200 bg-white shadow-raised p-6 dark:border-gray-800 dark:bg-white/[0.03]">
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   {exams.length === 0
-                    ? "No certification exams available. Enrol in a course that offers one."
+                    ? "None of your courses has an exam yet. Enrol in one that does and it will show up here."
                     : "You have passed every exam in the courses you are enrolled in."}
                 </p>
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2">
-                {openExams.map((exam) => (
-                  /* A real link with target=_blank rather than an onClick: it
-                     still opens its own tab, but middle-click, ctrl-click and
-                     the keyboard keep working. The exam takes over the whole
-                     viewport once started, so giving it a tab of its own
-                     leaves the course material where the student left it. */
-                  <a
-                    key={exam.id}
-                    href={`/certification/${exam.id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="group flex flex-col rounded-2xl border border-gray-200 bg-white p-5 transition-[transform,box-shadow,border-color] duration-200 ease-[var(--ease-out-soft)] hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lifted dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-brand-800"
-                  >
-                    <p className="mb-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                      {exam.course_title}
-                    </p>
-                    <h3 className="font-semibold text-gray-800 group-hover:text-brand-600 dark:text-white/90 dark:group-hover:text-brand-400">
-                      {exam.title}
-                    </h3>
-                    <span className="mt-3">
-                      <CertificationBadge allowed={exam.default_max_attempts} />
-                    </span>
-                    <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-brand-500 dark:text-brand-400">
-                      Open exam
-                      <span aria-hidden="true">↗</span>
-                      <span className="sr-only">(opens in a new tab)</span>
-                    </span>
-                  </a>
-                ))}
+                {openExams.map((exam) =>
+                  exam.unlocked ? (
+                    /* A real link with target=_blank rather than an onClick: it
+                       still opens its own tab, but middle-click, ctrl-click and
+                       the keyboard keep working. The exam takes over the whole
+                       viewport once started, so giving it a tab of its own
+                       leaves the course material where the student left it. */
+                    <a
+                      key={exam.id}
+                      href={`/certification/${exam.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group flex flex-col rounded-2xl border border-gray-200 bg-white p-5 transition-[transform,box-shadow,border-color] duration-200 ease-[var(--ease-out-soft)] hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lifted dark:border-gray-800 dark:bg-white/[0.03] dark:hover:border-brand-800"
+                    >
+                      <p className="mb-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        {exam.course_title}
+                      </p>
+                      <h3 className="font-semibold text-gray-800 group-hover:text-brand-600 dark:text-white/90 dark:group-hover:text-brand-400">
+                        {exam.title}
+                      </h3>
+                      <span className="mt-3 flex flex-wrap items-center gap-2">
+                        <CertificationBadge
+                          allowed={exam.default_max_attempts}
+                        />
+                        <span className="text-xs text-gray-500 dark:text-gray-400">
+                          {exam.pass_mark}% to pass
+                        </span>
+                      </span>
+                      <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-brand-500 dark:text-brand-400">
+                        Open exam
+                        <span aria-hidden="true">↗</span>
+                        <span className="sr-only">(opens in a new tab)</span>
+                      </span>
+                    </a>
+                  ) : (
+                    /* NOT A LINK. The paper and the submit route both refuse an
+                       unfinished course, so a link here would lead to a red
+                       sentence — the lock belongs where the student can see the
+                       reason instead. */
+                    <div
+                      key={exam.id}
+                      className="flex flex-col rounded-2xl border border-gray-200 bg-gray-50 p-5 dark:border-gray-800 dark:bg-white/[0.02]"
+                    >
+                      <p className="mb-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        {exam.course_title}
+                      </p>
+                      <h3 className="flex items-center gap-2 font-semibold text-gray-600 dark:text-gray-300">
+                        <span aria-hidden="true">🔒</span>
+                        {exam.title}
+                      </h3>
+                      <span className="mt-3 flex flex-wrap items-center gap-2">
+                        <CertificationBadge
+                          allowed={exam.default_max_attempts}
+                        />
+                        <span className="text-xs text-gray-500 dark:text-gray-400">
+                          {exam.pass_mark}% to pass
+                        </span>
+                      </span>
+                      <p className="mt-3 text-sm text-gray-600 dark:text-gray-400">
+                        {exam.locked_reason ??
+                          "Finish the course to open this exam."}
+                      </p>
+                      <p className="mt-3 text-xs font-medium text-gray-500 dark:text-gray-400">
+                        {exam.modules_completed} of {exam.modules_total} modules
+                        completed
+                      </p>
+                    </div>
+                  ),
+                )}
               </div>
             )}
           </section>

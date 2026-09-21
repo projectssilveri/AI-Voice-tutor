@@ -33,6 +33,12 @@ MUTED = colors.HexColor("#667085")
 PAGE_SIZE = landscape(A4)
 
 
+#: Who issues these. One definition, used both on the face of the certificate
+#: and in the PDF's own metadata — two copies of a company name is two places
+#: for it to fall out of step with the register.
+ISSUER = "Silveri Consulting Services Pvt Ltd"
+
+
 def _centre_text(
     pdf: canvas.Canvas, y: float, text: str, font: str, size: float, colour: colors.Color
 ) -> None:
@@ -54,8 +60,8 @@ def render_certificate(
     buffer = io.BytesIO()
     width, height = PAGE_SIZE
     pdf = canvas.Canvas(buffer, pagesize=PAGE_SIZE)
-    pdf.setTitle(f"Certificate — {course_title}")
-    pdf.setAuthor("Voice Tutor LMS")
+    pdf.setTitle(f"Certificate: {course_title}")
+    pdf.setAuthor(ISSUER)
     pdf.setSubject(exam_title)
 
     # Double border.
@@ -66,7 +72,10 @@ def render_certificate(
     pdf.setStrokeColor(colors.HexColor("#C7D2FE"))
     pdf.rect(17 * mm, 17 * mm, width - 34 * mm, height - 34 * mm)
 
-    _centre_text(pdf, height - 42 * mm, "VOICE TUTOR LMS", "Helvetica-Bold", 11, BRAND)
+    # The issuing entity, printed on the certificate itself. A certificate is
+    # shown to employers and checked against a company that exists, so the name
+    # at the top has to be the one on the register rather than the product's.
+    _centre_text(pdf, height - 42 * mm, ISSUER.upper(), "Helvetica-Bold", 11, BRAND)
     _centre_text(
         pdf, height - 60 * mm, "Certificate of Completion", "Helvetica-Bold", 30, INK
     )

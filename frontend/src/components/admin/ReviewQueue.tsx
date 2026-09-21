@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
-import { formatMoney } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
 import {
   type ReviewRow,
   approveCourse,
@@ -15,9 +15,18 @@ import { counted } from "@/lib/plural";
 /**
  * Courses admins have sent up for approval.
  *
- * Sits on the Website screen because this is the same decision publishing
- * already is: what goes on the catalogue. Splitting "approve" onto its own
- * page would mean the owner checks two screens to answer one question.
+ * IT USED TO LIVE ON THE WEBSITE SCREEN, on the reasoning that approving is the
+ * same decision as publishing and publishing already sat there. The reasoning
+ * was sound and the result was not: the panel renders nothing when the queue is
+ * empty, so with nothing pending there was no trace of the feature anywhere in
+ * the product. A tester went looking for the approvals screen, found none, and
+ * filed issues 34 and 35 saying the workflow was missing. It was not missing.
+ * It was invisible.
+ *
+ * So it has a page and a menu entry now, and on that page it says so when there
+ * is nothing waiting. `standalone` is what distinguishes the two: embedded it
+ * still disappears when empty, because a permanent "nothing is waiting" panel
+ * above the catalogue is a panel people learn to scroll past.
  *
  * REJECTING REQUIRES A NOTE, and the box is right there rather than behind a
  * confirm dialog. The server refuses an empty one — "rejected" with no reason
@@ -30,9 +39,12 @@ import { counted } from "@/lib/plural";
  */
 export default function ReviewQueue({
   onDecided,
+  standalone = false,
 }: {
   /** Told after an approval, so the catalogue beside this reloads. */
   onDecided: () => void;
+  /** On its own page: show an empty state instead of vanishing. */
+  standalone?: boolean;
 }) {
   const [rows, setRows] = useState<ReviewRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -40,14 +52,28 @@ export default function ReviewQueue({
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [note, setNote] = useState("");
 
+  const [loading, setLoading] = useState(true);
+
   const load = useCallback(async () => {
     try {
       setRows(await listCourseReviews("pending"));
-    } catch {
-      // Quiet. This panel sits above the catalogue, and an error banner here
-      // would suggest the whole screen had failed when it has not.
+      setError(null);
+    } catch (caught) {
+      // Embedded above the catalogue, stay quiet: an error banner there would
+      // suggest the whole screen had failed when it has not. On its own page
+      // silence is worse — an empty screen that is actually a broken request
+      // reads as "nothing to approve", which is the wrong thing to believe.
+      if (standalone) {
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "Could not load the approval queue.",
+        );
+      }
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }, [standalone]);
 
   useEffect(() => {
     void load();
@@ -87,7 +113,28 @@ export default function ReviewQueue({
     }
   }
 
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {
+    if (!standalone) return null;
+    return (
+      <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
+        {error ? (
+          <p role="alert" className="text-sm text-error-700 dark:text-error-400">
+            {error}
+          </p>
+        ) : (
+          <>
+            <p className="text-base font-medium text-gray-800 dark:text-white/90">
+              {loading ? "Checking…" : "Nothing waiting for approval"}
+            </p>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              When an admin finishes writing a course and sends it up, it
+              appears here for you to approve or send back.
+            </p>
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="mb-8 rounded-2xl border border-warning-500 bg-warning-50 p-6 dark:bg-warning-500/10">
@@ -145,7 +192,13 @@ export default function ReviewQueue({
                 </p>
               </div>
 
-              <div className="flex shrink-0 flex-wrap gap-2">
+              {/* `shrink-0` ONLY FROM sm UP. On a phone it stopped this button group
+                  narrowing at all, so three buttons held the row at their own
+                  width and pushed the whole page 121px wider than the screen —
+                  `flex-wrap` could not help, because nothing was allowed to
+                  shrink enough to wrap. Full width below sm, so the buttons
+                  wrap onto their own line instead. */}
+              <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0">
                 {/* Read it before deciding. The link is first because opening
                     the course is what an owner should do, and approving from a
                     one-line summary is how a half-written course goes live. */}

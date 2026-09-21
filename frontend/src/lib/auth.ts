@@ -13,7 +13,9 @@ import { API_V1, env } from "@/lib/env";
  * revenue and role management. The backend widens `require_role` accordingly,
  * so anywhere the UI checks for admin it should accept both.
  */
-export type UserRole = "student" | "teacher" | "admin" | "super_admin";
+// "teacher" is gone — retired in migration 0025. It was the last piece of
+// the first schema and still carried the paywall bypass.
+export type UserRole = "student" | "admin" | "super_admin";
 
 export interface AuthUser {
   id: string;
@@ -181,7 +183,7 @@ export async function login(email: string, password: string): Promise<void> {
   if (!response.ok) {
     throw new AuthError(
       response.status,
-      await readError(response, "Could not sign in. Please try again"),
+      await readError(response, "We could not sign you in. Check the email and password, then try again."),
     );
   }
 }

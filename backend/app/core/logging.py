@@ -23,7 +23,6 @@ REDACTED_KEYS = frozenset(
         "authorization",
         "api_key",
         "gemini_api_key",
-        "anthropic_api_key",
         "jwt_secret",
         "database_url",
         "ephemeral_token",
