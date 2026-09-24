@@ -26,6 +26,9 @@ venv/
 .coverage
 htmlcov/
 
+# --- Dev-only scripts (local setup helpers, not for the repo) ---
+backend/scripts/
+
 # --- Editor / OS ---
 .vscode/
 .idea/
