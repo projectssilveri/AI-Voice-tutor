@@ -30,6 +30,7 @@ from app.deps import DbSession, RequireAdmin
 from app.models.audit import AuditEvent
 from app.models.organization import Organization
 from app.models.user import User, UserRole
+from app.routers.admin_users import STAFF_ABOVE_PLATFORM_ADMIN
 
 router = APIRouter(tags=["audit"])
 
@@ -102,6 +103,35 @@ def _as_utc(moment: datetime) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
+def _hidden_staff(admin: User) -> list[ColumnElement[bool]]:
+    """The staff above a platform admin, kept out of their trail as well.
+
+    `admin_users.can_see` hides super admins and other platform admins from a
+    platform admin's Users screen. This trail named them anyway: the Person
+    filter offered "Super Admin (owner@example.com)" with six thousand events,
+    and every sign-in and change they made was listed with their address.
+    Issue 62, "audit logs display activities of platform owners, super admins".
+
+    Same rule, applied to whoever acted. A platform admin keeps their own
+    events, and events nobody signed in for (a failed sign-in, the request
+    net). A subquery rather than a condition on the joined user, so it works in
+    the queries that never join `users` at all.
+    """
+    if admin.role is UserRole.SUPER_ADMIN:
+        return []
+    return [
+        or_(
+            AuditEvent.actor_user_id.is_(None),
+            AuditEvent.actor_user_id == admin.id,
+            AuditEvent.actor_user_id.notin_(
+                select(User.id).where(
+                    User.role.in_(tuple(STAFF_ABOVE_PLATFORM_ADMIN))
+                )
+            ),
+        )
+    ]
+
+
 def _filters(
     admin: User,
     *,
@@ -136,6 +166,7 @@ def _filters(
     # own organization's trail at /org/{slug}/audit.
     if admin.role is not UserRole.SUPER_ADMIN:
         filters.append(AuditEvent.organization_id.is_(None))
+        filters.extend(_hidden_staff(admin))
     elif organization_id is not None:
         # Only meaningful for a super admin — an ordinary admin's rows are all
         # NULL, so offering them this filter would be offering them nothing.
@@ -194,7 +225,7 @@ def _filters(
 
 #: Request plumbing, which is a debugging aid rather than an audit fact.
 #: The console already drops these three from the details column and hides the
-#: path filter from anybody but a super admin (issue 65) — but it did that in
+#: path filter from anybody but a super admin (issue 65), but it did that in
 #: the browser, over a payload that still carried them, and the CSV export
 #: wrote them out in full.
 #:
@@ -330,7 +361,7 @@ async def list_audit_facets(session: DbSession, admin: RequireAdmin) -> AuditFac
     scope: list[ColumnElement[bool]] = (
         []
         if admin.role is UserRole.SUPER_ADMIN
-        else [AuditEvent.organization_id.is_(None)]
+        else [AuditEvent.organization_id.is_(None), *_hidden_staff(admin)]
     )
 
     actions = (
@@ -406,7 +437,7 @@ async def list_audit_actors(
     scope: list[ColumnElement[bool]] = (
         []
         if admin.role is UserRole.SUPER_ADMIN
-        else [AuditEvent.organization_id.is_(None)]
+        else [AuditEvent.organization_id.is_(None), *_hidden_staff(admin)]
     )
     if q:
         pattern = f"%{q.strip()}%"

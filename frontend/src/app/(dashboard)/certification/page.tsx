@@ -13,10 +13,16 @@ import { type EnrolledCourse, listMyCourses } from "@/lib/student";
 import { SkeletonCards } from "@/components/ui/Skeleton";
 import { CertificationBadge } from "@/components/assessments/AssessmentBadge";
 import EmptyState from "@/components/ui/EmptyState";
-import { errorText } from "@/lib/api";
+import { ApiError, errorText } from "@/lib/api";
 
 interface ExamRow extends CertExam {
   course_title: string;
+  /**
+   * The course has an exam, but its coursework is not paid for, so the exam
+   * route answered 402 and there are no exam details to show. Rendered as a
+   * locked card that says why, rather than left out. Issue 18.
+   */
+  paywalled?: boolean;
 }
 
 /**
@@ -52,7 +58,32 @@ export default function CertificatesPage() {
                 ...exam,
                 course_title: course.title,
               }));
-            } catch {
+            } catch (caught) {
+              // PAYWALLED IS NOT THE SAME AS ABSENT. This used to return
+              // nothing for a 402 as well, so a student given a paid course
+              // saw no exam and no reason, contradicting the rule this page
+              // states below: locked exams are shown, not hidden. Issue 18.
+              if (
+                course.has_certification &&
+                caught instanceof ApiError &&
+                caught.status === 402
+              ) {
+                return [
+                  {
+                    id: `paywalled-${course.id}`,
+                    course_id: course.id,
+                    title: "Certification exam",
+                    default_max_attempts: 0,
+                    pass_mark: 0,
+                    modules_total: course.total_modules,
+                    modules_completed: course.completed_modules,
+                    unlocked: false,
+                    locked_reason: null,
+                    course_title: course.title,
+                    paywalled: true,
+                  },
+                ];
+              }
               return [];
             }
           }),
@@ -183,7 +214,32 @@ export default function CertificatesPage() {
             ) : (
               <div className="grid gap-4 md:grid-cols-2">
                 {openExams.map((exam) =>
-                  exam.unlocked ? (
+                  exam.paywalled ? (
+                    <div
+                      key={exam.id}
+                      className="flex flex-col rounded-2xl border border-gray-200 bg-gray-50 p-5 dark:border-gray-800 dark:bg-white/[0.02]"
+                    >
+                      <p className="mb-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        {exam.course_title}
+                      </p>
+                      <h3 className="flex items-center gap-2 font-semibold text-gray-600 dark:text-gray-300">
+                        <span aria-hidden="true">🔒</span>
+                        {exam.title}
+                      </h3>
+                      <p className="mt-3 text-sm text-gray-600 dark:text-gray-400">
+                        This course has a certification exam. The practice
+                        quizzes, assignments and exam open once the course is
+                        bought or covered by a subscription. Reading the
+                        modules stays free.
+                      </p>
+                      <a
+                        href={`/courses/${exam.course_id}`}
+                        className="mt-3 text-sm font-medium text-brand-500 hover:text-brand-600 dark:text-brand-400"
+                      >
+                        See the course
+                      </a>
+                    </div>
+                  ) : exam.unlocked ? (
                     /* A real link with target=_blank rather than an onClick: it
                        still opens its own tab, but middle-click, ctrl-click and
                        the keyboard keep working. The exam takes over the whole

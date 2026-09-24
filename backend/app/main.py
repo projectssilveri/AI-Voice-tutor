@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine
-from app.middleware import AuditMiddleware, RejectNulBytes
+from app.middleware import AuditMiddleware, RejectNulBytes, SecurityHeaders
 from app.routers import (
     admin,
     admin_bundles,
@@ -99,6 +99,11 @@ def create_app() -> FastAPI:
         # Docs stay off in production so the schema isn't public by default.
         docs_url=None if settings.is_production else "/docs",
         redoc_url=None if settings.is_production else "/redoc",
+        # And the schema itself. Turning off /docs and /redoc hid the viewers
+        # and left the raw document at /openapi.json, which lists every route
+        # including the admin ones. The comment above said the schema was not
+        # public; until this line, it was.
+        openapi_url=None if settings.is_production else "/openapi.json",
     )
 
     # Order matters. `add_middleware` puts the most recently added outermost, so
@@ -122,6 +127,11 @@ def create_app() -> FastAPI:
     # which refuses to bind one, and nine endpoints answered 500 to a URL any
     # signed-in person could type. See middleware/nul_bytes.py.
     app.add_middleware(RejectNulBytes)
+
+    # Headers on every response, including a refused one and a 500 from the
+    # catch-all, so it sits outside both. Inside CORS, which only adds its own.
+    # See middleware/security_headers.py.
+    app.add_middleware(SecurityHeaders, hsts=settings.is_production)
 
     app.add_middleware(
         CORSMiddleware,

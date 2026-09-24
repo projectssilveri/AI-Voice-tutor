@@ -34,6 +34,7 @@ from app.models.org_document import DocumentVisibility, OrganizationDocument
 from app.models.organization import Branch, Department, Organization
 from app.models.profile import AccessExtension, UserAvatar
 from app.models.quiz import QuizAttempt, QuizQuestion
+from app.models.revoked_token import RevokedToken
 from app.models.subscription import (
     BillingInterval,
     PlanCourse,
@@ -81,6 +82,7 @@ __all__ = [
     "ProgressStatus",
     "QuizAttempt",
     "QuizQuestion",
+    "RevokedToken",
     "Subscription",
     "SubscriptionPlan",
     "SubscriptionStatus",

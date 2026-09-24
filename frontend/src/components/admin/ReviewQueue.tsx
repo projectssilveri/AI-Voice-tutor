@@ -127,8 +127,8 @@ export default function ReviewQueue({
               {loading ? "Checking…" : "Nothing waiting for approval"}
             </p>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              When an admin finishes writing a course and sends it up, it
-              appears here for you to approve or send back.
+              A course sent for approval appears here for you to approve or
+              send back.
             </p>
           </>
         )}

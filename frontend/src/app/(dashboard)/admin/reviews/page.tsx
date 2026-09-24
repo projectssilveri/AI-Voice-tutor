@@ -37,9 +37,9 @@ function CourseApprovals() {
           Course approvals
         </h1>
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          An admin writes a course and sends it up; you decide whether it goes
-          on sale. Approving publishes it. Sending it back needs a reason, which
-          the author sees.
+          A course sent for approval waits here until you decide whether it
+          goes on sale. Approving publishes it. Sending it back needs a reason,
+          which the author sees.
         </p>
       </div>
 

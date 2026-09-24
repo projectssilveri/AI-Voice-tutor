@@ -745,22 +745,41 @@ async def set_enrollments(
         )
     _manageable(admin, user)
 
+    # A COMPANY'S PEOPLE ARE TRAINED INSIDE THE COMPANY. This route only takes
+    # public courses, and somebody in an organisation can only ever open their
+    # own organisation's, so nothing sent here could be used by them. The
+    # console offered the button anyway: their current company course came up
+    # ticked, and every save failed with "one of those courses does not exist".
+    if user.organization_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{user.name} belongs to an organisation. Their training is "
+                "assigned inside that organisation, not from here."
+            ),
+        )
+
     wanted = set(payload.course_ids)
     if wanted:
-        found = set(
-            (
-                await session.scalars(
-                    select(Course.id).where(
-                        Course.id.in_(wanted), Course.organization_id.is_(None)
-                    )
-                )
-            ).all()
-        )
-        missing = wanted - found
-        if missing:
+        rows = (
+            await session.execute(
+                select(Course.id, Course.organization_id).where(Course.id.in_(wanted))
+            )
+        ).all()
+        if len(rows) != len(wanted):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="One of those courses does not exist.",
+            )
+        # Said as it is. "Does not exist" about a course that plainly does, and
+        # is on the screen, is what the old message told the super admin.
+        if any(org_id is not None for _, org_id in rows):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "One of those courses is an organisation's own training. "
+                    "Only public courses can be given from here."
+                ),
             )
 
     current = {

@@ -69,7 +69,6 @@ export const othersItems: NavItem[] = [
   { icon: <MailIcon />, name: "Contact messages", path: "/admin/contact" },
   { icon: <GroupIcon />, name: "Users", path: "/admin/users" },
   { icon: <PieChartIcon />, name: "AI usage", path: "/admin/usage" },
-  { icon: <TableIcon />, name: "Refunds", path: "/admin/refunds" },
   {
     icon: <TableIcon />,
     name: "Attempt grants",
@@ -101,6 +100,9 @@ export const superAdminItems: NavItem[] = [
     name: "Add or modify courses",
     path: "/admin/courses",
   },
+  // Refunds: money, so the super admin's alone (decided 2026-09-24). It sat
+  // in the menu every platform admin sees.
+  { icon: <TableIcon />, name: "Refunds", path: "/admin/refunds" },
   // Bundles: the money screen, sitting with the rest of the owner-only things
   // rather than beside "Add or modify courses" — authoring a course and pricing
   // a package are different jobs.

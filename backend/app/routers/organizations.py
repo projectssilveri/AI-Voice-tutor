@@ -3,14 +3,29 @@
 WHO MAY DO WHAT HERE, and the line is between reading and writing rather than
 between two roles:
 
-  * READING is open to any platform admin — the list, one organization in full,
-    its branches and departments, its seat limits and usage, and every
-    customer's training. The ladder is super admin > platform admin >
-    organisation admin, and a platform admin is above the person who runs the
-    company, so answering "what has Acme actually built" and "how many seats
-    are they using" is ordinary support work. It used to require signing in as
-    one of the customer's own admins, which is worse for the customer than
-    reading the data honestly.
+  * READING THE STRUCTURE is open to any platform admin: the list, one
+    organization in full, its branches and departments, its seat limits and
+    usage, and a COUNT of the courses it has built. The ladder is super admin >
+    platform admin > organisation admin, and a platform admin is above the
+    person who runs the company, so answering "how big is Acme" and "how many
+    seats are they using" is ordinary support work. It used to require signing
+    in as one of the customer's own admins, which is worse for the customer
+    than reading the shape of their account honestly.
+
+    READING THE CONTENTS IS NOT. A platform admin does not get a customer's
+    courses, their audit trail or their training report, and this docstring
+    used to say they did. The three routers that decide it:
+
+        courses.list_courses      `include_organization_courses` is set only
+                                  for a SUPER_ADMIN.
+        audit_log._filters        below SUPER_ADMIN, forces
+                                  `organization_id IS NULL`.
+        reports._scope            the same rule for the training report.
+
+    And `deps.require_org_scope` treats only a SUPER_ADMIN as platform staff,
+    so `/org/{slug}/...` is a 404 to a platform admin. A count of courses is
+    the most any route here gives them, on purpose: it answers "are they using
+    the product" without opening anything the customer wrote.
   * WRITING stays with the super admin: creating an organization, renaming or
     deactivating it, adding branches and departments, and setting limits.
     Decision 50 put that gate around revenue and role management, and creating
@@ -532,14 +547,22 @@ class CustomerCourseRow(BaseModel):
 @router.get("/courses/all", response_model=list[CustomerCourseRow])
 async def list_customer_courses(
     session: DbSession,
-    admin: RequireAdmin,
+    admin: RequireSuperAdmin,
     organization_id: uuid.UUID | None = None,
 ) -> list[CustomerCourseRow]:
     """Every organization's own training, in one list.
 
-    ANY PLATFORM ADMIN, and read-only. This exists so support can answer "what
-    has Acme actually built" without signing in as one of their admins — and it is
-    deliberately separate from `/courses`, which is OUR catalogue.
+    SUPER ADMIN ONLY, and read-only. It was `RequireAdmin`, which handed any
+    platform admin every customer's course titles, descriptions, module counts
+    and enrolment numbers, while the docstring at the top of this file, the
+    sidebar and `courses.list_courses` all said a platform admin sees a count
+    of a customer's courses and nothing more. The screen that calls this was
+    already super-admin only; the route behind it was not, so typing the URL
+    was enough. Found by testing the rule against the running API.
+
+    This exists so support can answer "what has Acme actually built" without
+    signing in as one of their admins. It is deliberately separate from
+    `/courses`, which is OUR catalogue.
 
     Keeping the two in one screen is what let an ordinary admin rename and then
     delete a customer's course (decision 170). They are different things: one we

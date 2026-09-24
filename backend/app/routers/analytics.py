@@ -729,7 +729,7 @@ async def _leaderboard(
 
     # A RANKING OF NOTHING IS NOT A RANKING. When a row scores zero the place
     # it is given is whatever the database happened to return, presented as
-    # though somebody were ahead — issue 31, where the tester saw learners
+    # though somebody were ahead. Issue 31, where the tester saw learners
     # ranked with 0 modules, 0 certificates, 0 minutes and 0 score.
     #
     # Dropped per row, not only when the whole table is zero. Six learners who

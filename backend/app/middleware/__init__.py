@@ -7,5 +7,6 @@ everything below it (decision 21).
 
 from app.middleware.audit import AuditMiddleware
 from app.middleware.nul_bytes import RejectNulBytes
+from app.middleware.security_headers import SecurityHeaders
 
-__all__ = ["AuditMiddleware", "RejectNulBytes"]
+__all__ = ["AuditMiddleware", "RejectNulBytes", "SecurityHeaders"]

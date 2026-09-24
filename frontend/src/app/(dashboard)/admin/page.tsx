@@ -4,10 +4,13 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import RequireAuth from "@/components/auth/RequireAuth";
+import { useAuth } from "@/context/AuthContext";
 import { type UsageOverview, getUsage } from "@/lib/admin";
 import { counted } from "@/lib/plural";
 
 function AdminOverview() {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
   const [usage, setUsage] = useState<UsageOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -82,11 +85,18 @@ function AdminOverview() {
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {[
-          {
-            href: "/admin/courses",
-            title: "Courses",
-            body: "Write courses, modules, and the content the tutor teaches from.",
-          },
+          // Writing the catalogue is the super admin's (issues 11 and 45). The
+          // sidebar already hid it from a platform admin, and this card still
+          // offered it, one click away from "This part is not for your account".
+          ...(isSuperAdmin
+            ? [
+                {
+                  href: "/admin/courses",
+                  title: "Courses",
+                  body: "Write courses, modules, and the content the tutor teaches from.",
+                },
+              ]
+            : []),
           {
             href: "/admin/assignments",
             title: "Submissions",

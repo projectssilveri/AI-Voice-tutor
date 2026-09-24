@@ -8,8 +8,10 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.deps import CurrentUser, DbSession
+from app.models.certification import CertExam
 from app.models.enrollment import ProgressStatus
 from app.services import access
 from app.services import courses as course_service
@@ -34,6 +36,12 @@ class EnrolledCourse(BaseModel):
     purchased_at: datetime | None
     expires_at: datetime | None
     access_via: str
+    # WHETHER THE COURSE ENDS IN AN EXAM. The Certificates page needs to know
+    # this for a course whose coursework is not paid for: the exam route
+    # answers 402 before it says whether an exam exists, so the page could only
+    # leave the course out, and a student who had been given a paid course was
+    # left with nothing on screen and no reason. Issue 18.
+    has_certification: bool = False
 
 
 class DashboardSummaryOut(BaseModel):
@@ -54,6 +62,17 @@ async def list_my_enrollments(
     session: DbSession, user: CurrentUser
 ) -> list[EnrolledCourse]:
     rows = await enrollment_service.list_enrolled_courses(session, user.id)
+    certified: set[uuid.UUID] = set()
+    if rows:
+        certified = set(
+            (
+                await session.scalars(
+                    select(CertExam.course_id).where(
+                        CertExam.course_id.in_([row.course.id for row in rows])
+                    )
+                )
+            ).all()
+        )
     return [
         EnrolledCourse(
             id=row.course.id,
@@ -67,6 +86,7 @@ async def list_my_enrollments(
             purchased_at=row.purchased_at,
             expires_at=row.expires_at,
             access_via=row.access_via,
+            has_certification=row.course.id in certified,
         )
         for row in rows
     ]

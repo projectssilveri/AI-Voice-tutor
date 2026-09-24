@@ -10,7 +10,8 @@ The rule:
         it is free (price_minor == 0),
      or the student holds a PAID order for it,
      or an active subscription whose plan covers it,
-     or they are staff.
+     or they are staff,
+     or checkout is switched off and they are enrolled in it.
 
 `status = 'paid'` is set only after a signature has been verified server-side
 (see `services/payments.py`). Nothing here trusts a value the browser sent.
@@ -29,9 +30,11 @@ from datetime import UTC, datetime
 from sqlalchemy import false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.assignment import Assignment, AssignmentSubmission
 from app.models.certification import CertExam
 from app.models.course import Course, Module
+from app.models.enrollment import Enrollment
 from app.models.material import ModuleMaterial
 from app.models.order import Order, OrderStatus
 from app.models.quiz import QuizQuestion
@@ -233,6 +236,17 @@ async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
     return None
 
 
+async def is_enrolled(
+    session: AsyncSession, user_id: uuid.UUID, course_id: uuid.UUID
+) -> bool:
+    found = await session.scalar(
+        select(Enrollment.id)
+        .where(Enrollment.user_id == user_id, Enrollment.course_id == course_id)
+        .limit(1)
+    )
+    return found is not None
+
+
 async def can_access_course(
     session: AsyncSession, user: User, course: Course
 ) -> AccessDecision:
@@ -252,6 +266,23 @@ async def can_access_course(
 
     if await subscription_covers_course(session, user.id, course.id):
         return AccessDecision(True, "subscription")
+
+    # WHILE CHECKOUT IS SWITCHED OFF, AN ENROLMENT IS THE WAY IN.
+    #
+    # With no Razorpay keys nobody can buy anything, so a paid course reached a
+    # student only one way: an admin assigning it. That enrolled them for
+    # reading and left the quizzes, assignments and exam locked behind a Buy
+    # button that could not work, so the course could never be finished or
+    # certified (issue 18). Decided 2026-09-24: until payments are on, being
+    # enrolled is enough.
+    #
+    # It cannot be used to help yourself. Self-enrolment calls this function
+    # BEFORE the enrolment exists, so a student still meets "Buy this course"
+    # and only an admin can put them in. And it switches itself off: once the
+    # Razorpay keys are set, `payments_enabled` is true and a paid course needs
+    # a paid order or a subscription again, as it did before.
+    if not settings.payments_enabled and await is_enrolled(session, user.id, course.id):
+        return AccessDecision(True, "enrolled")
 
     return AccessDecision(False, "payment_required")
 

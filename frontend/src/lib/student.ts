@@ -24,6 +24,12 @@ export interface EnrolledCourse {
   /** Null on an outright purchase means never, not unknown — see access_via. */
   expires_at: string | null;
   access_via: "purchase" | "subscription" | "free" | "enrolled" | string;
+  /**
+   * Whether the course ends in a certification exam. Lets the Certificates
+   * page show a locked exam for a course whose coursework is not paid for,
+   * where the exam route itself answers 402 and says nothing more.
+   */
+  has_certification: boolean;
 }
 
 export interface ModuleSummary {

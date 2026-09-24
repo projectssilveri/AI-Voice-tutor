@@ -783,6 +783,10 @@ function EnrolmentEditor({
 
   const loaded = selected !== null;
   const chosen = selected ?? [];
+  // PUBLIC COURSES ONLY, which is all this editor can save. A super admin's
+  // course list also holds every organisation's private training, and ticking
+  // one of those came back as "one of those courses does not exist".
+  const offered = courses.filter((course) => course.organization_id === null);
   // What saving would take away. Named on screen before the button is pressed,
   // because "saving replaces the list" is a sentence people read past.
   const removing = (original ?? []).filter((id) => !chosen.includes(id));
@@ -845,7 +849,7 @@ function EnrolmentEditor({
         </p>
       ) : null}
       <div className="grid gap-2 sm:grid-cols-3">
-        {courses.map((course) => (
+        {offered.map((course) => (
           <label
             key={course.id}
             className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300"
@@ -1538,7 +1542,10 @@ function UsersConsole() {
                                   Edit
                                 </button>
                               ) : null}
-                              {mine && !orgMember ? (
+                              {/* Public accounts only. Somebody inside an
+                                  organisation is trained there, and this editor
+                                  could not save a thing for them. */}
+                              {mine && !orgMember && !row.organization_id ? (
                                 <button
                                   type="button"
                                   onClick={() => setEnrolling(row.id)}
@@ -1552,12 +1559,20 @@ function UsersConsole() {
                                   anyone who could raise a request against the
                                   only person able to decide it could lock the
                                   platform out — so the button would have done
-                                  nothing but produce an error. */}
+                                  nothing but produce an error.
+
+                                  THAT WAS THE INTENT AND NOT THE CONDITION.
+                                  `isSuperAdmin ||` let a super admin see
+                                  Suspend on another super admin's row, press
+                                  it, and get a 409. The tester read the button
+                                  as the ability and kept issue 3 open. A super
+                                  admin's row now only offers Reactivate, and
+                                  only when it is already switched off. */}
                               {mine &&
                               !isMe &&
-                              (isSuperAdmin ||
-                                (row.is_active &&
-                                  row.role !== "super_admin")) ? (
+                              (row.role === "super_admin"
+                                ? isSuperAdmin && !row.is_active
+                                : isSuperAdmin || row.is_active) ? (
                                 <button
                                   type="button"
                                   disabled={

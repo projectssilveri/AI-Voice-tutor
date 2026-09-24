@@ -150,9 +150,27 @@ export default function OrgPeoplePage() {
   // WHAT THIS SCREEN IS A LIST OF. An org admin gets the company; a department
   // admin gets their team and needs the heading to say so, or a list missing
   // most of the company reads as a broken page rather than a scoped one.
+  // NOTHING LOADED, SO NOTHING TO SHOW BUT THE REASON. Opening another
+  // company's address answers "Organization not found", and the page used to
+  // draw its empty roster underneath anyway: "Nobody here yet. Add your
+  // colleagues", on a company that is not theirs. Nothing leaked, but it read
+  // as an invitation to add people to somebody else's organisation.
+  const failedToLoad = !loading && data === null && error !== null;
+
   const scopeName = isDeptAdmin
     ? (profile?.department_name ?? "My department")
     : (profile?.branch_name ?? "My branch");
+
+  if (failedToLoad) {
+    return (
+      <div
+        role="alert"
+        className="rounded-2xl border border-error-500 bg-error-50 p-4 text-sm text-error-700 dark:bg-error-500/10 dark:text-error-400"
+      >
+        {error}
+      </div>
+    );
+  }
 
   return (
     <OrgShell

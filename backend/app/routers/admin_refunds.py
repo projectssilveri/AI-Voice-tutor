@@ -9,8 +9,11 @@ customer money out of the account is a separate decision with separate
 approval. Support pays the refund in the Razorpay dashboard and records it
 here, and the screen says so rather than implying the money has gone.
 
-Both routes are behind `RequireAdmin`. A refund is a money decision, and the
-frontend not linking the page is not what protects it.
+Both routes are behind `RequireSuperAdmin`. A refund is a money decision, and
+money sits with the super admin (decided 2026-09-24): a platform admin can
+neither look a refund up nor record one. They were `RequireAdmin`, open to any
+platform admin as "the support desk", which disagreed with the rule written in
+CLAUDE.md. The frontend not linking the page is not what protects it.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.deps import DbSession, RequireAdmin
+from app.deps import DbSession, RequireSuperAdmin
 from app.models.order import Order
 from app.services import audit, refunds
 
@@ -104,7 +107,7 @@ def _to_read(quote: refunds.RefundQuote) -> RefundQuoteRead:
 @router.get("", response_model=RefundLookup)
 async def look_up_refunds(
     session: DbSession,
-    actor: RequireAdmin,
+    actor: RequireSuperAdmin,
     q: str | None = Query(
         default=None,
         max_length=255,
@@ -155,7 +158,7 @@ async def record_refund(
     order_id: uuid.UUID,
     payload: RecordRefundRequest,
     session: DbSession,
-    actor: RequireAdmin,
+    actor: RequireSuperAdmin,
 ) -> RefundQuoteRead:
     """Write down a refund that has been paid, and withdraw the access.
 

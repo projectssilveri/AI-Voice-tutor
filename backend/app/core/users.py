@@ -26,6 +26,7 @@ from fastapi_users.authentication import (
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
 from fastapi_users.exceptions import InvalidPasswordException
+from fastapi_users.jwt import generate_jwt
 from fastapi_users.password import PasswordHelper
 from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
@@ -36,7 +37,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal, get_session
 from app.models.audit import AuditAction
 from app.models.user import User
-from app.services import audit
+from app.services import audit, revocation
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,38 @@ async def get_user_manager(
     yield UserManager(user_db, password_helper)
 
 
+class RevocableJWTStrategy(JWTStrategy):
+    """A JWT strategy whose tokens can be ended before they expire.
+
+    `JWTStrategy.destroy_token` cannot do anything (a JWT the server never
+    stored cannot be taken back), so signing out used to clear the browser's
+    cookie and nothing else. A copy of that cookie kept anywhere went on
+    working for its full 24 hours. Now signing out records the token in
+    `revoked_tokens`, and reading one checks that list first.
+
+    The voice WebSocket reads the session through `get_jwt_strategy()` too, so
+    a signed-out cookie cannot open a tutor session either.
+    """
+
+    async def write_token(self, user) -> str:
+        # A `jti` makes every sign-in its own token. Without one, two sign-ins
+        # by the same person in the same second produced byte-identical JWTs
+        # (same subject, same expiry), so signing out on one device would have
+        # signed them out on the other as well.
+        data = {"sub": str(user.id), "aud": self.token_audience, "jti": uuid.uuid4().hex}
+        return generate_jwt(
+            data, self.encode_key, self.lifetime_seconds, algorithm=self.algorithm
+        )
+
+    async def read_token(self, token, user_manager):
+        if token is not None and await revocation.is_revoked(token):
+            return None
+        return await super().read_token(token, user_manager)
+
+    async def destroy_token(self, token, user) -> None:
+        await revocation.revoke(token)
+
+
 def get_jwt_strategy() -> JWTStrategy:
     if not settings.jwt_secret:
         raise RuntimeError(
@@ -136,7 +169,7 @@ def get_jwt_strategy() -> JWTStrategy:
             '`python -c "import secrets; print(secrets.token_urlsafe(48))"` '
             "and add it to backend/.env"
         )
-    return JWTStrategy(
+    return RevocableJWTStrategy(
         secret=settings.jwt_secret,
         lifetime_seconds=settings.jwt_lifetime_seconds,
     )
