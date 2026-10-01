@@ -341,10 +341,10 @@ async def delete_document(
     otherwise have removed another department's document by the time anything
     looked at whose it was.
 
-    AN ADMINISTRATOR REMOVES; ANYBODY ELSE ASKS. A document is a customer's
-    data, and a department author deleting one is the same class of act as a
-    department manager deleting a colleague — small, irreversible, and until now
-    unsupervised. 202 and no body when it is queued.
+    PLATFORM STAFF REMOVE; ANYBODY ELSE ASKS, the organisation admin included,
+    and a Platform Admin or Super Admin decides. A document is a customer's
+    data, and deleting one is small and irreversible. 202 and no body when it
+    is queued.
     """
     document = await doc_service.get_with_data(
         session, scope.organization.id, document_id
@@ -372,9 +372,10 @@ async def delete_document(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
         )
 
-    # An organisation admin removes it outright; everybody else asks — including
-    # an author who could manage it, since the file is still the company's.
-    if scope.user.role is not UserRole.ORG_ADMIN or not _may_manage_document(
+    # Platform staff remove it outright; everybody else asks, the organisation
+    # admin included, and a Platform Admin or Super Admin decides
+    # (`deletions.acts_directly`, 2026-10-01).
+    if not deletions.acts_directly(scope.user) or not _may_manage_document(
         scope, document.visibility, document.department_id
     ):
         try:
@@ -405,18 +406,17 @@ async def delete_document(
         response.status_code = status.HTTP_202_ACCEPTED
         return
 
-    # An administrator acting alone. Recorded as raised and approved in the same
+    # Platform staff acting alone. Recorded as raised and approved in the same
     # moment, so the history of a document has one shape whoever removed it.
     try:
-        await deletions.request_deletion(
+        await deletions.record_direct(
             session,
             organization=scope.organization,
             target_type=DeletionTarget.DOCUMENT,
             target_id=document_id,
             target_label=document.filename,
             actor=scope.user,
-            reason=reason or "Removed by an organisation administrator.",
-            pre_approved=True,
+            reason=reason or "Removed by platform staff.",
         )
     except deletions.DeletionError as exc:
         raise HTTPException(
@@ -795,6 +795,102 @@ async def update_org_course(
         ),
         can_edit=_may_edit(scope, course),
     )
+
+
+class OrgCourseRemoval(BaseModel):
+    """What happened, so the screen can say so."""
+
+    #: "deleted", or "requested" when it waits for platform staff.
+    outcome: str
+    explanation: str
+
+
+@router.delete("/courses/{course_id}", response_model=OrgCourseRemoval)
+async def delete_org_course(
+    course_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAuthorScope,
+    response: Response,
+    reason: str = "",
+) -> OrgCourseRemoval:
+    """Delete one of this organisation's courses, or ask for it to be deleted.
+
+    Nobody inside a company could remove a course at all before this. Platform
+    staff delete it at once; whoever else may edit it (the organisation admin,
+    or a department admin for their own department's course) asks, 202, and a
+    Platform Admin or Super Admin decides (`deletions.acts_directly`,
+    2026-10-01).
+    """
+    course = await session.get(Course, course_id)
+    if course is None or course.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        )
+    _require_editable(scope, course)
+    name = course.title
+
+    if not deletions.acts_directly(scope.user):
+        try:
+            request = await deletions.request_deletion(
+                session,
+                organization=scope.organization,
+                target_type=DeletionTarget.TRAINING,
+                target_id=course.id,
+                target_label=name,
+                actor=scope.user,
+                reason=reason,
+            )
+        except deletions.DeletionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        await audit.record(
+            session,
+            action=AuditAction.DELETION_REQUESTED,
+            actor=scope.user,
+            organization_id=scope.organization.id,
+            target_type="course",
+            target_id=course.id,
+            metadata={"name": name, "request": str(request.id)},
+        )
+        await session.commit()
+        response.status_code = status.HTTP_202_ACCEPTED
+        return OrgCourseRemoval(
+            outcome="requested",
+            explanation=(
+                f"{name} has not been deleted. A Platform Admin or Super Admin "
+                "has to approve it, and it is waiting on them."
+            ),
+        )
+
+    # Platform staff acting alone, recorded as raised and approved together so
+    # the history of the course has one shape whoever removed it.
+    try:
+        await deletions.record_direct(
+            session,
+            organization=scope.organization,
+            target_type=DeletionTarget.TRAINING,
+            target_id=course.id,
+            target_label=name,
+            actor=scope.user,
+            reason=reason or "Removed by platform staff.",
+        )
+    except deletions.DeletionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+    await session.delete(course)
+    await audit.record(
+        session,
+        action=AuditAction.COURSE_DELETED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"name": name},
+    )
+    await session.commit()
+    return OrgCourseRemoval(outcome="deleted", explanation=f"{name} has been deleted.")
 
 
 class OrgModuleCreate(BaseModel):

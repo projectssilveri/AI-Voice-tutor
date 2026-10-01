@@ -17,13 +17,14 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, or_, select
 
 from app.core import passwords
 from app.core.users import password_helper
-from app.deps import DbSession, RequireAdmin, RequireSuperAdmin
+from app.deps import DbSession, RequireAdmin
+from app.models.approval import ApprovalKind
 from app.models.assignment import Assignment, AssignmentSubmission
 from app.models.audit import AuditAction, AuditEvent
 from app.models.certification import CertAttempt, CertExam, Certificate
@@ -44,6 +45,7 @@ from app.models.user import User, UserRole
 from app.models.voice import VoiceSession
 from app.services import (
     accounts,
+    approvals,
     audit,
     certification,
     concurrency,
@@ -160,24 +162,19 @@ def visible_filter(actor: User) -> list:
 def can_manage(actor: User, target: User) -> bool:
     """Whether `actor` may CHANGE `target`, as opposed to merely see them.
 
-    ANYBODY INSIDE AN ORGANISATION IS OFF LIMITS, not just its administrators.
-    A platform admin now sees a customer's whole roster; being able to edit,
-    rename or switch off any of those people from a screen that also lists our
-    own B2C learners is precisely the mix that ended with a customer's course
-    renamed and then deleted (decision 170). Sight solved the support problem.
-    A write button would bring the original problem back with a wider blast
-    radius than it had before.
+    Platform staff change every account they can see, a customer's people
+    included, since the role model of 2026-10-01 gave a platform admin the
+    super admin's work. Before that a platform admin saw a customer's roster
+    and changed none of it (decision 170).
 
-    So: public accounts are ours, everyone else's people are theirs. The
-    company's own admins manage their roster at /org/{slug}/members, and
-    anything that needs destroying goes through `services/deletions.py`, where
-    the customer's own administrator says yes or no.
+    What is still not theirs: the staff ladder above a platform admin, which
+    `can_see` never shows them; and roles, which `PATCH /users/{id}/role`
+    keeps for the super admin, on public accounts only. Deleting a customer's
+    people is theirs at once since 2026-10-01 (`services/deletions.py`).
     """
     if not can_see(actor, target):
         return False
-    if actor.role is UserRole.SUPER_ADMIN:
-        return True
-    return target.organization_id is None
+    return actor.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
 
 def _visible(actor: User, target: User) -> None:
@@ -316,9 +313,9 @@ class PlatformUserUpdate(BaseModel):
     no way to put it right short of the database. The route validates it, keeps
     it unique, and writes the old and new values into the audit trail.
 
-    IS_ACTIVE IS GONE, and moved behind the super admin. Suspending an
-    account is not an editing decision; an admin asks for it with a reason
-    (`POST /admin/users/{id}/suspension-request`) and the owner decides. Absent
+    IS_ACTIVE IS GONE from here. Suspending an account is not an editing
+    decision: platform staff do it with a reason at `POST
+    /admin/users/{id}/active`, which keeps the history and the floors. Absent
     from this schema, so the route drops the field even if it is in the body.
     """
 
@@ -341,6 +338,9 @@ class CreatedUser(BaseModel):
     email: str
     role: str
     is_active: bool
+    # A platform admin's new organisation administrator, waiting for a super
+    # admin. The account exists and cannot sign in until approved.
+    pending_approval: bool = False
 
 
 @router.post("/users", response_model=CreatedUser, status_code=status.HTTP_201_CREATED)
@@ -399,13 +399,17 @@ async def create_platform_user(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from None
 
+    # A PLATFORM ADMIN'S NEW ORGANISATION ADMIN WAITS for a super admin (role
+    # model of 2026-10-01): made switched off, approved on /admin/approvals.
+    waits = approvals.needs_approval(admin, payload.role)
+
     user = User(
         name=payload.name.strip(),
         email=email,
         hashed_password=password_helper.hash(payload.password),
         role=payload.role,
         phone=(payload.phone or "").strip() or None,
-        is_active=True,
+        is_active=not waits,
         # An admin vouched for them, and there is no mail provider to verify
         # through — the same reasoning as the organization portal.
         is_verified=True,
@@ -432,14 +436,39 @@ async def create_platform_user(
     # created and nothing on screen to explain it. Verified before this fix.
     for course_id in dict.fromkeys(payload.course_ids):
         course = await session.get(Course, course_id)
-        if course is None or course.organization_id is not None:
-            # Silently skipping would enrol them in fewer courses than the admin
-            # asked for and say nothing.
+        # Silently skipping would enrol them in fewer courses than the admin
+        # asked for and say nothing.
+        if course is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="One of those courses does not exist.",
             )
+        # Said as it is, the same sentence `set_enrollments` uses. "Does not
+        # exist" about a course that is plainly on the screen is what this
+        # used to answer.
+        if course.organization_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "One of those courses is an organisation's own training. "
+                    "Only public courses can be given from here."
+                ),
+            )
         session.add(Enrollment(user_id=user.id, course_id=course_id))
+
+    if waits and organization_id is not None:
+        try:
+            await approvals.request(
+                session,
+                user=user,
+                organization_id=organization_id,
+                kind=ApprovalKind.NEW_ACCOUNT,
+                actor=admin,
+            )
+        except approvals.ApprovalError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
 
     await audit.record(
         session,
@@ -466,6 +495,7 @@ async def create_platform_user(
         email=user.email,
         role=user.role.value,
         is_active=user.is_active,
+        pending_approval=waits,
     )
 
 
@@ -485,7 +515,7 @@ async def update_platform_user(
     changed here with both values recorded, and the console warns before saving.
 
     Not here: the role, which has its own endpoint behind a stricter gate, and
-    `is_active`, which now needs the super admin's approval.
+    `is_active`, which has its own route (`POST /admin/users/{id}/active`).
     """
     user = await session.get(User, user_id)
     if user is None:
@@ -494,20 +524,11 @@ async def update_platform_user(
         )
     _manageable(admin, user)
 
-    # NOBODY EDITS ANOTHER SUPER ADMIN FROM HERE, not even a peer. This used to
-    # allow it, and `email` is editable on this route — so one super admin could
-    # move another's sign-in address onto one they control. That is account
-    # takeover wearing the clothes of a typo fix, and it is issue 5.
-    #
-    # Their own account is still theirs to edit, through /profile.
-    if user.role is UserRole.SUPER_ADMIN and user.id != admin.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "A super admin's account can only be edited by the person who "
-                "holds it, from their own profile."
-            ),
-        )
+    # A SUPER ADMIN MAY EDIT ANOTHER SUPER ADMIN since 2026-10-01, the user's
+    # decision: "Super Admin can do everything". It was refused before (issue
+    # 5), because the address is the sign-in and editing it hands the account
+    # over. Both addresses still go into the trail below. A platform admin
+    # never reaches a super admin here: `_manageable` answers 404.
 
     changed: dict[str, Any] = {}
     if payload.name is not None:
@@ -560,50 +581,29 @@ async def update_platform_user(
     )
 
 
-class DeletionRequested(BaseModel):
-    """202: nothing was deleted, and here is what is waiting on whom."""
-
-    request_id: uuid.UUID
-    organization_id: uuid.UUID
-    organization_name: str
-    target_label: str
-    explanation: str
-
-
-@router.delete(
-    "/users/{user_id}",
-    response_model=UserRemoval | DeletionRequested,
-    responses={202: {"model": DeletionRequested}},
-)
+@router.delete("/users/{user_id}", response_model=UserRemoval)
 async def remove_platform_user(
     user_id: uuid.UUID,
     session: DbSession,
-    admin: RequireSuperAdmin,
-    response: Response,
+    admin: RequireAdmin,
     reason: str = Query(
         default="",
         max_length=2_000,
-        description="Required when the account belongs to an organisation.",
+        description="Why. Kept on the customer's deletion record.",
     ),
-) -> UserRemoval | DeletionRequested:
-    """Delete a public account, or ASK to delete one belonging to a customer.
+) -> UserRemoval:
+    """Delete an account, public or a customer's: deleted, or closed if it has history.
 
-    Super admin only. Deciding who exists on the platform sits with revenue and
-    role management, which decision 50 puts above an ordinary admin.
+    Platform staff. It was super admin only until the role model of
+    2026-10-01 gave platform admins the same work; they still cannot remove
+    the staff above them, which `_manageable` answers with a 404.
 
-    TWO DIFFERENT OPERATIONS BEHIND ONE VERB, decided by whether the account
-    belongs to an organisation:
-
-      * PUBLIC B2C — deleted, or closed if it has history, exactly as before.
-        No customer is involved, so there is nobody to ask.
-      * INSIDE AN ORGANISATION — 202 and a pending request. Platform staff can
-        see a customer's people in full now; removing one is the customer's
-        call, and their own administrator makes it. The account is untouched.
-
-    The verb stays DELETE rather than becoming a second endpoint because the
-    caller's intent is identical either way — "remove this person" — and a
-    console that has to know which kind of account it is holding before it can
-    pick a URL is a console that will eventually pick the wrong one.
+    A CUSTOMER'S ACCOUNT is deleted at once too, since 2026-10-01: platform
+    staff delete inside a customer directly, and it is the customer's own
+    people who ask (`deletions.acts_directly`). It still leaves a deletion
+    request, raised and approved in the same moment, so that customer's
+    history says who removed the person and why, and the organisation's
+    admin floor holds.
     """
     user = await session.get(User, user_id)
     if user is None:
@@ -615,66 +615,42 @@ async def remove_platform_user(
             status_code=status.HTTP_409_CONFLICT,
             detail="You cannot remove your own account.",
         )
+    _manageable(admin, user)
 
-    # THE CUSTOMER'S PEOPLE ARE THE CUSTOMER'S. Checked before the floors below
-    # because it is not a refusal — it is a different operation, and the floors
-    # that matter are recomputed at approval time instead.
-    if user.organization_id is not None:
-        organization = await session.get(Organization, user.organization_id)
-        if organization is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
-            )
+    # Was a blanket refusal. Now the floor: the last super admin cannot go, and
+    # any other one can: the same rule demotion uses, so the two screens do not
+    # disagree about who is removable. The organisation's floor likewise.
+    await assert_super_admin_floor(session, user)
+    await _assert_org_floor_holds(session, user)
+
+    organization = (
+        await session.get(Organization, user.organization_id)
+        if user.organization_id is not None
+        else None
+    )
+    if organization is not None:
         try:
-            request = await deletions.request_deletion(
+            await deletions.record_direct(
                 session,
                 organization=organization,
                 target_type=DeletionTarget.MEMBER,
                 target_id=user.id,
                 target_label=f"{user.name} ({user.email})",
                 actor=admin,
-                reason=reason,
+                reason=reason or "Removed by platform staff.",
             )
         except deletions.DeletionError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
 
-        await audit.record(
-            session,
-            action=AuditAction.DELETION_REQUESTED,
-            actor=admin,
-            organization_id=organization.id,
-            target_type="user",
-            target_id=user.id,
-            metadata={"reason": request.reason, "request": str(request.id)},
-        )
-        await session.commit()
-
-        response.status_code = status.HTTP_202_ACCEPTED
-        return DeletionRequested(
-            request_id=request.id,
-            organization_id=organization.id,
-            organization_name=organization.name,
-            target_label=request.target_label,
-            explanation=(
-                f"{user.name} has not been removed. "
-                f"{organization.name}'s administrators have been asked to "
-                "approve it, and it is waiting on them."
-            ),
-        )
-
-    # Was a blanket refusal. Now the floor: the last super admin cannot go, and
-    # any other one can — the same rule demotion uses, so the two screens do not
-    # disagree about who is removable.
-    await assert_super_admin_floor(session, user)
-    await _assert_org_floor_holds(session, user)
-
     removal = await accounts.remove_account(session, user)
     await audit.record(
         session,
         action="admin.user_removed",
         actor=admin,
+        # A customer's person shows up in that customer's own activity log.
+        organization_id=organization.id if organization is not None else None,
         target_type="user",
         target_id=user_id,
         metadata={"outcome": removal.outcome},
@@ -921,6 +897,8 @@ class UserDossier(BaseModel):
     certification_attempts: int
     voice_sessions: int
     voice_minutes: int
+    #: Seconds as well, so a short session is not shown as 0 minutes.
+    voice_seconds: int = 0
     last_login_at: datetime | None
     last_logout_at: datetime | None
     login_count: int
@@ -1377,6 +1355,7 @@ async def user_dossier(
         certification_attempts=sum(row.used_attempts for row in certifications),
         voice_sessions=len(sessions),
         voice_minutes=int(total_seconds or 0) // 60,
+        voice_seconds=int(total_seconds or 0),
         last_login_at=last_login,
         last_logout_at=last_logout,
         login_count=login_count or 0,

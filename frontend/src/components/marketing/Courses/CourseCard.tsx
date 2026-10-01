@@ -57,7 +57,12 @@ export default function CourseCard({
   // Only a HIGHER previous price is a discount worth showing. A list price
   // equal to or below what is charged is either a data slip or a claim that
   // is not true, and either way it does not go on the card.
-  const wasMore = listPriceMinor !== null && listPriceMinor > priceMinor;
+  //
+  // Never on a free course: "₹600" struck through beside "Free, no card
+  // needed" read as two prices for one course. The course page already
+  // leaves it out, so the card now agrees with it.
+  const wasMore =
+    !free && listPriceMinor !== null && listPriceMinor > priceMinor;
   const window = accessLabel(accessDays);
 
   return (

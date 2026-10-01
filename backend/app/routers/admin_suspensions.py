@@ -28,7 +28,7 @@ from app.deps import DbSession, RequireAdmin, RequireSuperAdmin
 from app.models.suspension import SuspensionRequest, SuspensionStatus
 from app.models.user import User
 from app.routers.admin_users import _manageable
-from app.services import audit, suspensions
+from app.services import approvals, audit, suspensions
 
 logger = logging.getLogger(__name__)
 
@@ -254,19 +254,35 @@ async def set_user_active(
     user_id: uuid.UUID,
     payload: ActiveChange,
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
 ) -> SuspensionRow | None:
-    """Suspend or restore an account directly. Super admin only.
+    """Suspend or restore an account directly. Platform staff.
 
     They are the decider, so waiting for their own request would be theatre.
     Suspending this way still writes the record — raised and approved together
     — so an account's history has one shape however it was switched off.
+
+    A platform admin acts here too since the role model of 2026-10-01, on the
+    accounts they may manage: never the staff above them, which `_manageable`
+    answers with a 404 as on every other write.
     """
     target = await session.get(User, user_id)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
         )
+    _manageable(admin, target)
+
+    # Switching on somebody who is waiting for a super admin's approval, or
+    # whom one declined, would make that answer a suggestion
+    # (`services/approvals`).
+    if payload.active and not target.is_active:
+        try:
+            await approvals.assert_may_switch_on(session, target, admin)
+        except approvals.ApprovalError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
 
     try:
         request = await suspensions.set_active_directly(

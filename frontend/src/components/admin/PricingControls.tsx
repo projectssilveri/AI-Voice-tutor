@@ -14,7 +14,7 @@ const FIELD =
   "h-11 w-full rounded-lg border border-gray-300 bg-transparent px-4 text-sm text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/25 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90";
 
 /**
- * Price and availability. Super admin only.
+ * Price and availability. Platform staff only.
  *
  * An ordinary admin does not see this block, and could not use it anyway —
  * `PATCH /courses/{id}/pricing` 403s them, and the ordinary course-update
@@ -31,7 +31,13 @@ export default function PricingControls({
   onChanged: (updated: CourseRow) => void;
 }) {
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
+  // Platform staff, both tiers, since the role model of 2026-10-01.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
+  // ONLY THE SUPER ADMIN APPROVES COURSES. A platform admin's Publish on a
+  // course nobody has approved sends it to them instead, and the server does
+  // the same whatever this button says.
+  const needsApproval =
+    user?.role === "admin" && course.review_status !== "approved";
 
   const [rupees, setRupees] = useState(String(course.price_minor / 100));
   // Blank rather than "0" when unset: an empty box reads as "no previous
@@ -48,7 +54,7 @@ export default function PricingControls({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  if (!isSuperAdmin) {
+  if (!isPlatformStaff) {
     return (
       <div className="rounded-xl border border-gray-200 p-5 dark:border-gray-800">
         <h3 className="text-sm font-semibold text-gray-800 dark:text-white/90">
@@ -75,7 +81,10 @@ export default function PricingControls({
       setNotice(
         changes.is_published !== undefined
           ? changes.is_published
-            ? "Course published. It is now on sale."
+            ? updated.is_published
+              ? "Course published. It is now on sale."
+              : // A platform admin's new course: sent, not published.
+                "Sent to the Super Admin for approval. It goes on sale once they approve it."
             : "Course unpublished. It is hidden from the catalogue."
           : `Price set to ${formatMoney(updated.price_minor, updated.currency)}.`,
       );
@@ -125,7 +134,7 @@ export default function PricingControls({
             Price and availability
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Super admin only. Changing the price never alters what someone
+            Platform staff only. Changing the price never alters what someone
             already paid.
           </p>
         </div>
@@ -247,14 +256,23 @@ export default function PricingControls({
         <button
           type="button"
           onClick={() => save({ is_published: !course.is_published })}
-          disabled={saving}
+          disabled={
+            saving ||
+            (needsApproval && !course.is_published && course.review_status === "pending")
+          }
           className={`ml-auto h-11 rounded-lg px-5 text-sm font-medium transition disabled:opacity-50 ${
             course.is_published
               ? "border border-gray-300 text-gray-700 hover:bg-white dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/[0.03]"
               : "bg-success-700 text-white hover:bg-success-800"
           }`}
         >
-          {course.is_published ? "Unpublish" : "Publish"}
+          {course.is_published
+            ? "Unpublish"
+            : needsApproval
+              ? course.review_status === "pending"
+                ? "Waiting for approval"
+                : "Send for approval"
+              : "Publish"}
         </button>
       </form>
 

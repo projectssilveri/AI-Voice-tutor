@@ -285,9 +285,10 @@ async def list_public_plans(session: DbSession) -> list[PublicPlan]:
                 course_titles=[row.title for row in members],
                 course_ids=[str(row.id) for row in members],
                 course_count=len(members),
-                covers_everything=(
-                    catalogue_size > 0 and len(members) >= catalogue_size
-                ),
+                # A flagged plan is All Access by definition; its links are
+                # kept complete by `services/plans.fill_all_access`.
+                covers_everything=plan.all_access
+                or (catalogue_size > 0 and len(members) >= catalogue_size),
                 separate_total_minor=sum(row.price_minor for row in members),
             )
         )

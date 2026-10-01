@@ -284,7 +284,7 @@ function Detail() {
 
 export default function OrganizationDetailPage() {
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <Detail />
     </RequireAuth>
   );

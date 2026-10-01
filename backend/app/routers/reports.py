@@ -135,18 +135,20 @@ async def _scope(
         organization = await session.get(Organization, user.organization_id)
         return filters, (organization.name if organization else None)
 
-    if user.role is UserRole.SUPER_ADMIN:
-        if organization_id is not None:
-            filters.append(User.organization_id == organization_id)
-            organization = await session.get(Organization, organization_id)
-            return filters, (organization.name if organization else None)
-        if public_only:
-            filters.append(User.organization_id.is_(None))
-            return filters, "Our own learners"
-        return filters, None
+    # PLATFORM STAFF, BOTH TIERS. A platform admin read public accounts only
+    # (decision 171) until the role model of 2026-10-01 gave them the super
+    # admin's reach into customers. The ladder above them stays hidden, as on
+    # the Users page.
+    from app.routers.admin_users import visible_filter
 
-    # An ordinary platform admin: public B2C accounts only (decision 171).
-    filters.append(User.organization_id.is_(None))
+    filters.extend(visible_filter(user))
+    if organization_id is not None:
+        filters.append(User.organization_id == organization_id)
+        organization = await session.get(Organization, organization_id)
+        return filters, (organization.name if organization else None)
+    if public_only:
+        filters.append(User.organization_id.is_(None))
+        return filters, "Our own learners"
     return filters, None
 
 

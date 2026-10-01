@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import OrgSignInGuard from "@/components/org/OrgSignInGuard";
 import { AuthProvider } from "@/context/AuthContext";
 
 export const metadata: Metadata = {
@@ -21,7 +22,9 @@ export const metadata: Metadata = {
 export default function OrgLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900">{children}</div>
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+        <OrgSignInGuard>{children}</OrgSignInGuard>
+      </div>
     </AuthProvider>
   );
 }

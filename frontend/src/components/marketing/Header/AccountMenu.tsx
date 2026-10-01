@@ -90,6 +90,7 @@ export default function AccountMenu() {
           name={user.name || user.email}
           size="sm"
           version={photoVersion}
+          hasPhoto={user.has_photo}
         />
         <span className="hidden max-w-[11rem] truncate sm:block" title={displayName}>
           {displayName}

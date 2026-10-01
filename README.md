@@ -21,7 +21,7 @@ Step 12 (deploy) is the remaining one — see [Deployment](#deployment).
 |---|---|
 | API routes | 56 |
 | Frontend pages | 26 |
-| Database tables | 22 across 6 migrations |
+| Database tables | 22+ across 31 migrations |
 | Barge-in latency | **0.42 s**, measured against the live Gemini API |
 
 ---
@@ -98,9 +98,8 @@ One sign-in page; the dashboard changes by role.
 | Role | Can do |
 |---|---|
 | **student** | courses, tutor, quizzes, assignments, exams, certificates |
-| **teacher** | the above, plus writing quiz questions and assignments |
 | **admin** | course & module authoring, PDF upload, submission review, contact inbox, users, AI usage, attempt grants |
-| **super_admin** | everything, plus **pricing**, **publish/unpublish**, revenue, orders, and role changes |
+| **super_admin** | everything above, plus **pricing**, **publish/unpublish**, revenue, orders, role changes, and admin approvals |
 
 `super_admin` satisfies every `admin` gate automatically — forgetting to list
 both would lock the platform owner out of their own product.
@@ -154,7 +153,6 @@ cd backend
 pip install -r requirements.txt
 cp .env.example .env        # then fill in the values below
 python -m alembic upgrade head
-python -m scripts.seed      # 11 courses, 40 modules, 105 quiz questions, 8 plans, 3 accounts
 python -m uvicorn app.main:app --reload --port 8000
 ```
 

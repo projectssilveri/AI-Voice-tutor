@@ -124,6 +124,49 @@ function CourseDetailAuthoring() {
     (m) => !m.content || !m.content.trim(),
   ).length;
 
+  // A CUSTOMER'S OWN TRAINING IS READ ONLY FROM HERE. This editor opened for
+  // one with price, publish and certification controls, and told the super
+  // admin it was "on the public catalogue now", which it never is. Their own
+  // administrators change it in their portal; asking for it to be deleted
+  // happens on Customer training, with a reason for them to decide on.
+  if (course && course.organization_id !== null) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <Link
+            href="/admin/customer-training"
+            className="mb-2 inline-block text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400"
+          >
+            ← Customer training
+          </Link>
+          <h1 className="mb-1 text-title-sm font-bold text-gray-800 dark:text-white/90">
+            {course.title}
+          </h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            {counted(modules.length, "module")}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
+          <h2 className="mb-2 text-base font-semibold text-gray-800 dark:text-white/90">
+            An organisation&apos;s own training
+          </h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            This course belongs to one of our customers. Their own
+            administrators change it, in their portal. It is not on our
+            catalogue and has no price. To ask for it to be deleted, use
+            Customer training.
+          </p>
+          <Link
+            href="/admin/customer-training"
+            className="mt-4 inline-flex rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/[0.03]"
+          >
+            Go to Customer training
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>

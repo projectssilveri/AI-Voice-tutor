@@ -190,6 +190,9 @@ function Meta({ data }: { data: Record<string, unknown> | null }) {
 function AuditConsole() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
+  // Every organisation's trail for platform staff since 2026-10-01. The
+  // path filter below stays the super admin's: it is a debugging tool.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
 
   const [page, setPage] = useState<AuditEvent[]>([]);
   const [total, setTotal] = useState(0);
@@ -278,7 +281,7 @@ function AuditConsole() {
           </h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Who did what, when, and from where.
-            {isSuperAdmin
+            {isPlatformStaff
               ? " You can see every organisation."
               : " Platform activity only. Each organisation keeps its own trail."}
           </p>
@@ -480,7 +483,7 @@ function AuditConsole() {
               </div>
             ) : null}
 
-            {isSuperAdmin && (facets?.organizations.length ?? 0) > 0 ? (
+            {isPlatformStaff && (facets?.organizations.length ?? 0) > 0 ? (
               <div>
                 <label
                   htmlFor="filter-org"

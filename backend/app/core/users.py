@@ -81,6 +81,25 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             # which is what the sign-up form already renders.
             raise InvalidPasswordException(reason=str(exc)) from None
 
+    async def update(self, user_update, user, safe: bool = False, request=None):
+        """A new password needs the current one on the account's own screen.
+
+        `PATCH /users/me` took a new password on the strength of the session
+        alone, so anyone at an unlocked, signed-in computer could take the
+        account over. `safe` is True on that route only. The administrators'
+        route passes False and never knows the old password, so it is left
+        as it was.
+        """
+        if safe and user_update.password is not None:
+            verified, _ = self.password_helper.verify_and_update(
+                user_update.current_password or "", user.hashed_password
+            )
+            if not verified:
+                raise InvalidPasswordException(
+                    reason="Your current password is not right. Nothing was changed."
+                )
+        return await super().update(user_update, user, safe=safe, request=request)
+
     async def on_after_register(self, user: User, request: Request | None = None) -> None:
         # Log the id, never the email or any credential.
         logger.info("User registered: %s (role=%s)", user.id, user.role.value)

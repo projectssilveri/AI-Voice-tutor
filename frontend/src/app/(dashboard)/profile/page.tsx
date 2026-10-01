@@ -31,8 +31,16 @@ function Profile() {
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+
+  // "Ask for access" arrives with the page it was refused on. Read after
+  // mount, from the address, so the Help box can open ready to send.
+  const [askedFor, setAskedFor] = useState<string | null>(null);
+  useEffect(() => {
+    setAskedFor(new URLSearchParams(window.location.search).get("ask"));
+  }, []);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,12 +60,36 @@ function Profile() {
   // this page is still a sign-in check with no panel in it — so it finds
   // nothing and stays at the top. By the time the panel renders, the browser
   // has stopped caring. This asks again, after the content is there.
+  //
+  // AND AGAIN WHILE THE PAGE SETTLES. The panels above it load their own data
+  // and grow after the first jump, which left the box below the fold with the
+  // voice settings on screen instead. A few more aims over the next second and
+  // a half, stopped the moment the person scrolls themselves.
   useEffect(() => {
     if (!user) return;
     const id = window.location.hash.slice(1);
     if (!id) return;
-    const target = document.getElementById(id);
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+    };
+    window.addEventListener("wheel", stop, { passive: true });
+    window.addEventListener("touchstart", stop, { passive: true });
+    window.addEventListener("keydown", stop);
+    const timers = [0, 300, 800, 1500].map((delay) =>
+      window.setTimeout(() => {
+        if (stopped) return;
+        document
+          .getElementById(id)
+          ?.scrollIntoView({ behavior: delay ? "auto" : "smooth", block: "start" });
+      }, delay),
+    );
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.removeEventListener("wheel", stop);
+      window.removeEventListener("touchstart", stop);
+      window.removeEventListener("keydown", stop);
+    };
   }, [user]);
 
   async function handleSaveName(event: React.FormEvent<HTMLFormElement>) {
@@ -89,6 +121,12 @@ function Profile() {
     setError(null);
     setNotice(null);
 
+    // The current one first. The server refuses a new password without it,
+    // so a signed-in computer left open is not a way into the account.
+    if (!currentPassword) {
+      setError("Type your current password first.");
+      return;
+    }
     if (password !== confirm) {
       setError("The two passwords do not match.");
       return;
@@ -100,7 +138,8 @@ function Profile() {
 
     setSaving(true);
     try {
-      await updateMe({ password });
+      await updateMe({ password, current_password: currentPassword });
+      setCurrentPassword("");
       setPassword("");
       setConfirm("");
       setNotice("Password changed.");
@@ -155,6 +194,7 @@ function Profile() {
               name={user?.name}
               size="lg"
               version={photoVersion}
+              hasPhoto={user?.has_photo}
             />
             <div className="min-w-0">
               <p className="truncate font-semibold text-gray-800 dark:text-white/90">
@@ -298,6 +338,22 @@ function Profile() {
               Change password
             </h2>
             <div className="grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <label
+                  htmlFor="profile-current-password"
+                  className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400"
+                >
+                  Current password
+                </label>
+                <input
+                  id="profile-current-password"
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  autoComplete="current-password"
+                  className={FIELD}
+                />
+              </div>
               <div>
                 <label
                   htmlFor="profile-new-password"
@@ -333,7 +389,7 @@ function Profile() {
             </div>
             <button
               type="submit"
-              disabled={saving || !password}
+              disabled={saving || !password || !currentPassword}
               className="mt-5 rounded-lg border border-gray-300 px-6 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/[0.03]"
             >
               {saving ? "Saving…" : "Change password"}
@@ -358,6 +414,14 @@ function Profile() {
         <MessageCentre
           title="Help"
           intro="Ask us anything about your account or your courses. Replies land here."
+          draft={
+            askedFor
+              ? {
+                  subject: `Access to ${askedFor}`,
+                  body: `I need access to ${askedFor} because `,
+                }
+              : null
+          }
         />
       </div>
 

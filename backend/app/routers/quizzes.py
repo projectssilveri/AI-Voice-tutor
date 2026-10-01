@@ -15,6 +15,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.deps import CurrentUser, DbSession, require_role
+from app.models.audit import AuditAction
 from app.models.user import UserRole
 from app.schemas.quiz import (
     ModuleQuiz,
@@ -26,7 +27,7 @@ from app.schemas.quiz import (
     QuizResult,
     QuizSubmission,
 )
-from app.services import access
+from app.services import access, audit
 from app.services import courses as course_service
 from app.services import enrollments as enrollment_service
 from app.services import quizzes as quiz_service
@@ -125,6 +126,25 @@ async def submit_quiz(
     attempt = await quiz_service.record_attempt(
         session, user_id=user.id, module_id=module_id, score=graded.score
     )
+
+    # A NAMED EVENT, not the middleware's "Other changes". The score and the
+    # pass, never the answers (decision 88). `record_attempt` has committed, so
+    # this is its own small write. Issues 59 and 66.
+    module = await course_service.get_module(session, module_id)
+    await audit.record_safely(
+        session,
+        action=AuditAction.QUIZ_SUBMITTED,
+        actor=user,
+        target_type="module",
+        target_id=module_id,
+        metadata={
+            "name": module.title,
+            "attempt_number": attempt.attempt_number,
+            "score": float(graded.score),
+            "passed": graded.score >= enrollment_service.QUIZ_PASS_MARK,
+        },
+    )
+    await session.commit()
 
     return QuizResult(
         attempt_id=attempt.id,

@@ -57,6 +57,7 @@ export default function OrgPeoplePage() {
     name: string;
     email: string;
     password: string;
+    pendingApproval: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -129,6 +130,19 @@ export default function OrgPeoplePage() {
   const isDeptAdmin = profile?.is_dept_admin ?? false;
   const canWrite = profile?.can_manage_people ?? false;
 
+  // WHO REMOVES AT ONCE, the twin of `deletions.acts_directly` (2026-10-01).
+  // Platform staff always. This organisation's admin for a branch manager or
+  // a department admin. A branch manager or department admin for the people
+  // in their own branch or department, the only people listed for them. The
+  // org admin removing a learner or another admin asks, and a Platform Admin
+  // or Super Admin decides. Presentation only: the server decides the same.
+  const removesAtOnce = (role: string) =>
+    Boolean(profile?.is_platform_staff) ||
+    profile?.my_role === "branch_manager" ||
+    profile?.my_role === "dept_admin" ||
+    (profile?.my_role === "org_admin" &&
+      (role === "branch_manager" || role === "dept_admin"));
+
   // NOBODY HANDS OUT MORE POWER THAN THEY HOLD. Mirrors ROLE_RANK in
   // `routers/org_portal.py`: everyone may assign their own level and below, so
   // a department admin may appoint a second admin for their own team — the
@@ -187,6 +201,7 @@ export default function OrgPeoplePage() {
           name={justCreated.name}
           email={justCreated.email}
           password={justCreated.password}
+          pendingApproval={justCreated.pendingApproval}
           onClose={() => setJustCreated(null)}
         />
       ) : null}
@@ -199,7 +214,11 @@ export default function OrgPeoplePage() {
           Renders nothing when the queue is empty, and reads as empty for
           anybody who is not an administrator. */}
       {profile?.is_org_admin ? (
-        <DeletionQueue slug={slug} onDecided={() => void load()} />
+        <DeletionQueue
+          slug={slug}
+          canDecide={Boolean(profile?.is_platform_staff)}
+          onDecided={() => void load()}
+        />
       ) : null}
 
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -251,7 +270,7 @@ export default function OrgPeoplePage() {
           onSubmit={(e) => {
             e.preventDefault();
             void run(async () => {
-              await createMember(slug, {
+              const made = await createMember(slug, {
                 name: form.name.trim(),
                 email: form.email.trim(),
                 password: form.password,
@@ -265,6 +284,7 @@ export default function OrgPeoplePage() {
                 name: form.name.trim(),
                 email: form.email.trim(),
                 password: form.password,
+                pendingApproval: Boolean(made.pending_approval),
               });
               setForm({
                 name: "",
@@ -454,7 +474,11 @@ export default function OrgPeoplePage() {
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-gray-800 dark:text-white/90">
                     {member.name}
-                    {!member.is_active ? (
+                    {member.pending_approval ? (
+                      <span className="ml-2 text-xs font-medium text-warning-700 dark:text-warning-400">
+                        (waiting for a super admin)
+                      </span>
+                    ) : !member.is_active ? (
                       <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
                         (deactivated)
                       </span>
@@ -469,7 +493,9 @@ export default function OrgPeoplePage() {
                   </p>
                 </div>
 
-                {canWrite && member.id !== signedIn?.id ? (
+                {canWrite &&
+                member.id !== signedIn?.id &&
+                !member.pending_approval ? (
                   <select
                     value={member.role}
                     disabled={busy}
@@ -509,7 +535,9 @@ export default function OrgPeoplePage() {
                     title={
                       member.id === signedIn?.id
                         ? "Ask another administrator to change your own role"
-                        : undefined
+                        : member.pending_approval
+                          ? "Their role can change once a super admin decides"
+                          : undefined
                     }
                   >
                     {roleLabel(member.role)}
@@ -521,7 +549,14 @@ export default function OrgPeoplePage() {
                     the person clicking, who would be signed out on the next
                     request and unable to sign back in. Refused server-side
                     too — this only removes the trap. */}
-                {canWrite && member.id !== signedIn?.id ? (
+                {/* Nor for somebody waiting for a super admin: switching
+                    them on is that super admin's decision. "You" went on
+                    THEIR row while this test sat in the first branch alone. */}
+                {canWrite && member.id === signedIn?.id ? (
+                  <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:bg-brand-500/15 dark:text-brand-400">
+                    You
+                  </span>
+                ) : canWrite && !member.pending_approval ? (
                   <Action
                     variant="ghost"
                     size="sm"
@@ -536,10 +571,6 @@ export default function OrgPeoplePage() {
                   >
                     {member.is_active ? "Deactivate" : "Reactivate"}
                   </Action>
-                ) : canWrite ? (
-                  <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:bg-brand-500/15 dark:text-brand-400">
-                    You
-                  </span>
                 ) : null}
 
                 {/* Removal, and one confirmation before it. Deactivating is
@@ -586,7 +617,7 @@ export default function OrgPeoplePage() {
                     type="button"
                     disabled={busy}
                     onClick={() => {
-                      const decides = profile?.is_org_admin ?? false;
+                      const decides = removesAtOnce(member.role);
                       let reason = "";
 
                       if (decides) {
@@ -601,9 +632,9 @@ If they have any history their account is closed rather than deleted, so nothing
                         }
                       } else {
                         const answer = window.prompt(
-                          `Ask an administrator to remove ${member.name}?
+                          `Ask to remove ${member.name}?
 
-Nothing happens to their account until one of them approves it.
+Nothing happens to their account until a Platform Admin or Super Admin approves it.
 
 Why should they be removed?`,
                           "",
@@ -629,7 +660,7 @@ Why should they be removed?`,
                     }}
                     className="shrink-0 rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
                   >
-                    {profile?.is_org_admin ? "Remove" : "Ask to remove"}
+                    {removesAtOnce(member.role) ? "Remove" : "Ask to remove"}
                   </button>
                 ) : null}
               </li>

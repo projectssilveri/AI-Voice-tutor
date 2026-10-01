@@ -4,10 +4,12 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { useAuth } from "@/context/AuthContext";
+import { listMyBundles } from "@/lib/bundles";
 import { formatMoney } from "@/lib/money";
 import { errorText } from "@/lib/api";
 import {
   CHECKOUT_FAILED,
+  claimFreePlan,
   getEntitlements,
   payWithRazorpay,
   startPlanCheckout,
@@ -37,14 +39,11 @@ export default function PlanPurchase({
   planId,
   priceMinor,
   currency,
-  courseIds,
   highlighted,
 }: {
   planId: string;
   priceMinor: number;
   currency: string;
-  /** Courses this plan unlocks, used to work out whether they already have it. */
-  courseIds: string[];
   highlighted: boolean;
 }) {
   const { user, loading: authLoading } = useAuth();
@@ -59,14 +58,17 @@ export default function PlanPurchase({
       return;
     }
     let cancelled = false;
-    getEntitlements()
-      .then((entitlements) => {
+    Promise.all([getEntitlements(), listMyBundles()])
+      .then(([entitlements, held]) => {
         if (cancelled) return;
-        // They hold this plan if they can already reach everything in it.
+        // THEY HOLD THIS PLAN if they hold this plan, or they are staff and
+        // reach everything anyway. It used to be "can they already open every
+        // course in it", which a bundle of free courses answered yes for every
+        // signed-in student: "You have this" on a bundle nobody had bought,
+        // read by the tester as the price not being enforced.
         setOwned(
           entitlements.unrestricted ||
-            (courseIds.length > 0 &&
-              courseIds.every((id) => entitlements.course_ids.includes(id))),
+            held.some((plan) => plan.plan_id === planId),
         );
       })
       .catch(() => {
@@ -78,7 +80,7 @@ export default function PlanPurchase({
     return () => {
       cancelled = true;
     };
-  }, [user, authLoading, courseIds]);
+  }, [user, authLoading, planId]);
 
   const base =
     "mt-auto flex w-full items-center justify-center rounded-lg px-6 py-3 text-base font-semibold transition-[background-color,transform] duration-200 active:scale-[0.98] motion-reduce:active:scale-100";
@@ -90,6 +92,19 @@ export default function PlanPurchase({
     setBusy(true);
     setError(null);
     setNotice(null);
+    // A FREE PLAN IS CLAIMED, not checked out. Checkout answered "Payments are
+    // not configured" for a bundle priced at nothing, so it could not be had.
+    if (priceMinor === 0) {
+      try {
+        await claimFreePlan(planId);
+        setNotice("It is yours. Every course in it is on your list.");
+        window.location.assign("/learn");
+      } catch (caught) {
+        setBusy(false);
+        setError(errorText(caught, "Could not add it to your account."));
+      }
+      return;
+    }
     try {
       const session = await startPlanCheckout(planId);
       await payWithRazorpay({
@@ -149,9 +164,13 @@ export default function PlanPurchase({
         disabled={busy}
         className={`${base} ${style} disabled:opacity-50`}
       >
-        {busy
-          ? "Opening checkout…"
-          : `Subscribe for ${formatMoney(priceMinor, currency)}`}
+        {priceMinor === 0
+          ? busy
+            ? "Adding it…"
+            : "Get it free"
+          : busy
+            ? "Opening checkout…"
+            : `Subscribe for ${formatMoney(priceMinor, currency)}`}
       </button>
       {error ? (
         <p

@@ -65,6 +65,7 @@ export default function UserDropdown() {
           name={user?.name}
           size="md"
           version={photoVersion}
+          hasPhoto={user?.has_photo}
           className="mr-3"
         />
 

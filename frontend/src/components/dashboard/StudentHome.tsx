@@ -17,6 +17,7 @@ import { type MyProgress, getMyProgress, shortDay } from "@/lib/analytics";
 import { type StudentAssignment, listMyAssignments } from "@/lib/assignments";
 import { type EnrolledCourse, listMyCourses } from "@/lib/student";
 import { counted } from "@/lib/plural";
+import { tutorTime } from "@/lib/duration";
 import { errorText } from "@/lib/api";
 
 /**
@@ -28,6 +29,7 @@ import { errorText } from "@/lib/api";
  */
 export default function StudentHome() {
   const { user } = useAuth();
+  const inOrganization = user?.organization_id != null;
 
   const [courses, setCourses] = useState<EnrolledCourse[]>([]);
   const [progress, setProgress] = useState<MyProgress | null>(null);
@@ -67,6 +69,7 @@ export default function StudentHome() {
   const inProgress = courses.filter(
     (course) => course.percent_complete > 0 && course.percent_complete < 100,
   );
+  const finished = courses.filter((course) => course.percent_complete >= 100);
   const continueLearning = (inProgress.length > 0 ? inProgress : courses).slice(
     0,
     3,
@@ -88,7 +91,8 @@ export default function StudentHome() {
             href="/learn"
             className="rounded-lg bg-brand-500 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand-600"
           >
-            Browse courses
+            {/* An organisation's people have no catalogue to browse. */}
+            {inOrganization ? "My courses" : "Browse courses"}
           </Link>
         }
       />
@@ -153,8 +157,10 @@ export default function StudentHome() {
           tone="success"
         />
         <StatTile
-          label="Tutor minutes"
-          value={progress?.voice_minutes ?? 0}
+          label="Tutor time"
+          value={tutorTime(
+            progress?.voice_seconds ?? (progress?.voice_minutes ?? 0) * 60,
+          )}
           loading={loading}
         />
         <StatTile
@@ -190,11 +196,15 @@ export default function StudentHome() {
       <Panel
         title="Your progress"
         subtitle={
+          // "Nothing started yet" was also the answer when every course was
+          // FINISHED, printed above a card at 100%.
           courses.length === 0
             ? "You are not enrolled in anything yet."
             : inProgress.length > 0
               ? `${counted(inProgress.length, "course")} underway.`
-              : "Nothing started yet. Open one and the tutor begins."
+              : finished.length > 0
+                ? `${counted(finished.length, "course")} finished. Nothing else underway.`
+                : "Nothing started yet. Open one and the tutor begins."
         }
         action={
           <Link
@@ -217,13 +227,15 @@ export default function StudentHome() {
         ) : courses.length === 0 ? (
           <div className="py-8 text-center">
             <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-              Enrol in a course and the tutor starts teaching it out loud.
+              {inOrganization
+                ? "Your organisation's training shows up here once your administrator assigns it."
+                : "Enrol in a course and the tutor starts teaching it out loud."}
             </p>
             <Link
               href="/learn"
               className="inline-flex rounded-lg bg-brand-500 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-600"
             >
-              Find a course
+              {inOrganization ? "My courses" : "Find a course"}
             </Link>
           </div>
         ) : (

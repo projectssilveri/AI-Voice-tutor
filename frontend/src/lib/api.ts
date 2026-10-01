@@ -251,7 +251,11 @@ export async function apiFetch<T>(
   if (response.status === 204) {
     return undefined as T;
   }
-  return (await response.json()) as T;
+  // AN EMPTY BODY IS NOT AN ERROR. Deleting a customer's course answers 202
+  // with nothing in it: a request was raised, not a row removed. Parsing that
+  // as JSON threw, and a request that had worked reported a failure.
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 /** Shape of GET /health on the backend. */

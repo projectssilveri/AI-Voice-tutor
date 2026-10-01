@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   navItems,
   othersItems,
+  platformItems,
   superAdminItems,
 } from "@/components/dashboard/AppSidebar";
 import { useAuth } from "@/context/AuthContext";
@@ -109,7 +110,7 @@ export default function HeaderSearch() {
 
   const destinations = useMemo(() => {
     const items = [...navItems];
-    if (isAdmin) items.push(...othersItems);
+    if (isAdmin) items.push(...othersItems, ...platformItems);
     if (isSuperAdmin) items.push(...superAdminItems);
     return items.filter((item) => Boolean(item.path));
   }, [isAdmin, isSuperAdmin]);

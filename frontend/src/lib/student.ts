@@ -100,6 +100,14 @@ export interface CourseListRow {
   module_count: number | null;
 }
 
+/**
+ * The courses this account may see. For somebody in an organisation that is
+ * their own organisation's training, filtered by department on the server.
+ */
+export function listCourses(): Promise<CourseListRow[]> {
+  return apiFetch<CourseListRow[]>("/courses", authed);
+}
+
 export function getCourse(courseId: string): Promise<CourseDetail> {
   return apiFetch<CourseDetail>(`/courses/${courseId}`, authed);
 }

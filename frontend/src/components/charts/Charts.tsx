@@ -396,10 +396,17 @@ export function RadialProgress({
     labels: [label],
   };
 
+  const value = Math.max(0, Math.min(100, percent));
+
   return (
+    // KEYED ON THE VALUE. The ring is drawn first at 0, while the numbers are
+    // still loading, and ApexCharts never moved it when the real figure came:
+    // both dashboards showed "0%" beside "1 of 8 have started a session". A
+    // fresh ring per value is one small chart redrawn, not a data problem.
     <ReactApexChart
+      key={value.toFixed(1)}
       options={options}
-      series={[Math.max(0, Math.min(100, percent))]}
+      series={[value]}
       type="radialBar"
       height={height}
     />

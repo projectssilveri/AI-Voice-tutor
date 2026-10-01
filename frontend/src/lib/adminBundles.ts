@@ -28,6 +28,9 @@ export interface Bundle {
   course_count: number;
   /** Covers the whole published catalogue — All Access rather than a stack. */
   covers_everything: boolean;
+  /** Flagged All Access: every public course is in it automatically,
+   * including courses created later. */
+  all_access: boolean;
   /** What those courses cost bought one at a time, at today's prices. */
   separate_total_minor: number;
 
@@ -76,6 +79,9 @@ export interface BundleInput {
    * server tells them apart, so this must not send `[]` for "no change".
    */
   course_ids?: string[];
+  /** Every public course, now and later. The server links them; the picker is
+   * not consulted while this is on. */
+  all_access?: boolean;
 }
 
 const authed = { withCredentials: true, cache: "no-store" } as const;

@@ -11,6 +11,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { type UserDossier, getUserDossier } from "@/lib/admin";
 import { eventDetails, eventLabel } from "@/lib/audit";
+import { tutorTime } from "@/lib/duration";
 import { roleLabel } from "@/lib/roles";
 import { counted } from "@/lib/plural";
 
@@ -249,7 +250,7 @@ function Dossier() {
         <Kpi
           label="Tutor sessions"
           value={data.voice_sessions}
-          hint={`${data.voice_minutes} minutes in total`}
+          hint={`${tutorTime(data.voice_seconds ?? data.voice_minutes * 60)} in total`}
         />
         <Kpi
           label="Sign-ins"
@@ -358,12 +359,12 @@ function Dossier() {
       {/* Directly under the course table, because the dates it changes are
           the ones in the Expires column above.
 
-          NOT FOR A CUSTOMER'S PEOPLE, unless a super admin is reading. A
-          platform admin can open this record in full and change nothing in it;
-          `grant_extension` is one of the writes the server refuses, so the
-          control would be a form that always ends in an error. A super admin
-          keeps it, because support genuinely does extend a customer's access. */}
-      {data.organization_name === null || me?.role === "super_admin" ? (
+          FOR A CUSTOMER'S PEOPLE TOO, for platform staff: since the role
+          model of 2026-10-01 a platform admin extends a customer's access as
+          a super admin does. */}
+      {data.organization_name === null ||
+      me?.role === "admin" ||
+      me?.role === "super_admin" ? (
         <div className="mt-4">
           <ExtendAccess
             userId={data.id}

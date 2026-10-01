@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
 import { useAuth } from "@/context/AuthContext";
+import { EyeCloseIcon, EyeIcon } from "@/icons";
 import { login } from "@/lib/auth";
 import { type PublicOrg, getPublicOrg } from "@/lib/orgPortal";
 
@@ -36,6 +37,9 @@ function OrgLogin() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // The eye the main sign-in form has. This page had a plain box, so nobody
+  // signing in to their company could check what they had typed.
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -141,15 +145,30 @@ function OrgLogin() {
           >
             Password
           </label>
-          <input
-            id="org-password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className={`${FIELD} mb-6`}
-            required
-          />
+          <div className="relative mb-6">
+            <input
+              id="org-password"
+              type={showPassword ? "text" : "password"}
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={`${FIELD} pr-12`}
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((shown) => !shown)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1 focus:outline-hidden focus:ring-3 focus:ring-brand-500/25"
+            >
+              {showPassword ? (
+                <EyeIcon className="fill-gray-500" />
+              ) : (
+                <EyeCloseIcon className="fill-gray-500" />
+              )}
+            </button>
+          </div>
 
           <button
             type="submit"

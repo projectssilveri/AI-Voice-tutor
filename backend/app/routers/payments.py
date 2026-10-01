@@ -144,13 +144,21 @@ async def start_course_checkout(
 async def start_plan_checkout(
     plan_id: uuid.UUID, session: DbSession, user: CurrentUser
 ) -> CheckoutSession:
-    _require_payments()
-
     plan = await session.get(SubscriptionPlan, plan_id)
     if plan is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found."
         )
+    # Razorpay cannot take a payment of nothing. A free plan is claimed.
+    # Asked BEFORE the payments switch: with no keys set, a free bundle was
+    # answered "Payments are not configured", the very message a tester
+    # reported against a bundle that costs nothing.
+    if plan.price_minor == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This plan is free. Claim it instead of checking out.",
+        )
+    _require_payments()
 
     try:
         order = await payments.start_plan_purchase(session, user=user, plan=plan)
@@ -166,6 +174,44 @@ async def start_plan_checkout(
         currency=order.currency,
         key_id=settings.razorpay_key_id or "",
         item_name=plan.name,
+    )
+
+
+class ClaimResult(BaseModel):
+    plan_id: uuid.UUID
+    renews_at: str
+
+
+@router.post("/plans/{plan_id}/claim", response_model=ClaimResult)
+async def claim_free_plan(
+    plan_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> ClaimResult:
+    """Hold a plan that costs nothing. No payment provider is involved.
+
+    Works whether or not Razorpay is configured, because nothing is paid: a
+    bundle priced at 0 used to answer "Payments are not configured on this
+    server" and could not be had at all.
+    """
+    plan = await session.get(SubscriptionPlan, plan_id)
+    if plan is None or not plan.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found."
+        )
+    # There is no marketplace inside an organisation (decision 178), free or not.
+    if user.organization_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found."
+        )
+
+    try:
+        subscription = await payments.claim_free_plan(session, user=user, plan=plan)
+    except payments.PaymentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from None
+    await session.commit()
+    return ClaimResult(
+        plan_id=plan.id, renews_at=subscription.current_period_end.isoformat()
     )
 
 

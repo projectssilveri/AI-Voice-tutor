@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.deps import CurrentUser, DbSession, RequireAdmin, require_role
 from app.models.assignment import Assignment, AssignmentSubmission
+from app.models.audit import AuditAction
 from app.models.course import Course, Module
 from app.models.enrollment import Enrollment
 from app.models.user import User, UserRole
@@ -33,7 +34,7 @@ from app.schemas.assignment import (
     SubmissionCreate,
     SubmissionRead,
 )
-from app.services import access
+from app.services import access, audit
 from app.services import assignments as assignment_service
 from app.services import courses as course_service
 
@@ -211,6 +212,24 @@ async def submit_assignment(
             status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found."
         ) from None
 
+    # A NAMED EVENT with the mark, never the answer (decision 88). The
+    # middleware used to file this as "Other changes" with no object at all.
+    # `submit` has committed, so this is its own small write. Issues 59, 66.
+    await audit.record_safely(
+        session,
+        action=AuditAction.ASSIGNMENT_SUBMITTED,
+        actor=user,
+        target_type="assignment",
+        target_id=assignment.id,
+        metadata={
+            "name": assignment.title,
+            "score": float(submission.score),
+            "out_of": assignment.max_score,
+            "correct": submission.is_correct,
+        },
+    )
+    await session.commit()
+
     return SubmissionRead.model_validate(submission)
 
 
@@ -375,16 +394,14 @@ async def list_all_submissions(
     never did, which is the same gap issues 46 and 58 report on the other
     screens.
 
-    A super admin still reads across tenants, for support. An organisation
-    marks its own people's work in its own portal.
+    Platform staff read across tenants, for support. An organisation marks
+    its own people's work in its own portal too.
     """
     grader = User.__table__.alias("grader")
 
-    course_scope = (
-        ()
-        if admin.role is UserRole.SUPER_ADMIN
-        else (Course.organization_id.is_(None),)
-    )
+    # Every customer's work for platform staff since the role model of
+    # 2026-10-01, not public courses only.
+    course_scope: tuple = ()
 
     result = await session.execute(
         select(

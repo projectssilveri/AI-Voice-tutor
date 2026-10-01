@@ -78,34 +78,16 @@ export const othersItems: NavItem[] = [
   { icon: <ListIcon />, name: "Audit trail", path: "/admin/audit" },
 ];
 
-// Super-admin only. Creating tenants sits with revenue and role management
-// (decision 50), so an ordinary admin cannot use this — and showing them a
-// nav item that always lands on "not available to your account" is a menu
-// entry that exists only to be refused.
-export const superAdminItems: NavItem[] = [
-  // APPROVALS FIRST, because it is the only item here that represents somebody
-  // else being blocked. It had no menu entry at all — the queue was embedded on
-  // the Website screen and rendered nothing when empty, so the feature was
-  // invisible unless work happened to be waiting. Issues 34 and 35.
-  {
-    icon: <TaskIcon />,
-    name: "Course approvals",
-    path: "/admin/reviews",
-  },
-  // MOVED UP FROM THE ADMIN MENU (issue 11). Writing the catalogue is a super
-  // admin job now, and a platform admin who could still see this link would
-  // find out by pressing it and being refused.
+// Platform staff: a super admin or a platform admin. These were super admin
+// only until the role model of 2026-10-01 gave platform admins the same work:
+// the catalogue, money and customers.
+export const platformItems: NavItem[] = [
   {
     icon: <FolderIcon />,
     name: "Add or modify courses",
     path: "/admin/courses",
   },
-  // Refunds: money, so the super admin's alone (decided 2026-09-24). It sat
-  // in the menu every platform admin sees.
   { icon: <TableIcon />, name: "Refunds", path: "/admin/refunds" },
-  // Bundles: the money screen, sitting with the rest of the owner-only things
-  // rather than beside "Add or modify courses" — authoring a course and pricing
-  // a package are different jobs.
   {
     icon: <TableIcon />,
     name: "Bundles and packages",
@@ -116,17 +98,37 @@ export const superAdminItems: NavItem[] = [
     name: "Organizations",
     path: "/admin/organizations",
   },
-  // Customer training, kept apart from "Add or modify courses" above. The two
-  // are genuinely different things — one is the catalogue we sell, the other is
-  // a customer's private material that we can see for support and do not own —
-  // and one menu called "Courses" holding both invited the mistake decision 170
-  // records, where an admin renamed and then deleted a customer's course.
+  // Customer training, kept apart from "Add or modify courses" above: one is
+  // the catalogue we sell, the other a customer's private material that we
+  // can see for support and do not own (decision 170).
   {
     icon: <FolderIcon />,
     name: "Customer training",
     path: "/admin/customer-training",
   },
+  // What people inside a customer asked to delete. Platform staff, both
+  // tiers, decide it since 2026-10-01.
+  {
+    icon: <TaskIcon />,
+    name: "Deletion requests",
+    path: "/admin/deletion-requests",
+  },
   { icon: <PageIcon />, name: "Website", path: "/admin/website" },
+];
+
+// Super admin only: the decisions that wait for them. Approvals first, as
+// the only items here that stand for somebody else being blocked.
+export const superAdminItems: NavItem[] = [
+  {
+    icon: <TaskIcon />,
+    name: "Admin approvals",
+    path: "/admin/approvals",
+  },
+  {
+    icon: <TaskIcon />,
+    name: "Course approvals",
+    path: "/admin/reviews",
+  },
 ];
 
 const AppSidebar: React.FC = () => {
@@ -517,8 +519,8 @@ const AppSidebar: React.FC = () => {
                 </div>
                 {renderMenuItems(
                   isSuperAdmin
-                    ? [...adminItems, ...superAdminItems]
-                    : adminItems,
+                    ? [...superAdminItems, ...adminItems, ...platformItems]
+                    : [...adminItems, ...platformItems],
                   "others",
                 )}
               </div>

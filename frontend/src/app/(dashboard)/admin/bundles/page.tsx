@@ -19,7 +19,7 @@ const FIELD =
   "h-11 w-full rounded-lg border border-gray-300 bg-transparent px-4 text-sm text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/25 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90";
 
 /**
- * Bundles and packages. Super admin only.
+ * Bundles and packages. Platform staff: a super admin or a platform admin.
  *
  * Everything sold as a subscription in one list: what it costs, which courses
  * it opens, how many people hold it, what it has taken, and — behind one click
@@ -31,7 +31,8 @@ const FIELD =
  */
 function BundlesAdmin() {
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
+  // Platform staff, both tiers, since the role model of 2026-10-01.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
 
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [courses, setCourses] = useState<CourseRow[]>([]);
@@ -44,6 +45,8 @@ function BundlesAdmin() {
   const [rupees, setRupees] = useState("");
   const [interval, setInterval] = useState("monthly");
   const [picked, setPicked] = useState<string[]>([]);
+  // All Access: the server links every public course, now and later.
+  const [newAllAccess, setNewAllAccess] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -69,9 +72,9 @@ function BundlesAdmin() {
   }, []);
 
   useEffect(() => {
-    if (isSuperAdmin) void load();
+    if (isPlatformStaff) void load();
     else setLoading(false);
-  }, [isSuperAdmin, load]);
+  }, [isPlatformStaff, load]);
 
   async function add() {
     setSaving(true);
@@ -82,12 +85,14 @@ function BundlesAdmin() {
         description: description.trim() || null,
         price_minor: Math.round(Number(rupees || 0) * 100),
         billing_interval: interval,
-        course_ids: picked,
+        course_ids: newAllAccess ? [] : picked,
+        all_access: newAllAccess,
       });
       setName("");
       setDescription("");
       setRupees("");
       setPicked([]);
+      setNewAllAccess(false);
       setCreating(false);
       await load();
     } catch (caught) {
@@ -101,17 +106,17 @@ function BundlesAdmin() {
     }
   }
 
-  if (!isSuperAdmin) {
+  if (!isPlatformStaff) {
     return (
       <div className="space-y-6">
         <DashboardHeader
           title="Bundles and packages"
           subtitle="What is sold as a subscription, and who holds it."
         />
-        <Panel title="Super admin only">
+        <Panel title="Platform staff only">
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Bundle prices and the people who bought them sit with the platform
-            owner, alongside the rest of the revenue screens.
+            Bundle prices and the people who bought them sit with platform
+            staff, alongside the rest of the revenue screens.
           </p>
         </Panel>
       </div>
@@ -209,9 +214,21 @@ function BundlesAdmin() {
             </select>
           </label>
 
+          <label className="mt-4 flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={newAllAccess}
+              onChange={(event) => setNewAllAccess(event.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 dark:border-gray-700"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              All Access: every course, and new ones join automatically
+            </span>
+          </label>
+
           <div className="mt-4">
             <span className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Courses ({picked.length} picked)
+              {newAllAccess ? "Courses (all of them)" : `Courses (${picked.length} picked)`}
             </span>
             <div className="grid gap-2 sm:grid-cols-2">
               {courses.map((course) => (
@@ -221,7 +238,8 @@ function BundlesAdmin() {
                 >
                   <input
                     type="checkbox"
-                    checked={picked.includes(course.id)}
+                    disabled={newAllAccess}
+                    checked={newAllAccess || picked.includes(course.id)}
                     onChange={(event) =>
                       setPicked((current) =>
                         event.target.checked
@@ -245,12 +263,12 @@ function BundlesAdmin() {
           <button
             type="button"
             onClick={() => void add()}
-            disabled={saving || !name.trim() || picked.length === 0}
+            disabled={saving || !name.trim() || (!newAllAccess && picked.length === 0)}
             className="mt-5 rounded-lg bg-brand-500 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand-600 disabled:opacity-40"
           >
             {saving ? "Creating…" : "Create bundle"}
           </button>
-          {picked.length === 0 ? (
+          {!newAllAccess && picked.length === 0 ? (
             <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
               Pick at least one course. A bundle with none in it opens nothing.
             </p>
@@ -382,7 +400,7 @@ export default function BundlesPage() {
   // risk — the API refuses them — but a student has no business looking
   // at the shape of the money screens.
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <BundlesAdmin />
     </RequireAuth>
   );

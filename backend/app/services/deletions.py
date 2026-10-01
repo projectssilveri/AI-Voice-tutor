@@ -1,25 +1,31 @@
-"""Destroying a customer's people, training or documents — with their consent.
+"""Destroying a customer's people, training or documents, and who says yes.
 
-    platform staff ─┐
-                    ├─request(reason)─> pending ─approve─> it is deleted
-    branch / dept  ─┘                      │
-    manager                                └─decline(note)─> nothing happens
+    org admin ──────┐
+    branch / dept  ─┼─request(reason)─> pending ─approve─> it is deleted
+    manager         ┘   (staff decide)      │
+                                            └─decline(note)─> nothing happens
 
-NOTHING IS TOUCHED UNTIL AN ORGANISATION ADMIN APPROVES. That is the whole
-point, and it is the counterweight to a platform admin now being able to see a
-customer's data in full: sight runs down the ladder, destruction does not. The
-data belongs to the customer even though the platform holds it.
+    platform admin / super admin ─────> deleted at once
+    org admin removing a branch manager or department admin ─> at once
+    branch manager or department admin removing their own people ─> at once
 
-WHO CAN DECIDE: only `UserRole.ORG_ADMIN`, and only for their own organisation.
-Not a branch manager and not a department admin — both of those can ASK, and a
-person who can approve their own request has not been checked by anybody. Not
-platform staff either, including a super admin: an approval a super admin could
-grant themselves is not consent, it is a longer way of writing DELETE.
+THE RULE SINCE 2026-10-01, decided by the user: platform staff (a platform
+admin or a super admin) delete inside a customer at once, and they are the
+ones who approve what anybody inside the customer asks to delete. An
+organisation admin removes their branch managers and department admins
+themselves, and those managers remove the people in their own branch or
+department themselves. Everything else waits for staff: the organisation
+admin removing a learner or another admin, and any course or document
+deleted from inside the customer. It reverses the earlier rule, where the
+customer's own administrator decided.
 
-THE ONE SHORTCUT, and it is the same one suspensions take: an organisation
-admin removing something themselves is already the decider, so the row is
-written raised-and-approved in the same moment. The history then has one shape
-whoever acted, instead of two.
+`acts_directly` is the one place that rule is written.
+
+A request is never decided by the person who raised it, and nobody approves
+the removal of their own account.
+
+Every deletion leaves a request row, raised and approved in the same moment
+when somebody acted directly, so the history has one shape whoever acted.
 
 Nothing here commits. The caller owns the transaction, so the deletion, the
 request row and the audit record land together or not at all.
@@ -50,6 +56,35 @@ class DeletionError(ValueError):
 #: What a request can say about itself when the thing is already gone. Kept as a
 #: constant because two call sites compare against it.
 GONE = "already gone"
+
+#: Platform staff: they delete inside a customer at once, and decide requests.
+DECIDERS = frozenset({UserRole.ADMIN, UserRole.SUPER_ADMIN})
+
+#: The people an organisation admin removes without asking anybody.
+ORG_ADMIN_REMOVES_FREELY = frozenset({UserRole.BRANCH_MANAGER, UserRole.DEPT_ADMIN})
+
+
+#: Managers who look after the people in their own branch or department.
+MAINTAIN_THEIR_OWN_PEOPLE = frozenset({UserRole.BRANCH_MANAGER, UserRole.DEPT_ADMIN})
+
+
+def acts_directly(actor: User, *, member: User | None = None) -> bool:
+    """Whether this deletion happens at once rather than waiting for staff.
+
+    Platform staff, always. When the thing is a person (`member`): an
+    organisation admin removing a branch manager or a department admin, and a
+    branch manager or department admin removing somebody in their own branch
+    or department, who maintain their own people (the user, 2026-10-01). WHICH
+    people a manager reaches is the portal's `_manageable`: their own branch
+    or department, and nobody senior. Courses and documents they still ask.
+    """
+    if actor.role in DECIDERS:
+        return True
+    if member is None:
+        return False
+    if actor.role is UserRole.ORG_ADMIN:
+        return member.role in ORG_ADMIN_REMOVES_FREELY
+    return actor.role in MAINTAIN_THEIR_OWN_PEOPLE
 
 
 async def open_request_for(
@@ -113,7 +148,7 @@ async def request_deletion(
 ) -> DeletionRequest:
     """Ask for something to be destroyed. Does not commit.
 
-    `pre_approved` is the organisation admin acting on their own authority —
+    `pre_approved` is somebody acting on their own authority (`acts_directly`):
     the row is written approved so the history has one shape. The CALLER then
     performs the deletion, because only it knows what deleting that kind of
     thing means; `approve` below does the same for the queued path.
@@ -128,8 +163,8 @@ async def request_deletion(
 
     if await open_request_for(session, target_type, target_id) is not None:
         raise DeletionError(
-            "Somebody has already asked for this to be deleted, and the "
-            "organisation's administrator has not decided yet."
+            "Somebody has already asked for this to be deleted, and a Platform "
+            "Admin or Super Admin has not decided yet."
         )
 
     now = datetime.now(UTC)
@@ -158,14 +193,48 @@ async def request_deletion(
     return request
 
 
+async def record_direct(
+    session: AsyncSession,
+    *,
+    organization: Organization,
+    target_type: DeletionTarget,
+    target_id: uuid.UUID,
+    target_label: str,
+    actor: User,
+    reason: str,
+) -> DeletionRequest:
+    """The record for somebody deleting at once (`acts_directly`). Does not commit.
+
+    A request already waiting for the same thing is closed as approved by them,
+    rather than refusing them: they may do it outright, and doing it answers
+    the request. Otherwise a row is written raised and approved together, so
+    the history has one shape whoever acted. The CALLER performs the deletion.
+    """
+    waiting = await open_request_for(session, target_type, target_id)
+    if waiting is not None:
+        waiting.status = DeletionStatus.APPROVED
+        waiting.decided_by = actor.id
+        waiting.decided_at = datetime.now(UTC)
+        waiting.decision_note = (reason or "").strip()[:2_000] or None
+        return waiting
+    return await request_deletion(
+        session,
+        organization=organization,
+        target_type=target_type,
+        target_id=target_id,
+        target_label=target_label,
+        actor=actor,
+        reason=reason,
+        pre_approved=True,
+    )
+
+
 def assert_may_decide(request: DeletionRequest, actor: User) -> None:
-    """Only this organisation's own administrator, and nobody else at all."""
-    if actor.role is not UserRole.ORG_ADMIN:
+    """Platform staff only: a platform admin or a super admin."""
+    if actor.role not in DECIDERS:
         raise DeletionError(
-            "Only an organisation administrator can approve a deletion."
+            "Only a Platform Admin or Super Admin can decide a deletion."
         )
-    if actor.organization_id != request.organization_id:
-        raise DeletionError("That request belongs to another organisation.")
     if request.status is not DeletionStatus.PENDING:
         raise DeletionError("That request has already been decided.")
     # NOR YOUR OWN ACCOUNT, through this door either.
@@ -197,7 +266,7 @@ def assert_may_decide(request: DeletionRequest, actor: User) -> None:
 async def approve(
     session: AsyncSession, *, request: DeletionRequest, actor: User, note: str | None = None
 ) -> DeletionRequest:
-    """The organisation agrees, and the thing is destroyed. Does not commit."""
+    """Platform staff agree, and the thing is destroyed. Does not commit."""
     assert_may_decide(request, actor)
 
     outcome = await _destroy(session, request)
@@ -213,7 +282,7 @@ async def approve(
 async def decline(
     session: AsyncSession, *, request: DeletionRequest, actor: User, note: str | None = None
 ) -> DeletionRequest:
-    """The organisation says no. Nothing is touched. Does not commit."""
+    """Platform staff say no. Nothing is touched. Does not commit."""
     assert_may_decide(request, actor)
 
     clean = (note or "").strip()

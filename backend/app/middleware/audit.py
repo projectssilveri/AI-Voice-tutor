@@ -25,6 +25,7 @@ down. Registration order in `main.py` is what enforces this.
 from __future__ import annotations
 
 import logging
+import re
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -54,6 +55,20 @@ _HAS_ITS_OWN_EVENT: tuple[str, ...] = (
     # their own profile". Somebody swapping their picture appeared in the trail
     # as somebody deleting their account, twice per click.
     "/profile/",
+)
+
+# Routes that write their own named event WHEN THEY SUCCEED: a quiz, an
+# assignment, a module marked done or reopened, an exam. The net used to add a
+# second row for each, read in the trail as "Other changes" with no object.
+# A REFUSAL still goes through the net, because "tried and was refused" is what
+# the trail gets asked about and these routes write nothing for most refusals.
+# Anchored patterns, not fragments: "/submissions" alone would also catch
+# /admin/submissions/{id}/override, which has no event of its own.
+_OWN_EVENT_ON_SUCCESS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^/modules/[^/]+/quiz/attempts$"),
+    re.compile(r"^/assignments/[^/]+/submissions$"),
+    re.compile(r"^/modules/[^/]+/progress$"),
+    re.compile(r"^/cert-exams/[^/]+/attempts$"),
 )
 
 # Login is special. A SUCCESSFUL login is recorded in core/users.py, where
@@ -130,6 +145,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         # A successful login already has its own event; a failed one has none.
         if _LOGIN_PATH in path and response.status_code < 400:
+            return False
+
+        relative = path
+        if self._api_prefix and relative.startswith(self._api_prefix):
+            relative = relative[len(self._api_prefix) :] or "/"
+        if response.status_code < 400 and any(
+            pattern.match(relative) for pattern in _OWN_EVENT_ON_SUCCESS
+        ):
             return False
 
         # 4xx is recorded as well as 2xx: a refused attempt to reach something

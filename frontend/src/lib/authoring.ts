@@ -199,8 +199,15 @@ export function updateCourse(
   });
 }
 
-export function deleteCourse(courseId: string): Promise<void> {
-  return apiFetch<void>(`/courses/${courseId}`, {
+/**
+ * Delete a course, ours or a customer's. Platform staff only, and at once.
+ *
+ * `reason` is only read for a customer's course, where it goes on that
+ * customer's own record of the deletion (2026-10-01).
+ */
+export function deleteCourse(courseId: string, reason?: string): Promise<void> {
+  const qs = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  return apiFetch<void>(`/courses/${courseId}${qs}`, {
     ...authed,
     method: "DELETE",
   });

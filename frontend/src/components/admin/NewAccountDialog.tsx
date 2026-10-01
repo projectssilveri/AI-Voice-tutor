@@ -20,11 +20,14 @@ export default function NewAccountDialog({
   name,
   email,
   password,
+  pendingApproval = false,
   onClose,
 }: {
   name: string;
   email: string;
   password: string;
+  /** A platform admin's new organisation admin: cannot sign in until a super admin approves. */
+  pendingApproval?: boolean;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -60,8 +63,9 @@ export default function NewAccountDialog({
       <div className="p-6">
         <h2 className="mb-1 text-lg font-semibold">Account created</h2>
         <p className="mb-5 text-sm text-gray-500 dark:text-gray-400">
-          {name} can sign in with these. Give them to {name.split(" ")[0]} now,
-          we store the password only as a hash, so this cannot be shown again.
+          {pendingApproval
+            ? `${name} can sign in with these once a super admin approves them as an organisation administrator. Keep them until then: we store the password only as a hash, so this cannot be shown again.`
+            : `${name} can sign in with these. Give them to ${name.split(" ")[0]} now, we store the password only as a hash, so this cannot be shown again.`}
         </p>
 
         <dl className="mb-5 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">

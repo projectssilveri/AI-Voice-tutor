@@ -49,6 +49,12 @@ export default function ModuleVoicePage() {
     plays: number;
     minutes: number;
   } | null>(null);
+  // WHY THE TUTOR CANNOT START HERE, if it cannot. A course nobody bought
+  // showed "Start session" and "3 sessions left", and the server refused the
+  // session on connect. Reading stays free; the tutor comes with the course.
+  const [tutorBlocked, setTutorBlocked] = useState<"buy" | "enrol" | null>(
+    null,
+  );
 
   const {
     state,
@@ -81,6 +87,10 @@ export default function ModuleVoicePage() {
     // neighbouring modules come from, at no extra request.
     const course = await getCourse(courseId);
     setSiblings(course.modules);
+    // The same two checks `routers/voice` makes before it spends anything.
+    setTutorBlocked(
+      !course.has_access ? "buy" : !course.enrolled ? "enrol" : null,
+    );
     setTutorAllowance({
       plays: course.effective_ai_sessions_per_module,
       minutes: course.effective_ai_session_minutes,
@@ -134,6 +144,13 @@ export default function ModuleVoicePage() {
       const next = progress === "completed" ? "in_progress" : "completed";
       const saved = await setModuleProgress(moduleId, next);
       setProgress(saved.status);
+      // The "N of M modules done" counter and the bar read the siblings, and
+      // they stayed as they were until a reload.
+      setSiblings((rows) =>
+        rows.map((row) =>
+          row.id === moduleId ? { ...row, status: saved.status } : row,
+        ),
+      );
     } catch (caught) {
       setLoadError(
         errorText(caught, "Could not save progress."),
@@ -465,29 +482,52 @@ export default function ModuleVoicePage() {
           />
 
           <div className="mt-6 flex justify-center">
-            <button
-              type="button"
-              onClick={running ? stop : start}
-              disabled={!running && playsLeft === 0}
-              className={`rounded-lg px-6 py-3 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                running
-                  ? "bg-error-500 hover:bg-error-600"
-                  : "bg-brand-500 hover:bg-brand-600"
-              }`}
-            >
-              {running
-                ? "End session"
-                : playsLeft === 0
-                  ? "No sessions left"
-                  : "Start session"}
-            </button>
+            {!running && tutorBlocked ? (
+              <Link
+                href={
+                  tutorBlocked === "buy"
+                    ? `/courses/${courseId}`
+                    : `/learn/${courseId}`
+                }
+                className="rounded-lg bg-brand-500 px-6 py-3 text-sm font-medium text-white transition hover:bg-brand-600"
+              >
+                {tutorBlocked === "buy"
+                  ? "Buy the course to use the tutor"
+                  : "Enrol to use the tutor"}
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={running ? stop : start}
+                disabled={!running && playsLeft === 0}
+                className={`rounded-lg px-6 py-3 text-sm font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  running
+                    ? "bg-error-500 hover:bg-error-600"
+                    : "bg-brand-500 hover:bg-brand-600"
+                }`}
+              >
+                {running
+                  ? "End session"
+                  : playsLeft === 0
+                    ? "No sessions left"
+                    : "Start session"}
+              </button>
+            )}
           </div>
+
+          {tutorBlocked ? (
+            <p className="mt-3 text-center text-sm text-gray-500 dark:text-gray-400">
+              {tutorBlocked === "buy"
+                ? "The voice tutor comes with the course. You can still read every module here."
+                : "Enrol in this course to use the voice tutor. Reading the module needs nothing."}
+            </p>
+          ) : null}
 
           {/* WHAT IS LEFT, before it is spent rather than after. The server
               refuses a session past the cap either way; being told at the
               point of pressing is the difference between a rule and a
               surprise. */}
-          {tutorAllowance && playsLeft !== null ? (
+          {!tutorBlocked && tutorAllowance && playsLeft !== null ? (
             <p className="mt-3 text-center text-sm text-gray-500 dark:text-gray-400">
               {tutorAllowance.plays === 0 ? (
                 "The voice tutor is switched off for this course."

@@ -33,6 +33,7 @@ import {
   listOrganizationNames,
   listOrganizations,
 } from "@/lib/organizations";
+import { tutorTime } from "@/lib/duration";
 import { counted } from "@/lib/plural";
 import { roleLabel } from "@/lib/roles";
 import {
@@ -61,9 +62,9 @@ import {
  * screen mixed "ours" with "theirs". Sight solved the support problem; a write
  * button would bring the original problem back.
  *
- * DELETING ONE ASKS THE CUSTOMER. The button raises a request that the
- * organisation's own administrator approves or refuses, and the row says so
- * until they do.
+ * DELETING ONE HAPPENS AT ONCE since 2026-10-01: platform staff delete inside
+ * a customer directly. A request somebody inside the customer raised shows as
+ * "Deletion requested" and is decided on the Deletion requests page.
  *
  * "Tutor" is gone from the product, not just from the dropdowns — migration
  * 0025 retired it and moved its one account to Student. It was the last piece
@@ -151,13 +152,12 @@ function isOrgRole(role: string): boolean {
  * for, so a button shown here that the server refuses is a dead end with an
  * error message on it.
  *
- * ANYBODY INSIDE AN ORGANISATION, not just its administrators. Was
- * `role !== "org_admin"`, which was right while a platform admin could only see
- * the administrators; now they see the whole roster and every one of those
- * people is the customer's.
+ * PLATFORM STAFF MANAGE EVERY ROW THEY CAN SEE since the role model of
+ * 2026-10-01, a customer's people included. A platform admin never sees the
+ * staff above them, so those rows are not here to manage.
  */
-function canManage(row: AdminUserRow, isSuperAdmin: boolean): boolean {
-  if (isSuperAdmin) return true;
+function canManage(row: AdminUserRow, viewerIsStaff: boolean): boolean {
+  if (viewerIsStaff) return true;
   return row.organization_id === null;
 }
 
@@ -239,6 +239,7 @@ function CreateUserPanel({
     name: string;
     email: string;
     password: string;
+    pendingApproval: boolean;
   }) => void;
   onClose: () => void;
 }) {
@@ -264,6 +265,11 @@ function CreateUserPanel({
   }));
 
   const needsOrganisation = role === "org_admin";
+
+  // PUBLIC COURSES ONLY, the same rule as the enrolment editor below. A super
+  // admin's list also holds every customer's own training, and ticking one
+  // came back as "One of those courses does not exist."
+  const offered = courses.filter((course) => course.organization_id === null);
 
   const passwordRules = passwordChecks(password);
 
@@ -315,7 +321,7 @@ function CreateUserPanel({
 
     setBusy(true);
     try {
-      await createUser({
+      const made = await createUser({
         name: name.trim(),
         email: email.trim(),
         password,
@@ -331,7 +337,12 @@ function CreateUserPanel({
       // The password travels back so it can be SHOWN once. It is stored as
       // an argon2 hash and nothing else, so this is the only moment it
       // exists in readable form anywhere.
-      onCreated({ name: name.trim(), email: email.trim(), password });
+      onCreated({
+        name: name.trim(),
+        email: email.trim(),
+        password,
+        pendingApproval: Boolean(made.pending_approval),
+      });
       onClose();
     } catch (caught) {
       const message =
@@ -506,6 +517,9 @@ function CreateUserPanel({
             <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
               They will run that organisation&rsquo;s people and training from
               its own portal, not from here.
+              {viewerRole === "admin"
+                ? " A super admin approves new organisation administrators, and the account cannot sign in until then."
+                : ""}
             </p>
           ) : null}
         </div>
@@ -556,13 +570,13 @@ function CreateUserPanel({
             (optional)
           </span>
         </legend>
-        {courses.length === 0 ? (
+        {offered.length === 0 ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">
             No courses yet.
           </p>
         ) : (
           <div className="grid gap-2 sm:grid-cols-2">
-            {courses.map((course) => (
+            {offered.map((course) => (
               <label
                 key={course.id}
                 className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 dark:border-gray-800 dark:text-gray-300"
@@ -910,6 +924,7 @@ function UsersConsole() {
     name: string;
     email: string;
     password: string;
+    pendingApproval: boolean;
   } | null>(null);
   const [enrolling, setEnrolling] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -918,6 +933,10 @@ function UsersConsole() {
   const [orgFilter, setOrgFilter] = useState("");
 
   const isSuperAdmin = me?.role === "super_admin";
+  // Platform staff, both tiers. Suspending, deleting and customers' people
+  // are theirs since the role model of 2026-10-01; role changes, the staff
+  // above a platform admin and the suspension queue stay the super admin's.
+  const isPlatformStaff = me?.role === "admin" || me?.role === "super_admin";
 
   //: What the server was asked for, so "showing 10 of 5,015" can be true.
   const [total, setTotal] = useState(0);
@@ -980,11 +999,11 @@ function UsersConsole() {
   }, []);
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
+    if (!isPlatformStaff) return;
     listOrganizations()
       .then(setOrgStats)
       .catch(() => setOrgStats([]));
-  }, [isSuperAdmin]);
+  }, [isPlatformStaff]);
 
   // THE SERVER HAS ALREADY FILTERED. The one thing left is "organisation",
   // which means any of several roles rather than one, and is cheaper to keep
@@ -1019,9 +1038,30 @@ function UsersConsole() {
   );
 
   async function changeRole(row: AdminUserRow, role: string) {
+    // ASKED FIRST. Picking an option saved it at once, so a slip of the
+    // dropdown could hand somebody the top role. Cancelling leaves the row
+    // as it was: the select is controlled by `row.role`.
+    const to = roleLabel(role);
+    const self = row.id === me?.id;
+    // YOUR OWN ROLE can be changed since 2026-10-01, so long as another
+    // active super admin remains (the server checks). Said plainly, because
+    // it takes your own access away the moment it saves.
+    const question = self
+      ? `Change your own role to ${to.toLowerCase()}? You lose super admin access straight away.`
+      : role === "super_admin"
+        ? `Make ${row.name} a super admin? They will be able to change anyone's role, money and courses.`
+        : row.role === "super_admin"
+          ? `Take super admin away from ${row.name} and make them ${to.toLowerCase()}?`
+          : `Change ${row.name} to ${to.toLowerCase()}?`;
+    if (!window.confirm(question)) return;
     setBusyId(row.id);
     try {
       await setUserRole(row.id, role as AssignableRole);
+      if (self) {
+        // Every screen and menu was drawn for the old role.
+        window.location.assign("/dashboard");
+        return;
+      }
       await load();
       setNotice(`${row.name} is now ${roleLabel(role).toLowerCase()}.`);
       setError(null);
@@ -1046,7 +1086,7 @@ function UsersConsole() {
    * be approving their own request.
    */
   async function toggleActive(row: AdminUserRow) {
-    if (isSuperAdmin) {
+    if (isPlatformStaff) {
       setBusyId(row.id);
       try {
         await setUserActive(row.id, !row.is_active);
@@ -1109,21 +1149,20 @@ function UsersConsole() {
     let reason = "";
 
     if (theirs) {
+      // DELETED AT ONCE since 2026-10-01: platform staff delete inside a
+      // customer directly. The reason goes on that customer's own record of
+      // the deletion, so it is still asked for.
       const company = row.organization_name ?? "their organisation";
       const answer = window.prompt(
-        `${row.name} belongs to ${company}, so this asks ${company}'s ` +
-          `administrators to approve it. Nothing happens to the account ` +
-          `until they do.\n\nWhy should it be removed?`,
+        `Remove ${row.name} from ${company}? This happens at once. If the ` +
+          `account has any history it is closed rather than deleted.\n\n` +
+          `Why? ${company} sees this on their record.`,
         "",
       );
-      // Cancel, as opposed to an empty box: both stop here, and the server
-      // would refuse the empty one anyway.
+      // Cancel stops here; an empty box is allowed and recorded as removed
+      // by platform staff.
       if (answer === null) return;
       reason = answer.trim();
-      if (!reason) {
-        setError("Say why it should be removed. The request needs a reason.");
-        return;
-      }
     } else if (
       !window.confirm(
         `Remove ${row.name} (${row.email})?\n\nIf the account has any history it is closed rather than deleted, so nothing they have done is lost.`,
@@ -1158,9 +1197,7 @@ function UsersConsole() {
           </h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             {counted(total, "account")} on the platform.
-            {isSuperAdmin
-              ? " Organisation members are shown too, and managed by their own admins."
-              : " Organisation members are managed by their own admins."}
+            {" Organisation members are shown too."}
           </p>
         </div>
         <button
@@ -1196,6 +1233,7 @@ function UsersConsole() {
           name={justCreated.name}
           email={justCreated.email}
           password={justCreated.password}
+          pendingApproval={justCreated.pendingApproval}
           onClose={() => setJustCreated(null)}
         />
       ) : null}
@@ -1261,7 +1299,7 @@ function UsersConsole() {
         </p>
       ) : null}
 
-      {isSuperAdmin && organisations.length > 0 ? (
+      {isPlatformStaff && organisations.length > 0 ? (
         <div className="mb-6 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-raised dark:border-gray-800 dark:bg-white/[0.03]">
           <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-800">
             <h2 className="text-sm font-semibold text-gray-800 dark:text-white/90">
@@ -1367,10 +1405,14 @@ function UsersConsole() {
                 {visible.map((row) => {
                   const isMe = row.id === me?.id;
                   const orgMember = isOrgRole(row.role);
+                  // Anyone INSIDE an organisation, whatever their role. A
+                  // student at Acme is not an org role, so the dropdown below
+                  // offered them Platform Admin and Super Admin.
+                  const inOrganisation = row.organization_id !== null;
                   // Theirs or ours. Two doors, not one: `open` is the wider
                   // — a customer's people can be read in full — and `mine` is
                   // the narrow one that every write hangs off.
-                  const mine = canManage(row, Boolean(isSuperAdmin));
+                  const mine = canManage(row, Boolean(isPlatformStaff));
                   const open = canOpen(row, Boolean(isSuperAdmin), me?.id);
                   return (
                     <tr
@@ -1453,7 +1495,10 @@ function UsersConsole() {
                                 backend would refuse anyway. Role changes are
                                 the super admin's in any case - `PATCH
                                 /users/{id}/role` is RequireSuperAdmin. */}
-                            {orgMember || !mine || !isSuperAdmin || isMe ? (
+                            {orgMember ||
+                            inOrganisation ||
+                            !mine ||
+                            !isSuperAdmin ? (
                               <span className="text-gray-600 dark:text-gray-400">
                                 {roleLabel(row.role)}
                               </span>
@@ -1477,6 +1522,11 @@ function UsersConsole() {
                                 ))}
                               </select>
                             )}
+                            {row.approval_pending ? (
+                              <span className="mt-1 block text-xs font-medium text-warning-700 dark:text-warning-400">
+                                Waiting for a super admin
+                              </span>
+                            ) : null}
                           </td>
                           <td className={CELL}>
                             <ActiveFlag active={row.is_active} />
@@ -1490,7 +1540,7 @@ function UsersConsole() {
                             {row.has_used_tutor ? (
                               <span className="text-gray-600 dark:text-gray-400">
                                 {counted(row.voice_sessions, "session")} ·{" "}
-                                {row.voice_minutes} min
+                                {tutorTime(row.voice_seconds ?? row.voice_minutes * 60)}
                               </span>
                             ) : (
                               <span className="text-gray-500 dark:text-gray-400">
@@ -1505,15 +1555,16 @@ function UsersConsole() {
                           </td>
                           <td className={`${CELL} text-right`}>
                             <div className="cell-actions flex flex-wrap justify-end gap-2">
-                              {/* WAITING ON THE CUSTOMER. Shown before the
-                                  buttons because it is the thing that changes
-                                  what pressing them will do — and because an
-                                  admin who cannot see it presses Delete again
-                                  and gets a 409. */}
+                              {/* SOMEBODY INSIDE THE CUSTOMER ASKED. It waits
+                                  for platform staff, so the pill leads to the
+                                  queue where it is decided. */}
                               {row.deletion_pending ? (
-                                <span className="rounded-full bg-warning-50 px-2.5 py-1 text-xs font-medium text-warning-900 dark:bg-warning-500/15 dark:text-warning-300">
+                                <Link
+                                  href="/admin/deletion-requests"
+                                  className="rounded-full bg-warning-50 px-2.5 py-1 text-xs font-medium text-warning-900 hover:underline dark:bg-warning-500/15 dark:text-warning-300"
+                                >
                                   Deletion requested
-                                </span>
+                                </Link>
                               ) : null}
                               {/* READ-ONLY, AND SAID SO. A platform admin sees
                                   a customer's people in full and changes none
@@ -1554,64 +1605,53 @@ function UsersConsole() {
                                   Courses
                                 </button>
                               ) : null}
-                              {/* Not against a super admin, and not from
-                                  an ordinary admin. The service refuses it —
-                                  anyone who could raise a request against the
-                                  only person able to decide it could lock the
-                                  platform out — so the button would have done
-                                  nothing but produce an error.
-
-                                  THAT WAS THE INTENT AND NOT THE CONDITION.
-                                  `isSuperAdmin ||` let a super admin see
-                                  Suspend on another super admin's row, press
-                                  it, and get a 409. The tester read the button
-                                  as the ability and kept issue 3 open. A super
-                                  admin's row now only offers Reactivate, and
-                                  only when it is already switched off. */}
+                              {/* A SUPER ADMIN'S ROW offers Suspend and
+                                  Reactivate to another super admin since
+                                  2026-10-01 (the user's decision). The server
+                                  still refuses switching off the last active
+                                  one, and says so. A platform admin never sees
+                                  the row at all. */}
                               {mine &&
                               !isMe &&
                               (row.role === "super_admin"
-                                ? isSuperAdmin && !row.is_active
-                                : isSuperAdmin || row.is_active) ? (
+                                ? isSuperAdmin
+                                : isPlatformStaff || row.is_active) ? (
                                 <button
                                   type="button"
                                   disabled={
                                     busyId === row.id ||
-                                    (row.suspension_pending && !isSuperAdmin)
+                                    (row.suspension_pending && !isPlatformStaff) ||
+                                    Boolean(row.approval_pending)
                                   }
                                   onClick={() => void toggleActive(row)}
                                   className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
                                 >
-                                  {!row.is_active
-                                    ? isSuperAdmin
-                                      ? "Reactivate"
-                                      : "Suspended"
-                                    : row.suspension_pending && !isSuperAdmin
-                                      ? "Waiting on the owner"
-                                      : isSuperAdmin
-                                        ? "Suspend"
-                                        : "Ask to suspend"}
+                                  {row.approval_pending
+                                    ? "Waiting for approval"
+                                    : !row.is_active
+                                      ? isPlatformStaff
+                                        ? "Reactivate"
+                                        : "Suspended"
+                                      : row.suspension_pending && !isPlatformStaff
+                                        ? "Waiting on the owner"
+                                        : isPlatformStaff
+                                          ? "Suspend"
+                                          : "Ask to suspend"}
                                 </button>
                               ) : null}
-                              {/* THE LABEL SAYS WHICH OF THE TWO THINGS IT
-                                  DOES. "Delete" on a customer's account would
-                                  be a lie — it raises a request — and the
-                                  difference matters most to the person about to
-                                  press it. Disabled once something is already
-                                  queued, because a second press only produces a
-                                  409. */}
-                              {isSuperAdmin && !isMe ? (
+                              {/* DELETED AT ONCE, a customer's account
+                                  included, since 2026-10-01: platform staff
+                                  delete inside a customer directly. A request
+                                  somebody inside raised is answered by deleting
+                                  too, or decided on Deletion requests. */}
+                              {isPlatformStaff && !isMe ? (
                                 <button
                                   type="button"
-                                  disabled={busyId === row.id || row.deletion_pending}
+                                  disabled={busyId === row.id}
                                   onClick={() => void remove(row)}
                                   className="rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
                                 >
-                                  {row.deletion_pending
-                                    ? "Waiting on them"
-                                    : row.organization_id
-                                      ? "Ask to delete"
-                                      : "Delete"}
+                                  Delete
                                 </button>
                               ) : null}
                             </div>

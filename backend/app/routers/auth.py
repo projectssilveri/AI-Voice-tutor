@@ -10,11 +10,13 @@ need an email transport, which does not exist.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import exists, select
 
 from app.core.users import auth_backend, fastapi_users
 from app.deps import CurrentUser, DbSession, OptionalUser
 from app.models.audit import AuditAction
-from app.schemas.user import UserCreate, UserRead, UserUpdate
+from app.models.profile import UserAvatar
+from app.schemas.user import SessionUser, UserCreate, UserRead, UserUpdate
 from app.services import audit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -63,15 +65,23 @@ router.include_router(fastapi_users.get_register_router(UserRead, UserCreate))
 users_router = APIRouter(prefix="/users", tags=["users"])
 
 
-@users_router.get("/session", response_model=UserRead | None)
-async def read_session(user: OptionalUser) -> UserRead | None:
+@users_router.get("/session", response_model=SessionUser | None)
+async def read_session(user: OptionalUser, session: DbSession) -> SessionUser | None:
     """Current user, or null when signed out.
 
     Deliberately not `/users/me` — fastapi-users owns that path and 401s when
     signed out. The frontend asks this on every page load, where "nobody is
     signed in" is a normal answer rather than an error.
     """
-    return user
+    if user is None:
+        return None
+    # One primary-key lookup, so the header only fetches a photo that exists.
+    has_photo = await session.scalar(
+        select(exists().where(UserAvatar.user_id == user.id))
+    )
+    return SessionUser.model_validate(user).model_copy(
+        update={"has_photo": bool(has_photo)}
+    )
 
 
 # GET/PATCH /users/me and /users/{id}. fastapi-users guards these so a user can

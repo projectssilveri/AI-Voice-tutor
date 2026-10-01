@@ -34,6 +34,12 @@ export interface AuthUser {
   organization_id: string | null;
   role: UserRole;
   is_active: boolean;
+  /**
+   * Whether this account has a profile photo. Sent by `/users/session` only,
+   * so it is absent on anything read from `/users/me`. When false, avatars do
+   * not ask for a picture that is not there.
+   */
+  has_photo?: boolean;
   is_superuser: boolean;
   is_verified: boolean;
 }
@@ -219,6 +225,8 @@ export async function updateMe(changes: {
   /** null clears it; the backend treats a blank string as null too. */
   phone?: string | null;
   password?: string;
+  /** Required by the server whenever `password` is sent. */
+  current_password?: string;
 }): Promise<AuthUser> {
   const response = await post(url("/users/me"), {
     method: "PATCH",

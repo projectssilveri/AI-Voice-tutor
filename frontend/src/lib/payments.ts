@@ -67,6 +67,19 @@ export function startPlanCheckout(planId: string): Promise<CheckoutSession> {
 }
 
 /**
+ * Hold a plan that costs nothing. No payment provider is involved, so it
+ * works before Razorpay is configured, and the plan's courses are enrolled.
+ */
+export function claimFreePlan(
+  planId: string,
+): Promise<{ plan_id: string; renews_at: string }> {
+  return apiFetch(`/payments/plans/${planId}/claim`, {
+    ...authed,
+    method: "POST",
+  });
+}
+
+/**
  * One payment for everything in the cart.
  *
  * The amount is summed server-side from the course rows. Nothing about the

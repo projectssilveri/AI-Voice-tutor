@@ -1,4 +1,4 @@
-# Voice Tutor LMS — backend dependencies
+# Voice Tutor LMS - backend dependencies
 #   pip install -r requirements.txt
 
 # --- Web framework ---
@@ -27,10 +27,6 @@ pyjwt>=2.10.0
 google-genai>=1.72.0              # Gemini Live (voice). Live sessions only.
 
 # --- Documents ---
-# reportlab was imported by services/certificate_pdf.py without ever being
-# pinned here: it happened to be present in the shared venv, so a fresh clone
-# would have installed cleanly and then failed at the first certificate
-# download. pypdf reads text out of uploaded course PDFs.
 reportlab>=4.5.0                  # renders certificate PDFs
 pypdf>=6.0                        # extracts text from uploaded course material
 

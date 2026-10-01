@@ -145,7 +145,10 @@ export default function CourseDetailPage() {
                 : "border border-gray-300 text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
             }`}
           >
-            Browse all courses
+            {/* Says where it goes. It read "Browse all courses" and led to My
+                courses, which for an organisation's people is their assigned
+                training and never a catalogue. */}
+            Back to my courses
           </Link>
         </div>
       </div>

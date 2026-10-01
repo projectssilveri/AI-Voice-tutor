@@ -127,6 +127,7 @@ async def approve(
             "That account is a super admin now. Change their role first if "
             "they should no longer hold it."
         )
+    await _keep_admin_floor(session, target)
 
     request.status = SuspensionStatus.APPROVED
     request.decided_by = actor.id
@@ -169,25 +170,27 @@ async def set_active_directly(
     pending "please suspend this person" against an account somebody has just
     switched back on is a decision nobody is going to make.
     """
-    if actor.role is not UserRole.SUPER_ADMIN:
-        raise SuspensionError("Only the super admin can suspend an account.")
+    if actor.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        raise SuspensionError("Only platform staff can suspend an account.")
     if target.id == actor.id and not active:
         raise SuspensionError("You cannot suspend your own account.")
+    # A platform admin acts on the accounts below them only. The route checks
+    # this too; here it holds whoever calls the service.
+    if actor.role is UserRole.ADMIN and target.role in (
+        UserRole.ADMIN,
+        UserRole.SUPER_ADMIN,
+    ):
+        raise SuspensionError("Only a super admin can change a staff account.")
 
-    # THE SAME RULE AS `request_suspension`, which has refused this since it was
-    # written. This path did not, so the guard that stops an admin escalating a
-    # lockout was simply missing from the door the owner uses — a super admin
-    # could switch off every other super admin one at a time, including the
-    # first account on the platform, and nobody left could undo it. Reported as
-    # issues 3 and 5.
+    # A SUPER ADMIN MAY SUSPEND ANOTHER SUPER ADMIN since 2026-10-01, the
+    # user's decision, as long as one active super admin is left: with none,
+    # nobody could approve admins or courses or change a role again. It was
+    # refused outright before (issues 3 and 5). Only a super admin gets this
+    # far with a super admin as the target; a platform admin was refused above.
     #
-    # ONLY WHEN SUSPENDING. Restoring has to stay open, or an account switched
-    # off before this guard existed could never be switched back on.
+    # ONLY WHEN SUSPENDING. Restoring has to stay open.
     if not active and target.role is UserRole.SUPER_ADMIN:
-        raise SuspensionError(
-            "A super admin's account cannot be suspended. Change their role "
-            "first if they should no longer hold it."
-        )
+        await _keep_super_admin_floor(session, target)
 
     open_request = await open_request_for(session, target.id)
 
@@ -200,10 +203,20 @@ async def set_active_directly(
             open_request.decision_note = "Account restored instead."
         return None
 
+    await _keep_admin_floor(session, target)
+
+    # AN OPEN REQUEST IS CLOSED BY WHOEVER ACTED, not passed to `approve`.
+    # That is the super admin's queue decision and refuses anybody else, so a
+    # platform admin suspending somebody with a request still open was told
+    # "Only the super admin can decide a suspension" for a decision that has
+    # been theirs since 2026-10-01.
     if open_request is not None:
-        return await approve(
-            session, request=open_request, actor=actor, note=reason_note(reason)
-        )
+        open_request.status = SuspensionStatus.APPROVED
+        open_request.decided_by = actor.id
+        open_request.decided_at = datetime.now(UTC)
+        open_request.decision_note = reason_note(reason)
+        target.is_active = False
+        return open_request
 
     request = SuspensionRequest(
         user_id=target.id,
@@ -216,6 +229,46 @@ async def set_active_directly(
     session.add(request)
     target.is_active = False
     return request
+
+
+async def _keep_super_admin_floor(session: AsyncSession, target: User) -> None:
+    """Refuse to switch off the last active super admin.
+
+    Locked rather than counted, the same as `admin_users.assert_super_admin_floor`:
+    two super admins suspending each other at the same moment would otherwise
+    both see one left and leave none.
+    """
+    from app.services import concurrency
+
+    held = await concurrency.lock_and_list(
+        session,
+        select(User.id)
+        .where(User.role == UserRole.SUPER_ADMIN, User.is_active.is_(True))
+        .order_by(User.id),
+    )
+    if not [row for row in held if row != target.id]:
+        raise SuspensionError(
+            "That is the last active super admin. Make somebody else a super "
+            "admin first, or nobody could approve or promote anyone again."
+        )
+
+
+async def _keep_admin_floor(session: AsyncSession, target: User) -> None:
+    """Refuse to switch off one of an organisation's last administrators.
+
+    The floor belongs to the organisation, whichever screen is used. The portal,
+    a deletion and closing your own account all held it, and suspending from
+    the Users screen did not: a platform admin or a super admin could leave a
+    customer with one administrator, the lockout the floor exists to prevent.
+    """
+    from app.services import organizations as org_service
+
+    try:
+        await org_service.assert_admin_floor_after_change(
+            session, target, still_admin=False
+        )
+    except org_service.AdminFloorError as exc:
+        raise SuspensionError(str(exc)) from None
 
 
 def reason_note(reason: str | None) -> str | None:

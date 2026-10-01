@@ -178,9 +178,12 @@ function MessageCard({
 export default function MessageCentre({
   title = "Messages",
   intro,
+  draft,
 }: {
   title?: string;
   intro?: string;
+  /** Opens on Write with these filled in, for a link that asks for something. */
+  draft?: { subject: string; body: string } | null;
 }) {
   const [tab, setTab] = useState<"received" | "sent" | "write">("received");
   const [inbox, setInbox] = useState<DirectMessage[]>([]);
@@ -195,6 +198,17 @@ export default function MessageCentre({
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [replyTo, setReplyTo] = useState<DirectMessage | null>(null);
+
+  // A draft handed in by the page, applied once per subject so later typing
+  // is not overwritten.
+  const draftSubject = draft?.subject ?? null;
+  const draftBody = draft?.body ?? "";
+  useEffect(() => {
+    if (!draftSubject) return;
+    setSubject(draftSubject);
+    setBody(draftBody);
+    setTab("write");
+  }, [draftSubject, draftBody]);
 
   const load = useCallback(async () => {
     try {

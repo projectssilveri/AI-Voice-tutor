@@ -208,7 +208,6 @@ export default async function PricingPage() {
                         planId={plan.id}
                         priceMinor={plan.price_minor}
                         currency={plan.currency}
-                        courseIds={plan.course_ids}
                         highlighted={highlighted}
                       />
                     </div>

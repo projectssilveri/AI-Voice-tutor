@@ -111,7 +111,8 @@ function Kpi({
 
 function Reports() {
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
+  // Platform staff, both tiers, since the role model of 2026-10-01.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
 
   const [report, setReport] = useState<TrainingReport | null>(null);
   const [courses, setCourses] = useState<ReportCourse[]>([]);
@@ -155,11 +156,11 @@ function Reports() {
   }, [filters.organization_id, filters.public_only]);
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
+    if (!isPlatformStaff) return;
     listOrganizations()
       .then(setOrganizations)
       .catch(() => {});
-  }, [isSuperAdmin]);
+  }, [isPlatformStaff]);
 
   function set<K extends keyof ReportQuery>(key: K, value: ReportQuery[K]) {
     setFilters((current) => ({ ...current, [key]: value || undefined }));
@@ -184,7 +185,7 @@ function Reports() {
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
             Who has finished, who is part-way through, and who has not
             started.
-            {isSuperAdmin
+            {isPlatformStaff
               ? " Our learners and our customers' are mixed together until you pick a side."
               : ""}
           </p>
@@ -243,7 +244,7 @@ function Reports() {
             read out of a mixed table by eye. Keeping ours and theirs apart is
             the same rule that walled the customer portals off in the first
             place. */}
-        {isSuperAdmin && organizations.length > 0 ? (
+        {isPlatformStaff && organizations.length > 0 ? (
           <select
             value={
               filters.public_only

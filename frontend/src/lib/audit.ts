@@ -134,6 +134,7 @@ const LABELS: Record<string, string> = {
   "assessment.exam_submitted": "Submitted a certification exam",
   "assessment.certificate_issued": "Certificate issued",
   "progress.module_completed": "Completed a module",
+  "progress.module_reopened": "Marked a module unfinished",
   "progress.enrolled": "Enrolled in a course",
   "admin.user_created": "Created a user",
   "admin.role_changed": "Changed a role",
@@ -217,6 +218,11 @@ const NOUNS: [RegExp, string][] = [
   [/^\/course-reviews\/[^/]+\/reject/, "a course rejection"],
   [/^\/courses/, "a course"],
   [/^\/modules\/[^/]+\/progress/, "module progress"],
+  // Before the general rule. A practice quiz submission came out as "Added a
+  // module", which is not what a student can do. Older rows only: these
+  // routes write a named event now.
+  [/^\/modules\/[^/]+\/quiz\/attempts/, "a practice quiz attempt"],
+  [/^\/modules\/[^/]+\/assignments/, "an assignment"],
   [/^\/modules/, "a module"],
   [/^\/assignments\/[^/]+\/submissions/, "an assignment submission"],
   [/^\/assignments/, "an assignment"],

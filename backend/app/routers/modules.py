@@ -24,15 +24,14 @@ router = APIRouter(tags=["modules"])
 
 admin_only = Depends(require_role(UserRole.ADMIN))
 
-# AUTHORING IS SUPER ADMIN ONLY (issue 11). `require_role(ADMIN)` widens
-# upwards to include super admins; this one does not widen, because the point
-# is to exclude the platform admin who previously satisfied it.
+# AUTHORING IS PLATFORM STAFF. It was super admin only (issue 11) until the
+# role model of 2026-10-01 gave platform admins the super admin's work.
 #
 # The ORGANISATION portal is untouched. An org admin writes their own company's
 # training through `/org/{slug}/courses`, a different router with its own scope
 # check — what a customer may write about their own business is not this rule's
-# business.
-super_admin_only = Depends(require_role(UserRole.SUPER_ADMIN))
+# business. `require_role(ADMIN)` widens upwards to super admins.
+platform_staff_only = Depends(require_role(UserRole.ADMIN))
 
 
 
@@ -94,7 +93,7 @@ async def get_module(
     "/courses/{course_id}/modules",
     response_model=ModuleRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[super_admin_only],
+    dependencies=[platform_staff_only],
 )
 async def create_module(
     course_id: uuid.UUID, payload: ModuleCreate, session: DbSession, user: CurrentUser
@@ -177,7 +176,7 @@ async def create_module(
 
 
 @router.patch(
-    "/modules/{module_id}", response_model=ModuleRead, dependencies=[super_admin_only]
+    "/modules/{module_id}", response_model=ModuleRead, dependencies=[platform_staff_only]
 )
 async def update_module(
     module_id: uuid.UUID, payload: ModuleUpdate, session: DbSession, user: CurrentUser
@@ -236,7 +235,7 @@ async def update_module(
 @router.delete(
     "/modules/{module_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[super_admin_only],
+    dependencies=[platform_staff_only],
 )
 async def delete_module(
     module_id: uuid.UUID, session: DbSession, user: CurrentUser

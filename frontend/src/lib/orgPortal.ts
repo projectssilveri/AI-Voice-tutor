@@ -61,6 +61,11 @@ export interface OrgMember {
   /** Sees training scoped to OTHER departments — the HR/IT manager case. */
   sees_all_departments: boolean;
   created_at: string;
+  /**
+   * Made an administrator by a platform admin and not approved yet by a super
+   * admin. A new account stays switched off, a promotion unapplied, until then.
+   */
+  pending_approval?: boolean;
 }
 
 export interface MemberList {
@@ -443,6 +448,25 @@ export function getOrgDocumentText(
 
 export function listOrgCourses(slug: string): Promise<OrgCourse[]> {
   return apiFetch(`/org/${slug}/courses`, authed);
+}
+
+/**
+ * Delete a company course, or ask for it to be deleted.
+ *
+ * Platform staff delete at once (`outcome` "deleted"). Everybody else asks,
+ * with a reason, and a Platform Admin or Super Admin decides (`outcome`
+ * "requested"): the rule of 2026-10-01.
+ */
+export function deleteOrgCourse(
+  slug: string,
+  courseId: string,
+  reason = "",
+): Promise<{ outcome: string; explanation: string }> {
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  return apiFetch(`/org/${slug}/courses/${courseId}${query}`, {
+    ...authed,
+    method: "DELETE",
+  });
 }
 
 export function createOrgCourse(

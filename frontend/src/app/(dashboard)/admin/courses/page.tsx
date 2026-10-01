@@ -32,7 +32,8 @@ function CourseAuthoring() {
   // agrees: `DELETE /courses/{id}` is behind `RequireSuperAdmin`, so hiding
   // the button only saves an admin a refusal they cannot act on.
   const { user } = useAuth();
-  const canDelete = user?.role === "super_admin";
+  // Platform staff, both tiers, since the role model of 2026-10-01.
+  const canDelete = user?.role === "admin" || user?.role === "super_admin";
 
   const [courses, setCourses] = useState<CourseRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,7 +48,12 @@ function CourseAuthoring() {
 
   const load = useCallback(async () => {
     try {
-      setCourses(await listCourses());
+      // OUR CATALOGUE ONLY. A super admin's course list also holds every
+      // customer's own training, and it sat here with Edit and Delete beside
+      // ours, which is the mix decision 170 records going wrong. Customers'
+      // courses are on Customer training, read only.
+      const all = await listCourses();
+      setCourses(all.filter((course) => course.organization_id === null));
       setError(null);
     } catch (caught) {
       setError(
@@ -124,7 +130,15 @@ function CourseAuthoring() {
         </h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Create a course, then add modules. A module&apos;s content is the only
-          material the AI tutor teaches and answers from.
+          material the AI tutor teaches and answers from. Courses our customers
+          built for themselves are on{" "}
+          <Link
+            href="/admin/customer-training"
+            className="text-brand-500 hover:text-brand-600 dark:text-brand-400"
+          >
+            Customer training
+          </Link>
+          .
         </p>
       </div>
 
@@ -216,7 +230,9 @@ function CourseAuthoring() {
                   </p>
                 </div>
 
-                <div className="flex shrink-0 items-center gap-3">
+                {/* Wraps on a narrow window. It did not, and the Cancel beside
+                    "Delete for good" ran off the edge of the screen. */}
+                <div className="flex flex-wrap items-center gap-3">
                   <span
                     className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
                       course.price_minor === 0
@@ -240,11 +256,11 @@ function CourseAuthoring() {
                     Edit
                   </Link>
 
-                  {/* Two-step delete, and super admin only. A course cascades
+                  {/* Two-step delete, platform staff only. A course cascades
                       to its modules, quizzes, assignments and every student's
                       progress, so neither one click nor one role is enough. */}
                   {!canDelete ? null : confirmingDelete === course.id ? (
-                    <span className="flex items-center gap-2">
+                    <span className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         onClick={() => handleDelete(course.id)}
@@ -281,7 +297,7 @@ function CourseAuthoring() {
 
 export default function AdminCoursesPage() {
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <CourseAuthoring />
     </RequireAuth>
   );

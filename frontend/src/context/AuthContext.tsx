@@ -47,14 +47,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [photoVersion, setPhotoVersion] = useState(0);
 
-  const photoChanged = useCallback(() => setPhotoVersion((n) => n + 1), []);
-
   const refresh = useCallback(async () => {
     const next = await fetchSession();
     setUser(next);
     setLoading(false);
     return next;
   }, []);
+
+  // The session carries `has_photo`, so it is read again after an upload or
+  // a removal. Otherwise the header would keep skipping a photo that now
+  // exists, or keep asking for one that is gone.
+  const photoChanged = useCallback(() => {
+    setPhotoVersion((n) => n + 1);
+    void refresh().catch(() => {
+      // The old session stays; the next page load corrects it.
+    });
+  }, [refresh]);
 
   const signOut = useCallback(async () => {
     // `apiLogout` is a bare fetch, so it REJECTS when the backend is

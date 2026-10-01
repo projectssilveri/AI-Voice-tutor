@@ -122,6 +122,7 @@ export default function OrgShell({
                 name={user?.name}
                 size="sm"
                 version={photoVersion}
+                hasPhoto={user?.has_photo}
               />
             </div>
           </div>

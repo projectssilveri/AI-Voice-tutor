@@ -26,6 +26,8 @@ export interface MyProgress {
   modules_total: number;
   courses_enrolled: number;
   voice_minutes: number;
+  /** The same time in seconds; show it with `tutorTime`. */
+  voice_seconds?: number;
   questions_asked: number;
   quizzes_taken: number;
   best_quiz_score: number | null;
@@ -51,6 +53,8 @@ export interface LeaderboardRow {
   email: string;
   modules_completed: number;
   voice_minutes: number;
+  /** The same time in seconds; show it with `tutorTime`. */
+  voice_seconds?: number;
   certificates: number;
   score: number;
 }
@@ -64,6 +68,7 @@ export interface PlatformAnalytics {
   certificates_issued: number;
   cert_pass_rate: number;
   total_voice_minutes: number;
+  total_voice_seconds?: number;
   total_interruptions: number;
   signups_per_day: DayPoint[];
   voice_minutes_per_day: DayPoint[];

@@ -3,6 +3,7 @@ import MarketingButton from "@/components/marketing/ui/MarketingButton";
 import PrimaryCta from "@/components/marketing/ui/PrimaryCta";
 import ScrollParallax from "@/components/marketing/ui/ScrollParallax";
 import ProductPanel from "@/components/marketing/ProductPanel";
+import { listPublicCourses } from "@/lib/catalogue";
 
 /**
  * The home page hero — premium redesign.
@@ -14,7 +15,34 @@ import ProductPanel from "@/components/marketing/ProductPanel";
  *   - The primary CTA has a shimmer animation overlay
  *   - A quick-stats row anchors the bottom of the text block
  */
-export default function Hero() {
+export default async function Hero() {
+  // COUNTED, NOT TYPED. The row below said "11 courses · 40 modules" as
+  // literals while the strip under it counted 13 and 42 from the catalogue,
+  // so the page contradicted itself the day a course was published. Same
+  // source and same rule as `ProofStrip`: if the catalogue cannot be read,
+  // leave the counts out rather than show a number that may be wrong. The
+  // request is shared with the strip and the course grid, not repeated.
+  let courses: Awaited<ReturnType<typeof listPublicCourses>> = [];
+  try {
+    courses = await listPublicCourses();
+  } catch {
+    // The hero still renders without the API.
+  }
+  const moduleCount = courses.reduce((sum, course) => sum + course.moduleCount, 0);
+  const freeCount = courses.filter((course) => course.priceMinor === 0).length;
+  const anyFree = freeCount > 0;
+  const stats = [
+    ...(courses.length > 0
+      ? [
+          { value: String(courses.length), label: courses.length === 1 ? "course" : "courses" },
+          { value: String(moduleCount), label: moduleCount === 1 ? "module" : "modules" },
+        ]
+      : []),
+    { value: "90 min", label: "AI tutor per session" },
+    // Only while there is a free course to start with.
+    ...(anyFree ? [{ value: "Free", label: "to start" }] : []),
+  ];
+
   return (
     // `overflow-x-clip`, not `overflow-hidden`. The orbs below hang off
     // both edges and the clipping is there to stop them widening the page.
@@ -45,14 +73,20 @@ export default function Hero() {
 
       <Container size="wide">
         <div className="animate-fade-up max-w-[820px]">
-          {/* Glassmorphism badge */}
-          <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[13px] text-[var(--mk-muted)] backdrop-blur-md">
-            <span className="relative flex size-2">
-              <span className="animate-ping absolute inline-flex size-full rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex size-2 rounded-full bg-emerald-400" />
-            </span>
-            One free course, no card needed
-          </p>
+          {/* Glassmorphism badge. Counted like the stats below: it said "One
+              free course" as a literal, whatever the catalogue held, and is
+              left out when nothing is free. */}
+          {anyFree ? (
+            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[13px] text-[var(--mk-muted)] backdrop-blur-md">
+              <span className="relative flex size-2">
+                <span className="animate-ping absolute inline-flex size-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-400" />
+              </span>
+              {freeCount === 1
+                ? "One free course, no card needed"
+                : `${freeCount} free courses, no card needed`}
+            </p>
+          ) : null}
 
           {/* Gradient headline */}
           <h1 className="text-[clamp(2.5rem,6.2vw,4.5rem)] font-semibold leading-[1.03] tracking-[-0.035em] text-[var(--mk-text)]">
@@ -105,16 +139,11 @@ export default function Hero() {
 
           {/* Quick stats row */}
           <div className="mt-10 flex flex-wrap items-center gap-x-7 gap-y-2">
-            {[
-              { value: "11", label: "courses" },
-              { value: "40", label: "modules" },
-              { value: "90 min", label: "AI tutor per session" },
-              { value: "Free", label: "to start" },
-            ].map((stat, i) => (
-              <div key={i} className="flex items-baseline gap-1.5">
+            {stats.map((stat, i) => (
+              <div key={stat.label} className="flex items-baseline gap-1.5">
                 <span className="text-[15px] font-semibold text-[var(--mk-text)]">{stat.value}</span>
                 <span className="text-[13px] text-[var(--mk-muted)]">{stat.label}</span>
-                {i < 3 && (
+                {i < stats.length - 1 && (
                   <span aria-hidden="true" className="ml-2 text-white/15">·</span>
                 )}
               </div>

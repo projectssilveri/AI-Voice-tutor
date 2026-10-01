@@ -1,15 +1,19 @@
-"""Destroying something that belongs to a customer, with the customer's say-so.
+"""Destroying something that belongs to a customer, and who agreed to it.
 
-A platform admin can see every organization in full — its people, its training
-and its documents. What they cannot do is delete any of it on their own. The
-data is the customer's; the platform holds it. So the destructive half of that
-relationship goes the way suspensions already go: somebody asks, with a reason,
-and THE ORGANIZATION'S OWN ADMINISTRATOR decides.
+THE RULE SINCE 2026-10-01 (`services/deletions.acts_directly`): platform
+staff delete inside a customer at once, and decide what anybody inside the
+customer asks to delete. An organization admin removes branch managers and
+department admins at once, and those managers remove the people in their own
+branch or department at once. Everything else (the org admin removing a
+learner or another admin, any course or document) is a request with a
+reason, and a Platform Admin or Super Admin decides.
 
-    platform staff ─┐
-                    ├─request(reason)─> pending ─approve─> the thing is deleted
-    branch/dept  ───┘                      │
-    manager                                └─decline(note)─> nothing happens
+    org admin    ─┐
+    branch/dept  ─┼─request(reason)─> pending ─approve─> the thing is deleted
+    manager       ┘  (staff decide)        │
+                                           └─decline(note)─> nothing happens
+
+Acting at once still writes a row, raised and approved in the same moment.
 
 The row outlives the decision on purpose. "Who asked for this, when, why, and
 who agreed" is the question that gets asked after something is gone, and by then
@@ -17,8 +21,8 @@ the thing itself cannot answer it.
 
 WHY THE TARGET IS POLYMORPHIC rather than three tables. The three things a
 customer owns — members, training, documents — differ in what deleting them
-means and in nothing else about this flow. One queue is also the point: an org
-admin should open one screen and see everything waiting on them, not three.
+means and in nothing else about this flow. One queue is also the point: the
+person deciding should open one screen and see everything waiting, not three.
 
 The trade is that `target_id` carries no foreign key, so nothing at the database
 level stops a request outliving its target. `target_label` is the answer to

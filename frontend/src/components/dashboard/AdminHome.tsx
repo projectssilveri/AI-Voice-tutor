@@ -16,6 +16,7 @@ import {
   StatTile,
 } from "@/components/dashboard/Tiles";
 import { useAuth } from "@/context/AuthContext";
+import { tutorTime } from "@/lib/duration";
 import { formatMoney } from "@/lib/money";
 import {
   type PlatformAnalytics,
@@ -36,6 +37,9 @@ import {
 export default function AdminHome() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
+  // Revenue and the platform-wide view belong to platform staff, both
+  // tiers, since the role model of 2026-10-01.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
 
   const [platform, setPlatform] = useState<PlatformAnalytics | null>(null);
   const [revenue, setRevenue] = useState<RevenueAnalytics | null>(null);
@@ -66,7 +70,7 @@ export default function AdminHome() {
   }, []);
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
+    if (!isPlatformStaff) return;
     let cancelled = false;
     (async () => {
       try {
@@ -80,7 +84,7 @@ export default function AdminHome() {
     return () => {
       cancelled = true;
     };
-  }, [isSuperAdmin]);
+  }, [isPlatformStaff]);
 
   const tutorAdoption =
     platform && platform.total_students > 0
@@ -90,9 +94,9 @@ export default function AdminHome() {
   return (
     <div className="space-y-6">
       <DashboardHeader
-        title={isSuperAdmin ? "Platform overview" : "Admin overview"}
+        title={isPlatformStaff ? "Platform overview" : "Admin overview"}
         subtitle={
-          isSuperAdmin
+          isPlatformStaff
             ? "Learners, engagement, and revenue across the platform."
             : "Learners, engagement, and how the AI tutor is being used."
         }
@@ -105,8 +109,8 @@ export default function AdminHome() {
 
       {error ? <ErrorBanner message={error} /> : null}
 
-      {/* Revenue: super admin only. */}
-      {isSuperAdmin ? (
+      {/* Revenue: platform staff. */}
+      {isPlatformStaff ? (
         <>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <StatTile
@@ -273,8 +277,11 @@ export default function AdminHome() {
           loading={loading}
         />
         <StatTile
-          label="Tutor minutes"
-          value={platform?.total_voice_minutes ?? 0}
+          label="Tutor time"
+          value={tutorTime(
+            platform?.total_voice_seconds ??
+              (platform?.total_voice_minutes ?? 0) * 60,
+          )}
           hint={`${platform?.total_interruptions ?? 0} interruptions`}
           loading={loading}
         />
@@ -405,7 +412,7 @@ export default function AdminHome() {
                     "Student",
                     "Modules",
                     "Certificates",
-                    "Minutes",
+                    "Tutor time",
                     "Score",
                   ].map((h) => (
                     <th
@@ -449,7 +456,7 @@ export default function AdminHome() {
                       {row.certificates}
                     </td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
-                      {row.voice_minutes}
+                      {tutorTime(row.voice_seconds ?? row.voice_minutes * 60)}
                     </td>
                     <td className="px-4 py-3 font-medium text-gray-800 dark:text-white/90">
                       {row.score}

@@ -95,6 +95,16 @@ class SubscriptionPlan(TimestampMixin, Base):
         nullable=False, default=True, server_default="true"
     )
 
+    # ALL ACCESS: keep this plan's course list complete. Access is still the
+    # single join through `plan_courses`; the flag only means every public
+    # course is linked here, including one created later
+    # (`services/plans.fill_all_access`). Without it an All Access plan was
+    # whatever had been ticked when it was saved, and it stopped covering
+    # "every course, including new ones" the day a new course was published.
+    all_access: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false"
+    )
+
     subscriptions: Mapped[list[Subscription]] = relationship(back_populates="plan")
     course_links: Mapped[list[PlanCourse]] = relationship(
         back_populates="plan", cascade="all, delete-orphan"

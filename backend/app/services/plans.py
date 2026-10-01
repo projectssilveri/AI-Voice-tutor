@@ -19,6 +19,12 @@ WHAT THIS FILE IS CAREFUL ABOUT.
   subscription — but it is a real consequence, so the route says so and the
   screen warns before saving.
 
+  An All Access plan (`all_access`) is still a list in `plan_courses`, not a
+  special case in the access check. The flag only keeps that list complete:
+  `fill_all_access` links every public course, and runs again whenever a
+  public course is created, so "including new ones" stays true without anyone
+  remembering to tick the new course.
+
   A plan is never deleted. `subscriptions.plan_id` and `orders.plan_id` are
   RESTRICT, deliberately: a receipt whose plan vanished is not a receipt.
   Retiring one sets `is_active = False`, which takes it off sale and leaves
@@ -31,7 +37,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
@@ -79,8 +86,11 @@ class PlanSummary:
     courses: list[PlanCourseRow] = field(default_factory=list)
 
     #: Covers every published public course, so it is All Access rather than a
-    #: stack bundle. Counted, never stored.
+    #: stack bundle. Counted from the links, or true for a flagged plan.
     covers_everything: bool = False
+    #: Flagged All Access: every public course is linked automatically,
+    #: including ones created later. See `fill_all_access`.
+    all_access: bool = False
     #: What the member courses cost bought one at a time, at today's prices.
     separate_total_minor: int = 0
 
@@ -222,6 +232,10 @@ async def list_plans(session: AsyncSession) -> list[PlanSummary]:
     summaries: list[PlanSummary] = []
     for plan in plans:
         courses = members.get(plan.id, [])
+        # Compared on PUBLISHED members. Counting every link set drafts against
+        # a published-only catalogue, so a plan missing live courses could
+        # still read as covering everything if it held enough drafts.
+        published = sum(1 for row in courses if row.is_published)
         orders, gross, refunded = money.get(plan.id, (0, 0, 0))
         summaries.append(
             PlanSummary(
@@ -234,9 +248,9 @@ async def list_plans(session: AsyncSession) -> list[PlanSummary]:
                 is_active=plan.is_active,
                 created_at=plan.created_at,
                 courses=courses,
-                covers_everything=(
-                    catalogue_size > 0 and len(courses) >= catalogue_size
-                ),
+                covers_everything=plan.all_access
+                or (catalogue_size > 0 and published >= catalogue_size),
+                all_access=plan.all_access,
                 separate_total_minor=sum(row.price_minor for row in courses),
                 active_subscribers=int(live_counts.get(plan.id, 0)),
                 total_subscribers=int(total_counts.get(plan.id, 0)),
@@ -369,6 +383,69 @@ async def _apply_courses(
             await session.delete(link)
 
 
+async def _assert_price_buys_something(
+    session: AsyncSession, plan: SubscriptionPlan
+) -> None:
+    """Refuse a price on a bundle whose every course is already free.
+
+    Free courses are open to every signed-in student, so a bundle made only of
+    them sells nothing: students reached its courses without paying, and the
+    bundle page said "You have this" to people who had never bought it. A
+    tester read that as the price not being enforced. The honest fix is not to
+    take money for it, so the bundle has to hold a paid course or cost nothing.
+    """
+    if plan.price_minor <= 0:
+        return
+    await session.flush()
+    total, paid = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count().filter(Course.price_minor > 0),
+            )
+            .select_from(PlanCourse)
+            .join(Course, Course.id == PlanCourse.course_id)
+            .where(PlanCourse.plan_id == plan.id)
+        )
+    ).one()
+    if total and not paid:
+        raise PlanError(
+            "Every course in this bundle is already free, so the bundle cannot "
+            "have a price. Add a paid course, or set the price to 0."
+        )
+
+
+async def fill_all_access(
+    session: AsyncSession, plan_ids: list[uuid.UUID] | None = None
+) -> None:
+    """Link every public course to every All Access plan that lacks it.
+
+    One INSERT ... SELECT, and a no-op when nothing is missing, so it is safe to
+    call whenever a public course is created or a plan is saved as All Access.
+    Drafts are linked too: a course published later is then already in, with
+    no second hook to forget. Organisation courses never are; they belong to a
+    customer. Does not commit.
+    """
+    # Pending changes first, so a plan flagged in this same transaction is seen.
+    await session.flush()
+    missing = (
+        select(SubscriptionPlan.id, Course.id)
+        .select_from(SubscriptionPlan)
+        .join(Course, true())
+        .where(
+            SubscriptionPlan.all_access.is_(True),
+            Course.organization_id.is_(None),
+        )
+    )
+    if plan_ids is not None:
+        missing = missing.where(SubscriptionPlan.id.in_(plan_ids))
+    await session.execute(
+        pg_insert(PlanCourse)
+        .from_select(["plan_id", "course_id"], missing)
+        .on_conflict_do_nothing()
+    )
+
+
 async def create_plan(
     session: AsyncSession,
     *,
@@ -379,6 +456,7 @@ async def create_plan(
     billing_interval: BillingInterval,
     course_ids: list[uuid.UUID],
     is_active: bool = True,
+    all_access: bool = False,
 ) -> SubscriptionPlan:
     """Add a bundle. Does not commit — the caller owns the transaction."""
     clean = name.strip()
@@ -398,12 +476,16 @@ async def create_plan(
         currency=currency.upper(),
         billing_interval=billing_interval,
         is_active=is_active,
+        all_access=all_access,
     )
     session.add(plan)
     # Flushed rather than committed: `plan_courses` needs the id, and the whole
     # thing should still fail as one if a course id turns out to be wrong.
     await session.flush()
     await _apply_courses(session, plan, course_ids)
+    if plan.all_access:
+        await fill_all_access(session, [plan.id])
+    await _assert_price_buys_something(session, plan)
     return plan
 
 
@@ -418,6 +500,8 @@ async def update_plan(
 
     `course_ids` of None leaves the membership alone; a list replaces it.
     """
+    before = await _course_ids_of(session, plan.id)
+
     if "name" in changes:
         clean = str(changes["name"]).strip()
         if not clean:
@@ -438,10 +522,39 @@ async def update_plan(
     if changes.get("currency"):
         changes["currency"] = str(changes["currency"]).upper()
 
+    # An explicit null would write NULL into a NOT NULL column.
+    if "all_access" in changes and changes["all_access"] is None:
+        del changes["all_access"]
+
     for attribute, value in changes.items():
         setattr(plan, attribute, value)
 
     if course_ids is not None:
         await _apply_courses(session, plan, course_ids)
 
+    # Last, so it wins: while a plan is All Access its list is every public
+    # course, and a course unticked in the same save comes straight back.
+    if plan.all_access:
+        await fill_all_access(session, [plan.id])
+
+    await _assert_price_buys_something(session, plan)
+
+    # WHAT WAS ADDED reaches the people who already hold the bundle. Only the
+    # new courses: re-enrolling the whole plan on every save would put back a
+    # course somebody had chosen to leave.
+    from app.services import payments
+
+    added = await _course_ids_of(session, plan.id) - before
+    await payments.enrol_holders(session, added)
     return plan
+
+
+async def _course_ids_of(session: AsyncSession, plan_id: uuid.UUID) -> set[uuid.UUID]:
+    await session.flush()
+    return set(
+        (
+            await session.scalars(
+                select(PlanCourse.course_id).where(PlanCourse.plan_id == plan_id)
+            )
+        ).all()
+    )

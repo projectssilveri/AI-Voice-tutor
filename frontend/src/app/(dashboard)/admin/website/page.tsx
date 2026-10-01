@@ -32,7 +32,7 @@ import { counted } from "@/lib/plural";
  * a course starts here too, because "add a course to the website" is one
  * intention, not two screens.
  *
- * Super admin only: price and publication are `RequireSuperAdmin` powers
+ * Platform staff: price and publication are platform-staff powers
  * (decision 51), and this screen is mostly those two things.
  */
 
@@ -396,7 +396,7 @@ function WebsiteConsole() {
 
 export default function AdminWebsitePage() {
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <WebsiteConsole />
     </RequireAuth>
   );

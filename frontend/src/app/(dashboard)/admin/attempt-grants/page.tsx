@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import RequireAuth from "@/components/auth/RequireAuth";
+import { useAuth } from "@/context/AuthContext";
 import {
   type AdminExam,
   type AdminUserRow,
@@ -24,6 +25,10 @@ import { counted } from "@/lib/plural";
  * issued it, so the history below is an audit trail rather than a log.
  */
 function AttemptGrantsAdmin() {
+  const { user } = useAuth();
+  // Every learner for platform staff since the role model of 2026-10-01,
+  // customers' included; the server checks `can_manage` on each grant.
+  const publicOnly = user?.role !== "admin" && user?.role !== "super_admin";
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [exams, setExams] = useState<AdminExam[]>([]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
@@ -45,7 +50,7 @@ function AttemptGrantsAdmin() {
         // ASKED FOR, not filtered afterwards. This pulled every account on
         // the platform and kept the students, which on a platform of any size
         // is most of a megabyte to fill one dropdown.
-        listUsers({ role: "student", limit: 500 }),
+        listUsers({ role: "student", public_only: publicOnly, limit: 500 }),
         listExams(),
         listGrants(),
         listAttemptStats(),
@@ -61,7 +66,7 @@ function AttemptGrantsAdmin() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [publicOnly]);
 
   useEffect(() => {
     void load();

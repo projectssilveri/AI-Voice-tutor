@@ -21,6 +21,8 @@ export interface AdminUserRow {
   enrollments: number;
   voice_sessions: number;
   voice_minutes: number;
+  /** The same time in seconds; show it with `tutorTime`. */
+  voice_seconds?: number;
   has_used_tutor: boolean;
   last_session_at: string | null;
   /**
@@ -30,15 +32,19 @@ export interface AdminUserRow {
    */
   suspension_pending: boolean;
   /**
-   * Somebody has already asked for this account to be DELETED and the
-   * organisation's own administrator has not decided. Pressing Delete again
-   * queues nothing and answers 409, so without this the console's only way to
-   * find out is to produce an error.
+   * Somebody inside the customer has asked for this account to be DELETED,
+   * and no Platform Admin or Super Admin has decided yet. It waits on the
+   * Deletion requests page; deleting the account directly answers it too.
    */
   deletion_pending: boolean;
   /** Null for a public B2C account. Drives the organisation filter. */
   organization_id: string | null;
   organization_name: string | null;
+  /**
+   * Made an organisation admin by a platform admin and not approved yet by a
+   * super admin, so switched off until then.
+   */
+  approval_pending?: boolean;
 }
 
 /**
@@ -206,6 +212,8 @@ export interface CreatedUser {
   email: string;
   role: string;
   is_active: boolean;
+  /** Waiting for a super admin before it can sign in. */
+  pending_approval?: boolean;
 }
 
 export interface UserRemoval {
@@ -331,43 +339,17 @@ export function updateUser(
   });
 }
 
-/** 202 instead of 200: nothing was deleted, and here is who it waits on. */
-export interface DeletionRequested {
-  request_id: string;
-  organization_id: string;
-  organization_name: string;
-  target_label: string;
-  explanation: string;
-}
-
-/** Narrows the union above — `outcome` only exists when something happened. */
-export function wasRemoved(
-  result: UserRemoval | DeletionRequested,
-): result is UserRemoval {
-  return "outcome" in result;
-}
-
 /**
- * Remove an account — or ask the customer, which is the same call.
+ * Remove an account, public or a customer's: deleted, or closed if it has
+ * history, and the answer says which.
  *
- * TWO OUTCOMES BEHIND ONE VERB, decided by the server from whether the account
- * belongs to an organisation:
- *
- *   * a PUBLIC B2C account is deleted, or closed if it has history, and the
- *     answer is a `UserRemoval` saying which;
- *   * an account inside an ORGANISATION is untouched, and the answer is a
- *     `DeletionRequested` naming the company now being asked.
- *
- * `reason` is required for the second case and ignored for the first. It is
- * sent always rather than conditionally, because the caller does not reliably
- * know which kind of account it is holding and the server does.
+ * Since 2026-10-01 platform staff delete inside a customer at once, so there
+ * is no "asked the customer" answer any more. `reason` goes on that
+ * customer's own record of the deletion; it is ignored for a public account.
  */
-export function removeUser(
-  id: string,
-  reason = "",
-): Promise<UserRemoval | DeletionRequested> {
+export function removeUser(id: string, reason = ""): Promise<UserRemoval> {
   const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
-  return apiFetch<UserRemoval | DeletionRequested>(
+  return apiFetch<UserRemoval>(
     `/admin/users/${id}${query}`,
     { withCredentials: true, method: "DELETE" },
   );
@@ -493,6 +475,8 @@ export interface UserDossier {
   certification_attempts: number;
   voice_sessions: number;
   voice_minutes: number;
+  /** The same time in seconds; show it with `tutorTime`. */
+  voice_seconds?: number;
   last_login_at: string | null;
   last_logout_at: string | null;
   login_count: number;

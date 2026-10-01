@@ -9,13 +9,12 @@ import {
   getUsage,
   listActivity,
 } from "@/lib/admin";
+import { tutorTime } from "@/lib/duration";
 import { counted } from "@/lib/plural";
 
+// The shared format, so a session reads the same here as in the Users table.
 function formatDuration(seconds: number | null): string {
-  if (seconds === null) return "open";
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  return minutes > 0 ? `${minutes}m ${rest}s` : `${rest}s`;
+  return seconds === null ? "open" : tutorTime(seconds);
 }
 
 function UsageAndActivity() {
@@ -96,10 +95,8 @@ function UsageAndActivity() {
                   </span>
                   <span className="text-gray-500 dark:text-gray-400">
                     {/* "0 min" on a lesson that actually happened reads as a
-                        bug. Under a minute is said in words. */}
-                    {row.seconds > 0 && row.minutes === 0
-                      ? "under a minute"
-                      : `${row.minutes} min`}{" "}
+                        bug. Under a minute is said in seconds. */}
+                    {tutorTime(row.seconds)}{" "}
                     · {counted(row.sessions, "session")}
                   </span>
                 </div>
@@ -121,7 +118,7 @@ function UsageAndActivity() {
                 <div
                   className="h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800"
                   role="img"
-                  aria-label={`${row.module_title}: ${row.minutes} minutes across ${row.sessions} sessions`}
+                  aria-label={`${row.module_title}: ${tutorTime(row.seconds)} across ${counted(row.sessions, "session")}`}
                 >
                   <div
                     className="h-full rounded-full bg-brand-500"

@@ -11,10 +11,10 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 
-from app.deps import CurrentUser, DbSession, RequireSuperAdmin, require_role
+from app.deps import CurrentUser, DbSession, RequireAdmin, require_role
 from app.models.assignment import Assignment
 from app.models.audit import AuditAction
 from app.models.certification import CertExam
@@ -40,6 +40,7 @@ from app.services import (
     course_review,
     deletions,
     limits,
+    plans,
 )
 from app.services import courses as course_service
 from app.services import enrollments as enrollment_service
@@ -51,15 +52,16 @@ router = APIRouter(prefix="/courses", tags=["courses"])
 
 admin_only = Depends(require_role(UserRole.ADMIN))
 
-# AUTHORING IS SUPER ADMIN ONLY (issue 11). `require_role(ADMIN)` widens
-# upwards to include super admins; this one does not widen, because the point
-# is to exclude the platform admin who previously satisfied it.
+# AUTHORING IS PLATFORM STAFF: a super admin or a platform admin. It was super
+# admin only (issue 11) until the role model of 2026-10-01 gave platform admins
+# the super admin's work, catalogue and prices included. `require_role(ADMIN)`
+# widens upwards to include super admins.
 #
 # The ORGANISATION portal is untouched. An org admin writes their own company's
 # training through `/org/{slug}/courses`, a different router with its own scope
 # check — what a customer may write about their own business is not this rule's
 # business.
-super_admin_only = Depends(require_role(UserRole.SUPER_ADMIN))
+platform_staff_only = Depends(require_role(UserRole.ADMIN))
 
 
 
@@ -90,10 +92,10 @@ async def list_courses(session: DbSession, user: CurrentUser) -> list[CourseRead
         # one who is in STAFF_ROLES and would otherwise be shown every course
         # on the platform by the line above.
         organization_id=user.organization_id,
-        # Only the platform super admin sees across tenants, matching
-        # `require_org_scope` and `access.tenancy_decision`.
+        # Only platform staff see across tenants, matching `require_org_scope`
+        # and `access.tenancy_decision`.
         include_organization_courses=(
-            user.organization_id is None and user.role is UserRole.SUPER_ADMIN
+            user.organization_id is None and user.role in access.STAFF_ROLES
         ),
         # The department wall. Only meaningful inside an organization — a
         # public learner has no department, and every public course has none
@@ -294,7 +296,7 @@ async def get_course(
     "",
     response_model=CourseRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[super_admin_only],
+    dependencies=[platform_staff_only],
 )
 async def create_course(
     payload: CourseCreate, session: DbSession, user: CurrentUser
@@ -317,13 +319,16 @@ async def create_course(
         target_id=course.id,
         metadata={"name": course.title},
     )
+    # A new public course joins every All Access plan now, not when somebody
+    # remembers to tick it. Drafts included, so publishing needs no second step.
+    await plans.fill_all_access(session)
     await session.commit()
     await session.refresh(course)
     return CourseRead.model_validate(course)
 
 
 @router.patch(
-    "/{course_id}", response_model=CourseRead, dependencies=[super_admin_only]
+    "/{course_id}", response_model=CourseRead, dependencies=[platform_staff_only]
 )
 async def update_course(
     course_id: uuid.UUID, payload: CourseUpdate, session: DbSession, user: CurrentUser
@@ -381,10 +386,10 @@ async def update_course_pricing(
     course_id: uuid.UUID,
     payload: CoursePricingUpdate,
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
     user: CurrentUser,
 ) -> CourseRead:
-    """Set a course's price and whether it is on sale. Super admin only.
+    """Set a course's price and whether it is on sale. Platform staff only.
 
     Separate from `PATCH /courses/{id}` so the gate is visible in the route
     rather than buried in a field check: an ordinary admin can write the course
@@ -455,7 +460,9 @@ async def update_course_pricing(
     for field, value in changes.items():
         setattr(course, field, value)
 
+    submitted = False
     if publish is not None:
+        review_before = course.review_status
         try:
             await course_review.apply_publish_flag(
                 session, course=course, publish=publish, actor=admin
@@ -464,9 +471,25 @@ async def update_course_pricing(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
+        # A platform admin's Publish on a course nobody has approved sends it
+        # to the super admin instead (`apply_publish_flag`).
+        submitted = (
+            course.review_status != review_before
+            and course.review_status.value == "pending"
+        )
+
+    if submitted:
+        await audit.record(
+            session,
+            action="course.submitted_for_review",
+            actor=admin,
+            target_type="course",
+            target_id=course.id,
+            metadata={"title": course.title, "modules": len(course.modules)},
+        )
 
     moved = audit.changes(before, audit.snapshot(course, priced))
-    if publish is not None and publish != was_published:
+    if course.is_published != was_published:
         # Going on or off sale is not a field edit and reads badly as one.
         moved["on sale"] = {"from": was_published, "to": course.is_published}
 
@@ -501,7 +524,7 @@ async def submit_course_for_review(
     course_id: uuid.UUID,
     session: DbSession,
     user: CurrentUser,
-    _: Annotated[None, super_admin_only] = None,
+    _: Annotated[None, platform_staff_only] = None,
 ) -> CourseRead:
     """Send a course to the super admin for approval.
 
@@ -550,10 +573,10 @@ async def update_course_limits(
     course_id: uuid.UUID,
     payload: CourseLimitsUpdate,
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
     user: CurrentUser,
 ) -> CourseRead:
-    """Set what the AI tutor may do on this course. Super admin only.
+    """Set what the AI tutor may do on this course. Platform staff only.
 
     How many times a student may play the tutor on one module, and how long
     each play runs. Both are per COURSE and apply to every module in it.
@@ -613,12 +636,11 @@ async def update_course_limits(
 async def delete_course(
     course_id: uuid.UUID,
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
     user: CurrentUser,
-    response: Response,
     reason: str = "",
 ) -> None:
-    """Delete our course, or ASK to delete a customer's. SUPER ADMIN ONLY.
+    """Delete our course, or ASK to delete a customer's. PLATFORM STAFF ONLY.
 
     Was `admin_only`, which let anybody with the admin role destroy a course —
     including one another admin had spent a week writing, and one that had been
@@ -628,11 +650,11 @@ async def delete_course(
     An ordinary admin who wants a course gone asks for it, exactly as they now
     ask for it to go on sale.
 
-    A COURSE INSIDE AN ORGANISATION IS NOT OURS TO DESTROY. It becomes a request
-    that customer's own administrator decides, answered 202 with no body, and
-    the course is untouched until they agree. Training somebody built is the
-    thing a customer would least forgive us for deleting by mistake, and
-    decision 170 is the recorded instance of exactly that happening.
+    A COURSE INSIDE AN ORGANISATION is deleted at once too, since 2026-10-01:
+    platform staff delete inside a customer directly, and it is the people
+    inside the customer who ask (`deletions.acts_directly`). It still writes a
+    deletion request, raised and approved in the same moment, so the
+    customer's own history says who removed their training and why.
     """
     # Tenancy. `admin_only` says "you are staff"; it says nothing about WHOSE
     # course this is. Without this an ordinary platform admin could rename and
@@ -650,6 +672,7 @@ async def delete_course(
     try:
         doomed = await course_service.get_course(session, course_id)
         name, was_published = doomed.title, doomed.is_published
+        owner_org = doomed.organization_id
     except course_service.CourseNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
@@ -664,32 +687,20 @@ async def delete_course(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
             )
         try:
-            request = await deletions.request_deletion(
+            await deletions.record_direct(
                 session,
                 organization=organization,
                 target_type=DeletionTarget.TRAINING,
                 target_id=course_id,
                 target_label=name,
                 actor=user,
-                reason=reason,
+                reason=reason or "Removed by platform staff.",
             )
         except deletions.DeletionError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
-
-        await audit.record(
-            session,
-            action=AuditAction.DELETION_REQUESTED,
-            actor=user,
-            organization_id=organization.id,
-            target_type="course",
-            target_id=course_id,
-            metadata={"name": name, "request": str(request.id)},
-        )
-        await session.commit()
-        response.status_code = status.HTTP_202_ACCEPTED
-        return
+        # Falls through to the deletion below, which commits this row with it.
 
     # SOLD COURSES CANNOT BE DELETED, and now they say so.
     #
@@ -736,6 +747,8 @@ async def delete_course(
         session,
         action=AuditAction.COURSE_DELETED,
         actor=user,
+        # A customer's course shows up in that customer's own activity log.
+        organization_id=owner_org,
         target_type="course",
         target_id=course_id,
         metadata={"name": name, "was_on_sale": was_published},

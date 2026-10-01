@@ -50,6 +50,9 @@ export default function BundleEditor({
   const [rupees, setRupees] = useState(String(bundle.price_minor / 100));
   const [interval, setInterval] = useState(bundle.billing_interval);
   const [active, setActive] = useState(bundle.is_active);
+  // All Access: the server keeps the list to every public course, including
+  // ones created later, so the picker below is shown but not used.
+  const [allAccess, setAllAccess] = useState(bundle.all_access);
   const [picked, setPicked] = useState<string[]>(
     bundle.courses.map((course) => course.id),
   );
@@ -63,10 +66,11 @@ export default function BundleEditor({
 
   const original = new Set(bundle.courses.map((course) => course.id));
   const coursesChanged =
-    picked.length !== original.size || picked.some((id) => !original.has(id));
-  const dropped = bundle.courses.filter(
-    (course) => !picked.includes(course.id),
-  );
+    !allAccess &&
+    (picked.length !== original.size || picked.some((id) => !original.has(id)));
+  const dropped = allAccess
+    ? []
+    : bundle.courses.filter((course) => !picked.includes(course.id));
 
   async function showHolders() {
     if (holders !== null) {
@@ -96,6 +100,7 @@ export default function BundleEditor({
         price_minor: Math.round(Number(rupees) * 100),
         billing_interval: interval,
         is_active: active,
+        all_access: allAccess,
         // Only sent when it actually changed. Sending the same list every time
         // would be harmless but would put "course_ids" in the audit record of
         // every price edit, which makes the trail useless for answering "when
@@ -130,7 +135,11 @@ export default function BundleEditor({
                   : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
               }`}
             >
-              {bundle.covers_everything ? "All Access" : "Bundle"}
+              {bundle.all_access
+                ? "All Access · new courses join automatically"
+                : bundle.covers_everything
+                  ? "All Access"
+                  : "Bundle"}
             </span>
             {!bundle.is_active ? (
               <span className="rounded-full bg-warning-50 px-2.5 py-0.5 text-xs font-medium text-warning-700 dark:bg-warning-500/15 dark:text-orange-400">
@@ -356,12 +365,29 @@ export default function BundleEditor({
                 On sale
               </span>
             </label>
+            <label className="flex items-center gap-2 pb-3">
+              <input
+                type="checkbox"
+                checked={allAccess}
+                onChange={(event) => setAllAccess(event.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 dark:border-gray-700"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                All Access: every course, and new ones join automatically
+              </span>
+            </label>
           </div>
 
           <div>
             <span className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
               Courses in this bundle
             </span>
+            {allAccess ? (
+              <p className="mb-2 text-sm text-gray-500 dark:text-gray-400">
+                Every course is in this bundle. A course created later joins it
+                the moment it is made, so there is nothing to tick here.
+              </p>
+            ) : null}
             <div className="grid gap-2 sm:grid-cols-2">
               {courses.map((course) => (
                 <label
@@ -370,7 +396,8 @@ export default function BundleEditor({
                 >
                   <input
                     type="checkbox"
-                    checked={picked.includes(course.id)}
+                    disabled={allAccess}
+                    checked={allAccess || picked.includes(course.id)}
                     onChange={(event) =>
                       setPicked((current) =>
                         event.target.checked

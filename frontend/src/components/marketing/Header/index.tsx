@@ -36,7 +36,7 @@ import menuData from "./menuData";
  * does not move.
  */
 export default function Header() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const pathname = usePathname();
 
   // An organization member is not a customer of the marketplace: their
@@ -300,6 +300,20 @@ export default function Header() {
             );
           })}
         </ul>
+
+        {/* SIGN IN ON A PHONE. The header's own Sign in link is hidden below
+            `sm` to leave room for Start free, so a returning visitor on a
+            phone had no way in from this page but the sign-up form. */}
+        {!authLoading && !user ? (
+          <div className="border-t border-[var(--mk-line)] p-3">
+            <Link
+              href="/signin"
+              className="block rounded-xl px-4 py-3 text-[15px] font-medium text-[var(--mk-text)] transition-colors hover:bg-white/5"
+            >
+              Sign in
+            </Link>
+          </div>
+        ) : null}
       </div>
     </header>
   );

@@ -57,6 +57,7 @@ class AuditAction:
     CERTIFICATE_ISSUED = "assessment.certificate_issued"
 
     MODULE_COMPLETED = "progress.module_completed"
+    MODULE_REOPENED = "progress.module_reopened"
     ENROLLED = "progress.enrolled"
 
     USER_CREATED = "admin.user_created"

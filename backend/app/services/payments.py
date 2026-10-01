@@ -25,20 +25,22 @@ import hashlib
 import hmac
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import redact
 from app.models.cart import CartItem
 from app.models.course import Course
+from app.models.enrollment import Enrollment
 from app.models.order import Order, OrderStatus
 from app.models.subscription import (
     BillingInterval,
+    PlanCourse,
     Subscription,
     SubscriptionPlan,
     SubscriptionStatus,
@@ -465,7 +467,7 @@ async def fulfil_plan_order(session: AsyncSession, order: Order) -> Subscription
     """Start or extend the subscription a paid plan order bought.
 
     Renewal moves the existing row's window forward rather than inserting a
-    second one — `subscriptions` is unique on (user, plan), and a student
+    second one: `subscriptions` is unique on (user, plan), and a student
     renewing should not end up with two rows racing each other.
 
     Extending from the later of "now" and the current period end means paying
@@ -474,37 +476,165 @@ async def fulfil_plan_order(session: AsyncSession, order: Order) -> Subscription
     plan = await session.get(SubscriptionPlan, order.plan_id)
     if plan is None:
         raise PaymentError("That plan no longer exists.")
+    return await start_or_extend_plan(
+        session, user_id=order.user_id, plan=plan, provider="razorpay"
+    )
 
+
+async def start_or_extend_plan(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    plan: SubscriptionPlan,
+    provider: str,
+) -> Subscription:
+    """The subscription row for a paid order or a free claim. No commit.
+
+    AND THE COURSES, ENROLLED. Holding a bundle opened its courses but enrolled
+    the student in none of them, so "You have this. Start learning" led to My
+    courses showing only what they had happened to open themselves: one of two
+    free courses in the tester's bundle. Every published course the plan covers
+    is enrolled here, the ones already enrolled are left as they are.
+    """
     now = datetime.now(UTC)
     days = 365 if plan.billing_interval is BillingInterval.YEARLY else 30
 
     existing = await session.scalar(
         select(Subscription).where(
-            Subscription.user_id == order.user_id,
+            Subscription.user_id == user_id,
             Subscription.plan_id == plan.id,
         )
     )
 
     if existing is None:
         subscription = Subscription(
-            user_id=order.user_id,
+            user_id=user_id,
             plan_id=plan.id,
             status=SubscriptionStatus.ACTIVE,
             started_at=now,
             current_period_start=now,
             current_period_end=now + timedelta(days=days),
-            provider="razorpay",
+            provider=provider,
         )
         session.add(subscription)
-        return subscription
+    else:
+        start = max(now, existing.current_period_end)
+        existing.status = SubscriptionStatus.ACTIVE
+        existing.cancelled_at = None
+        existing.current_period_start = start
+        existing.current_period_end = start + timedelta(days=days)
+        existing.provider = provider
+        subscription = existing
 
-    start = max(now, existing.current_period_end)
-    existing.status = SubscriptionStatus.ACTIVE
-    existing.cancelled_at = None
-    existing.current_period_start = start
-    existing.current_period_end = start + timedelta(days=days)
-    existing.provider = "razorpay"
-    return existing
+    await enrol_in_plan_courses(session, user_id=user_id, plan_id=plan.id)
+    return subscription
+
+
+async def enrol_in_plan_courses(
+    session: AsyncSession, *, user_id: uuid.UUID, plan_id: uuid.UUID
+) -> int:
+    """Enrol a holder in every published course of a plan. Returns how many.
+
+    Drafts are skipped: an All Access plan links them so they are in when
+    published, and enrolling somebody in a course that is not out yet would
+    put it on their list early. No commit.
+    """
+    wanted = set(
+        (
+            await session.scalars(
+                select(PlanCourse.course_id)
+                .join(Course, Course.id == PlanCourse.course_id)
+                .where(
+                    PlanCourse.plan_id == plan_id,
+                    Course.is_published.is_(True),
+                    Course.organization_id.is_(None),
+                )
+            )
+        ).all()
+    )
+    if not wanted:
+        return 0
+    have = set(
+        (
+            await session.scalars(
+                select(Enrollment.course_id).where(
+                    Enrollment.user_id == user_id,
+                    Enrollment.course_id.in_(wanted),
+                )
+            )
+        ).all()
+    )
+    for course_id in wanted - have:
+        session.add(Enrollment(user_id=user_id, course_id=course_id))
+    return len(wanted - have)
+
+
+async def enrol_holders(
+    session: AsyncSession, course_ids: Iterable[uuid.UUID]
+) -> int:
+    """Enrol everybody already holding a plan in these of its courses.
+
+    The other direction from `enrol_in_plan_courses`, which runs when somebody
+    buys or claims a plan. A course added to a bundle afterwards, or a draft in
+    it published afterwards, never reached the people who already held it, so
+    their list stayed short of what the bundle page promised.
+
+    Published public courses only, and plans still running, the same test as
+    `access`. Only these courses, never the whole plan, so somebody who left a
+    course is not put back in it by an unrelated edit. Returns how many. No
+    commit.
+    """
+    wanted = set(course_ids)
+    if not wanted:
+        return 0
+    await session.flush()
+    missing = (
+        await session.execute(
+            select(Subscription.user_id, PlanCourse.course_id)
+            .join(PlanCourse, PlanCourse.plan_id == Subscription.plan_id)
+            .join(Course, Course.id == PlanCourse.course_id)
+            .outerjoin(
+                Enrollment,
+                and_(
+                    Enrollment.user_id == Subscription.user_id,
+                    Enrollment.course_id == PlanCourse.course_id,
+                ),
+            )
+            .where(
+                PlanCourse.course_id.in_(wanted),
+                Course.is_published.is_(True),
+                Course.organization_id.is_(None),
+                Subscription.status.in_(
+                    [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING]
+                ),
+                Subscription.current_period_end > datetime.now(UTC),
+                Enrollment.id.is_(None),
+            )
+            .distinct()
+        )
+    ).all()
+    for user_id, course_id in missing:
+        session.add(Enrollment(user_id=user_id, course_id=course_id))
+    return len(missing)
+
+
+async def claim_free_plan(
+    session: AsyncSession, *, user: User, plan: SubscriptionPlan
+) -> Subscription:
+    """Hold a plan that costs nothing, with no payment provider involved.
+
+    A bundle priced at 0 went through checkout like any other, and checkout
+    answers "Payments are not configured" until Razorpay keys exist, so a free
+    bundle could not be had at all. A plan with no price needs no payment. No
+    commit.
+    """
+    if not plan.is_active:
+        raise PaymentError("That plan is no longer available.")
+    if plan.price_minor != 0:
+        raise PaymentError("This plan has a price, so it goes through checkout.")
+    return await start_or_extend_plan(
+        session, user_id=user.id, plan=plan, provider="free"
+    )
 
 
 def webhook_signature_is_valid(*, body: bytes, signature: str) -> bool:

@@ -30,7 +30,7 @@ from app.models.suspension import SuspensionRequest, SuspensionStatus
 from app.models.user import User, UserRole
 from app.models.voice import Transcript, VoiceSession
 from app.routers import admin_users
-from app.services import audit, certification, deletions
+from app.services import approvals, audit, certification, deletions
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,10 @@ class AdminUserRow(BaseModel):
     enrollments: int
     voice_sessions: int
     voice_minutes: int
+    # The same time in seconds. Whole minutes floor a 40-second session to 0,
+    # so a row read "1 session · 0 min" beside an audit entry of 40 seconds and
+    # a dashboard total that did count them.
+    voice_seconds: int = 0
     # The project spec asks specifically for a flag showing whether a user has ever
     # used the AI tutor at all.
     has_used_tutor: bool
@@ -64,11 +68,9 @@ class AdminUserRow(BaseModel):
     # pressing the button again is the only feedback, and it is an error.
     suspension_pending: bool = False
 
-    # SOMEBODY HAS ALREADY ASKED for this account to be deleted, and the
-    # organisation's own administrator has not decided. Same reasoning as the
-    # flag above and a stronger case for it: pressing Delete twice queues
-    # nothing the second time and answers 409, so without this the console's
-    # only way to find out is to produce an error.
+    # SOMEBODY INSIDE THE CUSTOMER HAS ASKED for this account to be deleted,
+    # and no Platform Admin or Super Admin has decided yet (2026-10-01). It
+    # waits on the Deletion requests page; deleting directly answers it too.
     deletion_pending: bool = False
 
     # WHICH CUSTOMER THEY BELONG TO. Null for a public B2C account. Sent so the
@@ -77,6 +79,10 @@ class AdminUserRow(BaseModel):
     # which, and the filter would have to guess from the email domain.
     organization_id: uuid.UUID | None
     organization_name: str | None
+
+    # Made an organisation admin by a platform admin and not approved yet by
+    # a super admin, so switched off until then (`services/approvals`).
+    approval_pending: bool = False
 
 
 class ActivityLogRow(BaseModel):
@@ -296,6 +302,7 @@ async def list_users(
     # Not narrowed: there are rarely more than a handful open at once, and the
     # service owns the query.
     pending_deletions = await deletions.pending_ids(session, DeletionTarget.MEMBER)
+    waiting = await approvals.waiting_ids(session, page_ids)
 
     # One lookup for every organisation rather than one per user. There are a
     # handful of customers, so the whole table is cheaper than a join per row.
@@ -318,12 +325,14 @@ async def list_users(
                 enrollments=enrollment_counts.get(user.id, 0),
                 voice_sessions=count,
                 voice_minutes=seconds // 60,
+                voice_seconds=seconds,
                 has_used_tutor=count > 0,
                 last_session_at=last,
                 organization_id=user.organization_id,
                 organization_name=org_names.get(user.organization_id),
                 suspension_pending=user.id in pending_suspensions,
                 deletion_pending=user.id in pending_deletions,
+                approval_pending=user.id in waiting,
             )
         )
     return AdminUserPage(items=rows, total=total, limit=limit, offset=offset)
@@ -364,11 +373,9 @@ async def list_activity(
         ).all()
     )
 
-    people_scope = (
-        ()
-        if actor.role is UserRole.SUPER_ADMIN
-        else (User.organization_id.is_(None),)
-    )
+    # Every customer for platform staff since the role model of 2026-10-01;
+    # only the staff ladder above a platform admin stays out.
+    people_scope = tuple(admin_users.visible_filter(actor))
 
     rows = (
         await session.execute(
@@ -409,17 +416,17 @@ async def get_usage(
     days: int = Query(default=14, ge=1, le=90),
 ) -> UsageOverview:
     """Aggregates for the admin charts."""
-    # WHOSE NUMBERS THESE ARE. `module_scope` further down kept a customer's
-    # module titles off this page, and every headline above it went on counting
-    # their people, their sessions and their minutes. A count is a smaller leak
-    # than a name and a larger one than nothing: it tells platform staff how
-    # hard a customer is using the product, which is that customer's business
-    # and the super admin's. Issues 44 and 52.
-    public_only = actor.role is not UserRole.SUPER_ADMIN
-    people_scope = (User.organization_id.is_(None),) if public_only else ()
+    # EVERY CUSTOMER, AND NOT THE STAFF ABOVE. Platform staff count across
+    # tenants since the role model of 2026-10-01. What a platform admin still
+    # does not count is the ladder above them: their Users page hides the
+    # super admin, and a card saying 7 beside a list of 6 is a number about
+    # someone they cannot see (issue 44).
+    ladder = admin_users.visible_filter(actor)
+    public_only = bool(ladder)
+    people_scope = tuple(ladder)
     # Sessions belonging to somebody in scope, as a subquery rather than a
     # join, so each aggregate below keeps the shape it already had.
-    in_scope_sessions = select(User.id).where(User.organization_id.is_(None))
+    in_scope_sessions = select(User.id).where(*people_scope)
     session_scope = (
         (VoiceSession.user_id.in_(in_scope_sessions),) if public_only else ()
     )
@@ -488,11 +495,8 @@ async def get_usage(
     # is exactly what the walled garden keeps off other people's screens. An
     # ordinary platform admin sees public course modules only; a super admin
     # sees across tenants, for support.
-    module_scope = (
-        ()
-        if actor.role is UserRole.SUPER_ADMIN
-        else (Course.organization_id.is_(None),)
-    )
+    # Every customer's courses for platform staff since 2026-10-01.
+    module_scope: tuple = ()
 
     per_module = (
         await session.execute(
@@ -560,11 +564,9 @@ async def list_grants(session: DbSession, actor: RequireAdmin) -> list[GrantRow]
     """
     from app.models.certification import CertExam
 
-    people_scope = (
-        ()
-        if actor.role is UserRole.SUPER_ADMIN
-        else (User.organization_id.is_(None),)
-    )
+    # Every customer for platform staff since the role model of 2026-10-01;
+    # only the staff ladder above a platform admin stays out.
+    people_scope = tuple(admin_users.visible_filter(actor))
 
     granter = User.__table__.alias("granter")
     rows = (
@@ -620,6 +622,16 @@ async def grant_attempts(
             status_code=status.HTTP_404_NOT_FOUND, detail="Exam not found."
         )
 
+    # TENANCY, which this write never checked. The listings beside it were
+    # scoped to public accounts, but the grant took any user id and any exam
+    # id, so a platform admin could hand a customer's learner extra attempts.
+    # `can_manage` is the rule every other write on a person follows. 404, not
+    # 403, for the same reason `_manageable` gives. Issue 51.
+    if not admin_users.can_manage(admin, student):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Student not found."
+        )
+
     grant = await certification.grant_extra_attempts(
         session,
         user_id=payload.user_id,
@@ -651,11 +663,8 @@ async def list_all_exams(session: DbSession, actor: RequireAdmin) -> list[dict]:
     from app.models.certification import CertExam
     from app.models.course import Course
 
-    course_scope = (
-        ()
-        if actor.role is UserRole.SUPER_ADMIN
-        else (Course.organization_id.is_(None),)
-    )
+    # Every customer's courses for platform staff since 2026-10-01.
+    course_scope: tuple = ()
 
     rows = (
         await session.execute(
@@ -681,11 +690,11 @@ class RoleUpdate(BaseModel):
     # the dropdown and leaving it in the code is what let a retired role keep
     # the paywall bypass for months — see migration 0025.
     #
-    # SUPER_ADMIN is now assignable, on request. The lockout guard that made it
-    # unassignable is the one BELOW — a super admin still cannot demote another
-    # super admin, so promoting someone can never leave the platform with
-    # nobody able to promote anyone back. Handing out the top role is the
-    # loudest event in the audit trail either way.
+    # SUPER_ADMIN is assignable, on request. The lockout guard is BELOW: the
+    # last active super admin cannot be demoted and nobody changes their own
+    # role, so the platform always keeps somebody able to promote people back.
+    # Handing out the top role is the loudest event in the audit trail either
+    # way.
     role: Literal[UserRole.STUDENT, UserRole.ADMIN, UserRole.SUPER_ADMIN]
 
 
@@ -702,20 +711,29 @@ async def set_user_role(
     admin runs the platform, a super admin decides who gets to.
 
     Two guards worth stating:
-      * you cannot change your own role — a super admin demoting themselves
-        could leave nobody able to promote anyone back;
-      * you cannot demote another super admin, for the same reason in reverse.
+      * the last active super admin cannot be demoted, so there is always
+        somebody able to promote people back. Changing your OWN role is
+        allowed since 2026-10-01 (the user's decision), under the same floor;
+      * nobody inside an organisation is staffed from here.
     """
-    if user_id == admin.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You cannot change your own role.",
-        )
-
     target = await session.get(User, user_id)
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
+        )
+
+    # AN ORGANISATION'S PEOPLE ARE NOT PROMOTED FROM HERE. This could turn an
+    # Acme learner into a platform admin or a super admin and leave them inside
+    # Acme, while a platform account belongs to no organisation:
+    # `create_platform_user` refuses to make one. Their role belongs to their
+    # own organisation's portal, where its admin floor is enforced as well.
+    if target.organization_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{target.name} belongs to an organisation. Their role is "
+                "changed in that organisation's portal, not from here."
+            ),
         )
 
     # DEMOTING A SUPER ADMIN IS ALLOWED NOW, and it was not before. The old rule
@@ -727,24 +745,6 @@ async def set_user_role(
     # super admins are permanent, so the floor counts them instead.
     if target.role is UserRole.SUPER_ADMIN and payload.role is not UserRole.SUPER_ADMIN:
         await admin_users.assert_super_admin_floor(session, target)
-
-    # An org admin demoted to student is an org admin the organization has
-    # lost. The floor is theirs, not this console's, so it applies here too.
-    if (
-        target.organization_id is not None
-        and target.role is UserRole.ORG_ADMIN
-        and payload.role is not UserRole.ORG_ADMIN
-    ):
-        from app.services import organizations as org_service
-
-        try:
-            await org_service.assert_admin_floor_after_change(
-                session, target, still_admin=False
-            )
-        except org_service.AdminFloorError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-            ) from None
 
     previous = target.role
     target.role = payload.role
@@ -942,11 +942,9 @@ async def attempts_overview(session: DbSession, actor: RequireAdmin) -> list[dic
     """
     from app.models.certification import CertExam
 
-    people_scope = (
-        ()
-        if actor.role is UserRole.SUPER_ADMIN
-        else (User.organization_id.is_(None),)
-    )
+    # Every customer for platform staff since the role model of 2026-10-01;
+    # only the staff ladder above a platform admin stays out.
+    people_scope = tuple(admin_users.visible_filter(actor))
 
     rows = (
         await session.execute(

@@ -78,6 +78,13 @@ export default function Avatar({
    * is not offered on an account whose "photo" is a drawn letter.
    */
   onPhotoState,
+  /**
+   * What the caller already knows. `false` means there is no photo, so none
+   * is requested: the header asked on every page for a picture the account
+   * did not have, got a 404, and the browser logged it as a blocked request.
+   * Left out, the component tries and falls back as before.
+   */
+  hasPhoto: known,
   className = "",
 }: {
   userId: string | null | undefined;
@@ -85,6 +92,7 @@ export default function Avatar({
   size?: keyof typeof SIZES;
   version?: string | number;
   onPhotoState?: (has: boolean) => void;
+  hasPhoto?: boolean;
   className?: string;
 }) {
   const [hasPhoto, setHasPhoto] = useState(true);
@@ -113,7 +121,7 @@ export default function Avatar({
       title={name ?? undefined}
     >
       {initial}
-      {hasPhoto && userId ? (
+      {hasPhoto && known !== false && userId ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={photoUrl(userId, version)}

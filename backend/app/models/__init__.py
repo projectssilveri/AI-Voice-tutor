@@ -8,6 +8,7 @@ layout.
 
 from __future__ import annotations
 
+from app.models.approval import AccountApproval, ApprovalKind, ApprovalStatus
 from app.models.assignment import (
     Assignment,
     AssignmentSubmission,
@@ -30,6 +31,12 @@ from app.models.enrollment import Enrollment, ModuleProgress, ProgressStatus
 from app.models.material import ModuleMaterial
 from app.models.message import DirectMessage
 from app.models.order import Order, OrderStatus
+from app.models.org_change import (
+    ChangeAction,
+    ChangeKind,
+    ChangeStatus,
+    OrgChangeRequest,
+)
 from app.models.org_document import DocumentVisibility, OrganizationDocument
 from app.models.organization import Branch, Department, Organization
 from app.models.profile import AccessExtension, UserAvatar
@@ -48,6 +55,9 @@ from app.models.voice import Transcript, TranscriptRole, VoiceSession
 
 __all__ = [
     "AccessExtension",
+    "AccountApproval",
+    "ApprovalKind",
+    "ApprovalStatus",
     "Assignment",
     "AssignmentSubmission",
     "AttemptGrant",
@@ -60,6 +70,9 @@ __all__ = [
     "CertAttempt",
     "CertExam",
     "Certificate",
+    "ChangeAction",
+    "ChangeKind",
+    "ChangeStatus",
     "ContactMessage",
     "Course",
     "DeletionRequest",
@@ -76,6 +89,7 @@ __all__ = [
     "ModuleProgress",
     "Order",
     "OrderStatus",
+    "OrgChangeRequest",
     "Organization",
     "OrganizationDocument",
     "PlanCourse",

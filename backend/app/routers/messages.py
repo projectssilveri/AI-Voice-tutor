@@ -30,7 +30,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import aliased
 
 from app.deps import CurrentUser, DbSession, RequireAdmin
@@ -137,6 +137,7 @@ async def _resolve_support(session: DbSession, sender: User) -> User:
                 User.organization_id == sender.organization_id,
                 User.role == UserRole.ORG_ADMIN,
                 User.is_active.is_(True),
+                User.id != sender.id,
             )
             .order_by(User.created_at)
             .limit(1)
@@ -146,10 +147,19 @@ async def _resolve_support(session: DbSession, sender: User) -> User:
         # An organization with no active admin should not swallow the message —
         # fall through to the platform, which can at least chase it up.
 
+    # A PLATFORM ADMIN FIRST, the super admin only when there is none. This
+    # sorted on the role column, which is text, so "super_admin" came before
+    # "admin" and every learner's question landed in the super admin's inbox:
+    # the one inbox platform admins do not read (issue 48). Never the sender,
+    # so a platform admin writing to support reaches someone else.
     found = await session.scalar(
         select(User)
-        .where(User.role.in_(PLATFORM_SUPPORT), User.is_active.is_(True))
-        .order_by(User.role.desc(), User.created_at)
+        .where(
+            User.role.in_(PLATFORM_SUPPORT),
+            User.is_active.is_(True),
+            User.id != sender.id,
+        )
+        .order_by(case((User.role == UserRole.ADMIN, 0), else_=1), User.created_at)
         .limit(1)
     )
     if found is None:
@@ -182,19 +192,11 @@ async def send_message(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No such recipient."
             )
         # Organization staff stay inside their own organization, the same rule
-        # `require_org_scope` applies everywhere else. A platform admin is not
-        # widened here either: messaging a customer's staff is support access,
-        # which decision 159 keeps with the super admin.
+        # `require_org_scope` applies everywhere else. Platform staff, both
+        # tiers since the role model of 2026-10-01, may write to a customer's
+        # people: that is support access, and it is theirs now.
         if sender.organization_id is not None and (
             found.organization_id != sender.organization_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="No such recipient."
-            )
-        if (
-            sender.role is UserRole.ADMIN
-            and sender.organization_id is None
-            and found.organization_id is not None
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No such recipient."
@@ -319,8 +321,10 @@ async def who_i_can_write_to(
     if user.organization_id is not None:
         filters.append(User.organization_id == user.organization_id)
     elif user.role is UserRole.ADMIN:
-        # An ordinary platform admin sees platform users only (decision 171).
-        filters.append(User.organization_id.is_(None))
+        # A platform admin writes to anyone below them, customers' people
+        # included since 2026-10-01, but not to the super admin, who is off
+        # their Users page as well.
+        filters.append(User.role != UserRole.SUPER_ADMIN)
     if q:
         pattern = f"%{q.strip()}%"
         filters.append(or_(User.name.ilike(pattern), User.email.ilike(pattern)))
@@ -355,12 +359,15 @@ async def all_messages(
     support inbox that depends on one person being at their desk is not a
     support inbox.
 
-    Scoped the same way as the audit trail: an ordinary platform admin does not
-    read a customer's correspondence.
+    Platform staff read every customer's correspondence since the role model
+    of 2026-10-01. A platform admin still does not read the super admin's: the
+    Users page hides the staff above them, and this page printed the super
+    admin's name, address and every message to them (issue 48).
     """
     filters = []
     if admin.role is not UserRole.SUPER_ADMIN:
-        filters.append(Sender.organization_id.is_(None))
+        filters.append(Sender.role != UserRole.SUPER_ADMIN)
+        filters.append(Recipient.role != UserRole.SUPER_ADMIN)
     if q:
         pattern = f"%{q.strip()}%"
         filters.append(

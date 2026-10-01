@@ -35,6 +35,10 @@ export default function ProfilePhoto() {
 
   if (!user) return null;
 
+  // What the session says, when it says. The avatar only reports back if it
+  // fetched something, and with `has_photo` false it no longer fetches.
+  const showsPhoto = user.has_photo ?? hasPhoto;
+
   async function choose(file: File | undefined) {
     if (!file) return;
     setError(null);
@@ -91,6 +95,7 @@ export default function ProfilePhoto() {
         size="xl"
         version={photoVersion}
         onPhotoState={setHasPhoto}
+        hasPhoto={user.has_photo}
       />
 
       <div>
@@ -100,7 +105,7 @@ export default function ProfilePhoto() {
         <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
           JPEG, PNG, GIF or WebP, up to 2MB. People you work with or message see
           it next to your name.
-          {hasPhoto === false
+          {showsPhoto === false
             ? " You have not added one, so we show your initial instead."
             : ""}
         </p>
@@ -132,7 +137,7 @@ export default function ProfilePhoto() {
               A greyed-out button still asks to be clicked; an absent one
               answers the question. The letter in the square is a fallback we
               draw, not a picture anybody uploaded. */}
-          {hasPhoto !== false ? (
+          {showsPhoto !== false ? (
             <button
               type="button"
               disabled={busy}

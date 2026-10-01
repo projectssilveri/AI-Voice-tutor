@@ -23,7 +23,9 @@ from app.db.session import dispose_engine
 from app.middleware import AuditMiddleware, RejectNulBytes, SecurityHeaders
 from app.routers import (
     admin,
+    admin_approvals,
     admin_bundles,
+    admin_deletions,
     admin_refunds,
     admin_reviews,
     admin_suspensions,
@@ -171,7 +173,9 @@ def create_app() -> FastAPI:
         reports,
         analytics,
         admin,
+        admin_approvals,
         admin_bundles,
+        admin_deletions,
         admin_refunds,
         admin_reviews,
         admin_suspensions,

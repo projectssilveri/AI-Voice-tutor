@@ -13,8 +13,10 @@ Roles inside an organization:
     DEPT_ADMIN       one department: its people and its training
     STUDENT          learns
 
-A platform SUPER_ADMIN may enter any tenant for support, and every such request
-is recorded — see `AuditAction.PLATFORM_ACCESSED_ORG`.
+Platform staff (a super admin or, since 2026-10-01, a platform admin) may enter
+any tenant for support, and every such request is recorded: see
+`AuditAction.PLATFORM_ACCESSED_ORG`. An administrator a platform admin makes
+here waits for a super admin (`services/approvals`).
 """
 
 from __future__ import annotations
@@ -36,11 +38,22 @@ from app.deps import (
     OrgManagerScope,
     OrgScope,
 )
+from app.models.approval import ApprovalKind
 from app.models.audit import AuditAction, AuditEvent
 from app.models.deletion import DeletionRequest, DeletionStatus, DeletionTarget
+from app.models.org_change import ChangeAction, ChangeKind
 from app.models.organization import Branch, Department, Organization
 from app.models.user import User, UserRole
-from app.services import access, accounts, audit, conflicts, deletions, limits
+from app.services import (
+    access,
+    accounts,
+    approvals,
+    audit,
+    conflicts,
+    deletions,
+    limits,
+    org_changes,
+)
 from app.services import organizations as org_service
 
 router = APIRouter(prefix="/org/{slug}", tags=["organization portal"])
@@ -91,11 +104,12 @@ ORG_ASSIGNABLE_ROLES = (
 
 # NOBODY HANDS OUT MORE POWER THAN THEY HOLD.
 #
-# An org admin may create users and managers, and other admins — their own
-# level and everything under it. A branch manager runs the people in their
-# branch, so they may create learners and department admins, and not another
-# manager or an org admin. Without a rank, "assignable inside an organization"
-# would let a branch manager promote themselves to org admin in one request.
+# Everybody may assign their own level and everything under it. An org admin
+# may create users, managers and other admins. A branch manager runs the people
+# in their branch, so they may create learners, department admins and a second
+# manager for that branch, never an org admin. Without a rank, "assignable
+# inside an organization" would let a branch manager promote themselves to org
+# admin in one request.
 ROLE_RANK = {
     # Platform staff, doing support inside a customer's tenant. Absent from
     # this table, `ROLE_RANK.get(SUPER_ADMIN, -1)` was -1 — BELOW a learner —
@@ -104,6 +118,9 @@ ROLE_RANK = {
     # re-role. Above ORG_ADMIN, because they can already do everything an org
     # admin can (`OrgContext.is_org_admin` returns True for them).
     UserRole.SUPER_ADMIN: 5,
+    # A platform admin does the same support work since 2026-10-01. Their new
+    # administrators wait for a super admin (`services/approvals`).
+    UserRole.ADMIN: 5,
     UserRole.STUDENT: 0,
     # A department admin sits under a branch manager because a branch contains
     # departments: a branch manager may appoint the HR admin inside their site,
@@ -160,6 +177,15 @@ class OrgMember(BaseModel):
     department_id: uuid.UUID | None
     department_name: str | None
     created_at: datetime
+    # Made an administrator by a platform admin, and not approved yet by a
+    # super admin (`services/approvals`). A new account stays switched off,
+    # a promotion stays unapplied, until then.
+    pending_approval: bool = False
+    # A branch manager's or department admin's edit, waiting for the
+    # organisation admin (Sir's rule of 2026-10-01, `services/org_changes`).
+    # The row is returned UNCHANGED with this set, so the screen can say the
+    # change was sent rather than applied.
+    change_requested: bool = False
 
 
 class MemberCreate(BaseModel):
@@ -172,6 +198,10 @@ class MemberCreate(BaseModel):
     role: UserRole = UserRole.STUDENT
     branch_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
+    # Why, when a branch manager or department admin adds somebody: their
+    # creation waits for the org admin (Sir's rule, 2026-10-01). Ignored for an
+    # org admin or platform staff, who act directly.
+    reason: str | None = Field(default=None, max_length=2_000)
 
 
 class MemberUpdate(BaseModel):
@@ -184,8 +214,24 @@ class MemberUpdate(BaseModel):
     is_active: bool | None = None
     branch_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
+    # Why, for a branch manager's or department admin's edit, which waits for
+    # the org admin. Not a member field, so it is left out when applied.
+    reason: str | None = Field(default=None, max_length=2_000)
     # `email` is absent: it is the sign-in identifier, globally unique, and
     # changing it silently locks someone out of an account they still hold.
+
+
+class MemberCreateResult(BaseModel):
+    """Added at once, or sent to the org admin to approve.
+
+    A branch manager or department admin gets `requested=True` and no member:
+    nothing exists until the org admin approves. An org admin or platform staff
+    gets the new member.
+    """
+
+    requested: bool
+    member: OrgMember | None = None
+    message: str | None = None
 
 
 class MemberList(BaseModel):
@@ -275,6 +321,7 @@ async def _member_row(session: DbSession, user: User) -> OrgMember:
         department_id=user.department_id,
         department_name=department.name if department else None,
         created_at=user.created_at,
+        pending_approval=await approvals.open_for(session, user.id) is not None,
     )
 
 
@@ -439,10 +486,14 @@ async def list_members(session: DbSession, scope: OrgScope) -> MemberList:
     )
 
 
-@router.post("/members", response_model=OrgMember, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/members",
+    response_model=MemberCreateResult,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_member(
     payload: MemberCreate, session: DbSession, scope: OrgManagerScope
-) -> OrgMember:
+) -> MemberCreateResult:
     """Create a person inside this organization.
 
     There is no public signup into an organization, by design: membership is
@@ -525,7 +576,50 @@ async def create_member(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from None
 
+    # A BRANCH MANAGER OR DEPARTMENT ADMIN DOES NOT CREATE DIRECTLY. Sir's rule
+    # of 2026-10-01: the account is not made until the org admin approves. The
+    # password is stored already hashed on the request, so nothing is kept in
+    # the clear, and the account is built from it at approval.
+    if org_changes.needs_approval(scope.user):
+        try:
+            await org_changes.request(
+                session,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.MEMBER,
+                action=ChangeAction.CREATE,
+                target_id=None,
+                label=f"{payload.name.strip()} ({email})",
+                reason=payload.reason or "",
+                actor=scope.user,
+                payload={
+                    "name": payload.name.strip(),
+                    "email": email,
+                    "role": payload.role.value,
+                    "branch_id": str(branch_id) if branch_id else None,
+                    "department_id": str(department_id) if department_id else None,
+                    "hashed_password": password_helper.hash(payload.password),
+                },
+            )
+        except org_changes.ChangeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        await session.commit()
+        return MemberCreateResult(
+            requested=True,
+            message=(
+                f"{payload.name.strip()} has not been added yet. The "
+                "organisation administrator has to approve it."
+            ),
+        )
+
+    # A PLATFORM ADMIN'S NEW ADMINISTRATOR WAITS for a super admin (role model
+    # of 2026-10-01). Made switched off, so it cannot sign in until approved.
+    waits = approvals.needs_approval(scope.user, payload.role)
+
     member = User(
+        # Set here rather than at flush, so the audit row below can name it.
+        id=uuid.uuid4(),
         name=payload.name.strip(),
         email=email,
         hashed_password=password_helper.hash(payload.password),
@@ -533,7 +627,7 @@ async def create_member(
         organization_id=scope.organization.id,
         branch_id=branch_id,
         department_id=department_id,
-        is_active=True,
+        is_active=not waits,
         is_verified=True,  # an admin vouched for them; there is no email to verify through
     )
     session.add(member)
@@ -550,6 +644,19 @@ async def create_member(
         target_id=member.id,
         metadata={"role": member.role.value},
     )
+    if waits:
+        try:
+            await approvals.request(
+                session,
+                user=member,
+                organization_id=scope.organization.id,
+                kind=ApprovalKind.NEW_ACCOUNT,
+                actor=scope.user,
+            )
+        except approvals.ApprovalError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
     # THE FLOOR UNDER THE CHECK ABOVE. The address is looked up before this and
     # answers 409 cleanly; two administrators adding the same colleague at the
     # same moment both pass that lookup, and only `ix_users_email` can refuse
@@ -559,7 +666,7 @@ async def create_member(
     ):
         await session.commit()
     await session.refresh(member)
-    return await _member_row(session, member)
+    return MemberCreateResult(requested=False, member=await _member_row(session, member))
 
 
 @router.patch("/members/{member_id}", response_model=OrgMember)
@@ -641,6 +748,17 @@ async def update_member(
                 detail="You cannot move somebody out of your own department.",
             )
 
+    # NOR A BRANCH MANAGER OUT OF THEIR BRANCH, and that includes their own
+    # row. Their reach IS their own `branch_id`, so a London manager who moved
+    # themselves to Leeds became Leeds's manager in one request. Same rule as
+    # `create_member`, where a manager's branch is forced, not chosen.
+    if scope.is_branch_manager and "branch_id" in payload.model_fields_set:
+        if payload.branch_id != scope.scoped_branch_id():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot move somebody out of your own branch.",
+            )
+
     # Nor hand one of their people sight of every other department. That flag
     # is how an HR or IT manager sees across the whole company (decision 223),
     # and letting a department admin set it would make the wall optional from
@@ -676,13 +794,89 @@ async def update_member(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
 
+    # NOBODY SWITCHES ON OR PROMOTES A PERSON A SUPER ADMIN HAS NOT APPROVED.
+    # The account is only switched off while it waits, so any screen that can
+    # switch an account on would otherwise make the approval a suggestion. A
+    # declined one stays off for a platform admin as well.
+    role_changes = payload.role is not None and payload.role is not member.role
+    switching_on = payload.is_active is True and not member.is_active
+    if switching_on or role_changes:
+        try:
+            if switching_on:
+                await approvals.assert_may_switch_on(session, member, scope.user)
+            else:
+                await approvals.assert_not_waiting(session, member.id)
+        except approvals.ApprovalError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+
+    # A BRANCH MANAGER OR DEPARTMENT ADMIN DOES NOT EDIT DIRECTLY. Sir's rule
+    # of 2026-10-01: their change waits for the organisation admin. The guards
+    # above have already run, so this only proposes something they are allowed
+    # to, and nothing on the member moves until the org admin approves. The
+    # reason comes in on the payload.
+    if org_changes.needs_approval(scope.user):
+        fields = payload.model_dump(exclude_unset=True, exclude={"reason"})
+        if not fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Nothing to change."
+            )
+        proposed = {
+            key: (str(value) if isinstance(value, uuid.UUID) else value)
+            for key, value in fields.items()
+        }
+        if "role" in proposed and payload.role is not None:
+            proposed["role"] = payload.role.value
+        try:
+            await org_changes.request(
+                session,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.MEMBER,
+                action=ChangeAction.EDIT,
+                target_id=member.id,
+                label=f"{member.name} ({member.email})",
+                reason=payload.reason or "",
+                actor=scope.user,
+                payload=proposed,
+            )
+        except org_changes.ChangeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        await session.commit()
+        row = await _member_row(session, member)
+        row.change_requested = True
+        return row
+
+    # A PLATFORM ADMIN RAISING SOMEBODY TO ADMINISTRATOR asks a super admin
+    # first (role model of 2026-10-01). Their role stays as it is until then;
+    # every other change in the same request still applies.
+    promotion_waits = role_changes and approvals.needs_approval(
+        scope.user, payload.role
+    )
+
     changed: dict[str, object] = {}
     previous_role = member.role
 
     if payload.name is not None:
         member.name = payload.name.strip()
         changed["name"] = member.name
-    if payload.role is not None and payload.role is not member.role:
+    if promotion_waits:
+        try:
+            await approvals.request(
+                session,
+                user=member,
+                organization_id=scope.organization.id,
+                kind=ApprovalKind.PROMOTION,
+                actor=scope.user,
+            )
+        except approvals.ApprovalError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        changed["role_requested"] = UserRole.ORG_ADMIN.value
+    elif payload.role is not None and payload.role is not member.role:
         member.role = payload.role
         changed["role"] = f"{previous_role.value} -> {member.role.value}"
     if payload.sees_all_departments is not None:
@@ -738,14 +932,17 @@ async def remove_member(
 ) -> MemberRemoval:
     """Remove someone from the organization, or ask an administrator to.
 
-    An ADMINISTRATOR removes: the account is deleted outright when it has no
-    history, and closed when it does — see `services/accounts.py` for why those
-    are different operations and why the caller is told which one ran.
+    PLATFORM STAFF remove; an org admin removes a branch manager or a
+    department admin; a branch manager or department admin removes the people
+    in their own branch or department. The account is deleted outright when
+    it has no history, and closed when it does. See `services/accounts.py`
+    for why those are different operations and why the caller is told which
+    one ran.
 
-    A BRANCH OR DEPARTMENT MANAGER asks: 202, the account is untouched, and it
-    waits in the administrators' queue. `outcome` is "requested" in that case,
-    which is how the screen knows to say so rather than announcing a removal
-    that has not happened.
+    AN ORG ADMIN REMOVING A LEARNER OR ANOTHER ADMIN asks: 202, the account is
+    untouched, and it waits for a Platform Admin or Super Admin. `outcome` is
+    "requested" in that case, which is how the screen knows to say so rather
+    than announcing a removal that has not happened.
 
     Same guards as editing either way: a branch manager may only reach their own
     branch's people, nobody senior to them, and nobody may remove themselves.
@@ -781,50 +978,32 @@ async def remove_member(
 
     _manageable(scope, member)
 
-    # A MANAGER ASKS; AN ADMINISTRATOR DECIDES.
-    #
-    # This route is `OrgManagerScope`, which is org admins AND branch managers
-    # AND department admins. Until now all three could remove somebody outright
-    # — a department admin could delete a colleague with no administrator ever
-    # seeing it. Removing a person is the most destructive thing in this portal
-    # and it was the least supervised.
-    #
-    # An org admin pressing this is already the decider, so they still act
-    # immediately; the row below records it as raised and approved in the same
-    # moment, so the history has one shape whoever acted.
-    if scope.user.role is not UserRole.ORG_ADMIN:
+    # WHO REMOVES AT ONCE, AND WHO ASKS (Sir's rule of 2026-10-01). An org admin
+    # removes directly, and so does platform staff acting in the tenant. A
+    # branch manager or department admin asks, and the org admin approves.
+    if org_changes.needs_approval(scope.user):
         try:
-            request = await deletions.request_deletion(
+            await org_changes.request(
                 session,
-                organization=scope.organization,
-                target_type=DeletionTarget.MEMBER,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.MEMBER,
+                action=ChangeAction.DELETE,
                 target_id=member.id,
-                target_label=f"{member.name} ({member.email})",
-                actor=scope.user,
+                label=f"{member.name} ({member.email})",
                 reason=reason,
+                actor=scope.user,
             )
-        except deletions.DeletionError as exc:
+        except org_changes.ChangeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
-
-        await audit.record(
-            session,
-            action=AuditAction.DELETION_REQUESTED,
-            actor=scope.user,
-            organization_id=scope.organization.id,
-            target_type="user",
-            target_id=member.id,
-            metadata={"reason": request.reason, "request": str(request.id)},
-        )
         await session.commit()
-
         response.status_code = status.HTTP_202_ACCEPTED
         return MemberRemoval(
             outcome="requested",
             explanation=(
-                f"{member.name} has not been removed. An administrator has to "
-                "approve it, and it is waiting on them."
+                f"{member.name} has not been removed. The organisation "
+                "administrator has to approve it."
             ),
         )
 
@@ -845,15 +1024,19 @@ async def remove_member(
     # failure leaves no orphan. `pre_approved` is honest about what it is: one
     # person's decision, not two.
     try:
-        await deletions.request_deletion(
+        await deletions.record_direct(
             session,
             organization=scope.organization,
             target_type=DeletionTarget.MEMBER,
             target_id=member.id,
             target_label=f"{member.name} ({member.email})",
             actor=scope.user,
-            reason=reason or "Removed by an organisation administrator.",
-            pre_approved=True,
+            reason=reason
+            or (
+                "Removed by platform staff."
+                if scope.user.role in deletions.DECIDERS
+                else "Removed by an organisation administrator."
+            ),
         )
     except deletions.DeletionError as exc:
         raise HTTPException(
@@ -883,10 +1066,11 @@ async def remove_member(
 # Deletions waiting on this organization
 # ---------------------------------------------------------------------------
 #
-# ONE QUEUE, TWO SOURCES. Platform staff ask from the admin console; a branch or
-# department manager asks from inside the portal. The decider is the same person
-# either way — this organization's own administrator — so putting them in two
-# places would only mean two screens to remember to check.
+# WHAT THIS ORGANIZATION HAS ASKED TO DELETE. Its admins, branch managers and
+# department admins ask from inside the portal; a Platform Admin or Super Admin
+# decides, here or from the console's Deletion requests page
+# (`routers/admin_deletions.py`). The organization's admins see the queue and
+# what was decided; they no longer decide it (2026-10-01).
 
 
 class DeletionRequestRow(BaseModel):
@@ -930,10 +1114,26 @@ async def _deletion_rows(
         found = await session.scalars(select(User).where(User.id.in_(ids)))
         people = {person.id: person for person in found}
 
+    def shown(person: User | None) -> tuple[str | None, str | None]:
+        # A PLATFORM ADMIN DOES NOT SEE THE STAFF ABOVE THEM, here either: a
+        # super admin, or another platform admin, is named by their tier only.
+        if person is None:
+            return None, None
+        if (
+            reader.role is UserRole.ADMIN
+            and person.id != reader.id
+            and person.role in access.STAFF_ROLES
+        ):
+            tier = "A Super Admin" if person.role is UserRole.SUPER_ADMIN else "Platform staff"
+            return tier, None
+        return person.name, person.email
+
     rows = []
     for request in requests:
-        asked = people.get(request.requested_by)
-        decided = people.get(request.decided_by) if request.decided_by else None
+        asked_name, asked_email = shown(people.get(request.requested_by))
+        decided_name, _ = shown(
+            people.get(request.decided_by) if request.decided_by else None
+        )
         rows.append(
             DeletionRequestRow(
                 id=request.id,
@@ -943,11 +1143,11 @@ async def _deletion_rows(
                 reason=request.reason,
                 status=request.status.value,
                 requested_at=request.requested_at,
-                requested_by_name=asked.name if asked else None,
-                requested_by_email=asked.email if asked else None,
+                requested_by_name=asked_name,
+                requested_by_email=asked_email,
                 requested_by_me=request.requested_by == reader.id,
                 decided_at=request.decided_at,
-                decided_by_name=decided.name if decided else None,
+                decided_by_name=decided_name,
                 decision_note=request.decision_note,
                 outcome=request.outcome,
             )
@@ -961,7 +1161,7 @@ async def list_deletion_requests(
     scope: OrgAdminScope,
     include_decided: bool = False,
 ) -> list[DeletionRequestRow]:
-    """What is waiting on this organization's administrators.
+    """What this organization has asked to delete, and what was decided.
 
     ADMIN SCOPE, not manager scope. A branch manager who could read the queue
     could read every reason anybody gave for wanting anybody removed, which is

@@ -20,6 +20,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Boolean,
     Enum,
     ForeignKey,
     Integer,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,6 +93,16 @@ class OrganizationDocument(TimestampMixin, Base):
         ),
         nullable=False,
         server_default=DocumentVisibility.ORGANIZATION.value,
+    )
+
+    # UPLOADED BY A BRANCH OR DEPARTMENT ADMIN, NOT YET APPROVED. Sir's rule of
+    # 2026-10-01: a manager's upload waits for the org admin. The file is stored
+    # at once but hidden until then, so the listings and the file fetch filter
+    # this out for everyone. Approving clears it; declining deletes the row.
+    # Default false, so an org admin's or platform staff's upload is visible at
+    # once, as is every document that existed before this column.
+    pending_approval: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
     )
 
     # What the uploader called it, which is not the filename: "Code of Conduct

@@ -97,8 +97,11 @@ export default function RequireAuth({
           >
             Go to your dashboard
           </Link>
+          {/* The page asked about travels with the link, so the Help box
+              opens ready to write with it filled in. It opened on an empty
+              "Received" tab with nothing to say which page was wanted. */}
           <Link
-            href="/profile#help-and-support"
+            href={`/profile?ask=${encodeURIComponent(pathname)}#help-and-support`}
             className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-white/5"
           >
             Ask for access

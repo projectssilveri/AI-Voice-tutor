@@ -38,15 +38,14 @@ router = APIRouter(tags=["certification"])
 
 admin_only = Depends(require_role(UserRole.ADMIN))
 
-# AUTHORING IS SUPER ADMIN ONLY (issue 11). `require_role(ADMIN)` widens
-# upwards to include super admins; this one does not widen, because the point
-# is to exclude the platform admin who previously satisfied it.
+# AUTHORING IS PLATFORM STAFF. It was super admin only (issue 11) until the
+# role model of 2026-10-01 gave platform admins the super admin's work.
 #
 # The ORGANISATION portal is untouched. An org admin writes their own company's
 # training through `/org/{slug}/courses`, a different router with its own scope
 # check — what a customer may write about their own business is not this rule's
-# business.
-super_admin_only = Depends(require_role(UserRole.SUPER_ADMIN))
+# business. `require_role(ADMIN)` widens upwards to super admins.
+platform_staff_only = Depends(require_role(UserRole.ADMIN))
 
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -705,7 +704,7 @@ async def list_my_attempts(
     "/courses/{course_id}/cert-exams",
     response_model=CertExamRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[super_admin_only],
+    dependencies=[platform_staff_only],
 )
 async def create_exam(
     course_id: uuid.UUID,

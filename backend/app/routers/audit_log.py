@@ -155,21 +155,13 @@ def _filters(
     """
     filters: list[ColumnElement[bool]] = []
 
-    # An ordinary platform admin reads PLATFORM activity only. Customer
-    # organizations keep their own trail, and it names their staff, their
-    # addresses and what they trained on — which decision 50 puts above
-    # ordinary admin, alongside revenue and role management. Verified before
-    # this line existed: an admin could read 123 events belonging to two
-    # customers, naming seven of their people.
-    #
-    # A super admin still sees everything, for support; org admins read their
-    # own organization's trail at /org/{slug}/audit.
-    if admin.role is not UserRole.SUPER_ADMIN:
-        filters.append(AuditEvent.organization_id.is_(None))
-        filters.extend(_hidden_staff(admin))
-    elif organization_id is not None:
-        # Only meaningful for a super admin — an ordinary admin's rows are all
-        # NULL, so offering them this filter would be offering them nothing.
+    # PLATFORM STAFF READ EVERY ORGANISATION'S TRAIL. A platform admin was
+    # held to platform activity until the role model of 2026-10-01 gave them
+    # the super admin's reach into customers. What they still do not see is
+    # the staff ladder above them (`_hidden_staff`), as on the Users page.
+    # Org admins read their own organization's trail at /org/{slug}/audit.
+    filters.extend(_hidden_staff(admin))
+    if organization_id is not None:
         filters.append(AuditEvent.organization_id == organization_id)
 
     if action:
@@ -358,11 +350,9 @@ async def list_audit_facets(session: DbSession, admin: RequireAdmin) -> AuditFac
     Kept at the original path so an existing client asking for `.actions` still
     gets it.
     """
-    scope: list[ColumnElement[bool]] = (
-        []
-        if admin.role is UserRole.SUPER_ADMIN
-        else [AuditEvent.organization_id.is_(None), *_hidden_staff(admin)]
-    )
+    # Every organisation for platform staff; only the ladder above a
+    # platform admin stays out (role model of 2026-10-01).
+    scope: list[ColumnElement[bool]] = list(_hidden_staff(admin))
 
     actions = (
         await session.scalars(
@@ -393,7 +383,7 @@ async def list_audit_facets(session: DbSession, admin: RequireAdmin) -> AuditFac
     ).all()
 
     organizations: list[AuditOrganizationFacet] = []
-    if admin.role is UserRole.SUPER_ADMIN:
+    if admin.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
         # Only the organizations that actually appear in the trail. An empty
         # filter option is a dead end dressed up as a choice.
         found = (
@@ -434,11 +424,9 @@ async def list_audit_actors(
     the same rule as the listing, or this would be a staff directory of every
     customer, handed to any platform admin.
     """
-    scope: list[ColumnElement[bool]] = (
-        []
-        if admin.role is UserRole.SUPER_ADMIN
-        else [AuditEvent.organization_id.is_(None), *_hidden_staff(admin)]
-    )
+    # Every organisation for platform staff; only the ladder above a
+    # platform admin stays out (role model of 2026-10-01).
+    scope: list[ColumnElement[bool]] = list(_hidden_staff(admin))
     if q:
         pattern = f"%{q.strip()}%"
         scope.append(or_(User.name.ilike(pattern), User.email.ilike(pattern)))

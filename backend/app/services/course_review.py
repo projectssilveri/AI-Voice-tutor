@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course, CourseReviewStatus
 from app.models.user import User, UserRole
+from app.services import payments
 
 
 class ReviewError(ValueError):
@@ -156,7 +157,10 @@ async def approve(
     course.reviewed_at = datetime.now(UTC)
     course.review_note = (note or "").strip() or None
     if publish:
+        went_live = not course.is_published
         course.is_published = True
+        if went_live:
+            await payments.enrol_holders(session, [course.id])
     return course
 
 
@@ -198,7 +202,7 @@ async def reject(
 async def apply_publish_flag(
     session: AsyncSession, *, course: Course, publish: bool, actor: User
 ) -> Course:
-    """Set `is_published` from the super admin's own toggle. Does not commit.
+    """Set `is_published` from platform staff's own toggle. Does not commit.
 
     The one place the publish bit is allowed to move, so the "only an approved
     course may be published" rule cannot be forgotten by a route that sets the
@@ -213,9 +217,29 @@ async def apply_publish_flag(
     not "unapproved": decision 62 already establishes that a course taken down
     keeps its history, and forcing a full re-review to put it back would make
     the owner's own toggle a one-way door.
+
+    A PLATFORM ADMIN TOO, since the role model of 2026-10-01 gave them the
+    catalogue: they take a course off sale and put an approved one back. A
+    course NOBODY HAS APPROVED is different. Only the super admin has Course
+    approvals (the user's rule), so a platform admin pressing Publish on one
+    sends it to them instead (`submit_for_review`); it goes live when they
+    approve it.
+
+    Going live also enrols whoever already holds a bundle with the course in
+    it, which is what they were promised when they took the bundle.
     """
-    if actor.role is not UserRole.SUPER_ADMIN:
-        raise ReviewError("Only the super admin can publish a course.")
+    if actor.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        raise ReviewError("Only platform staff can publish a course.")
+
+    if (
+        publish
+        and actor.role is UserRole.ADMIN
+        and course.review_status is not CourseReviewStatus.APPROVED
+    ):
+        # `submit_for_review` counts the modules through the relationship,
+        # which an async session will not load lazily.
+        await session.refresh(course, attribute_names=["modules"])
+        return await submit_for_review(session, course=course, actor=actor)
 
     if publish and course.review_status is not CourseReviewStatus.APPROVED:
         course.review_status = CourseReviewStatus.APPROVED
@@ -223,5 +247,8 @@ async def apply_publish_flag(
         course.reviewed_at = datetime.now(UTC)
         course.review_note = None
 
+    went_live = publish and not course.is_published
     course.is_published = publish
+    if went_live:
+        await payments.enrol_holders(session, [course.id])
     return course

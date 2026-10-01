@@ -25,7 +25,10 @@ export default function SignInForm() {
   // rule still belongs to a real account that has to be able to get in.
   const [emailTouched, setEmailTouched] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
-  const emailProblem = email ? validateEmail(email) : null;
+  // No "only once something is typed" guard on the email. It hid "Enter your
+  // email address" from an empty box: a submit with the password alone was
+  // refused with no message at all, while the password side always said why.
+  const emailProblem = validateEmail(email);
   const passwordProblem = password ? null : "Enter your password";
   // Only a REJECTED sign-in gets the extra links. A network failure or a
   // server error is not a reason to suggest making a second account.
@@ -53,11 +56,11 @@ export default function SignInForm() {
     // at the top, where it does not say which box it means, and once under the
     // box, which is the only one that helps. The banner is for what the server
     // says, which belongs to no single field.
-    if (validateEmail(email)) {
+    //
+    // Both marked at once, as the sign-up form does, so two empty boxes show
+    // two messages on the first press rather than one per attempt.
+    if (emailProblem || passwordProblem) {
       setEmailTouched(true);
-      return;
-    }
-    if (!password) {
       setPasswordTouched(true);
       return;
     }

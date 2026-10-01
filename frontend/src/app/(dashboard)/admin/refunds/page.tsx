@@ -386,7 +386,7 @@ export default function RefundsPage() {
   // risk — the API refuses them — but a student has no business looking
   // at the shape of the money screens.
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <RefundsAdmin />
     </RequireAuth>
   );

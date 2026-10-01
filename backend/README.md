@@ -57,7 +57,9 @@ alembic downgrade -1                                  # undo one
 
 ## Schema
 
-All thirteen tables from the original schema exist as of migration `0001_initial_schema`.
+All initial tables were created in migration `0001_initial_schema`.
+The schema has since grown to 31 migrations covering organizations, assignments,
+subscriptions, audit events, messaging, certification, payments, and more.
 Models live in `app/models/`, one module per domain, all re-exported from
 `app/models/__init__.py` so Alembic sees them.
 

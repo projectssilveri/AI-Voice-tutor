@@ -202,8 +202,8 @@ def require_org_scope(
     reaching Globex's URL is the leak that matters, and a role check alone
     would let it through.
 
-    A platform SUPER_ADMIN passes for support access, and that access is
-    recorded. Nobody else crosses a tenant line, ever.
+    Platform staff (a super admin or a platform admin) pass for support
+    access, and that access is recorded. Nobody else crosses a tenant line.
 
     404 rather than 403 for a non-member: whether a given organization exists
     is not a stranger's business, and confirming it would turn this into a
@@ -230,7 +230,9 @@ def require_org_scope(
                 detail="Organization not found.",
             )
 
-        platform_staff = user.role is UserRole.SUPER_ADMIN
+        # Both platform tiers, since 2026-10-01: a platform admin has the
+        # super admin's reach into customers, logged the same way below.
+        platform_staff = user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
         belongs = user.organization_id == organization.id
 
         if not belongs and not platform_staff:

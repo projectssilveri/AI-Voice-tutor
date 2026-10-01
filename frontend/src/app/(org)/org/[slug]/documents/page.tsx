@@ -51,6 +51,7 @@ export default function OrgDocumentsPage() {
   const [structure, setStructure] = useState<OrgStructure | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [adding, setAdding] = useState(false);
@@ -108,6 +109,7 @@ export default function OrgDocumentsPage() {
   // theirs to remove is `document.can_edit`, decided per row by the server.
   const canWrite = profile?.can_author ?? false;
   const isDeptAdmin = profile?.is_dept_admin ?? false;
+  const staff = profile?.is_platform_staff ?? false;
 
   // Departments narrowed to the chosen branch, plus the organization-wide
   // ones — a department under another branch is not a valid choice.
@@ -163,6 +165,14 @@ export default function OrgDocumentsPage() {
           className="mb-6 rounded-2xl border border-error-500 bg-error-50 p-4 text-sm text-error-700 dark:bg-error-500/10 dark:text-error-400"
         >
           {error}
+        </div>
+      ) : null}
+      {notice ? (
+        <div
+          role="status"
+          className="mb-6 rounded-2xl border border-success-500 bg-success-50 p-4 text-sm text-success-700 dark:bg-success-500/10 dark:text-success-400"
+        >
+          {notice}
         </div>
       ) : null}
 
@@ -413,11 +423,40 @@ export default function OrgDocumentsPage() {
                     variant="ghost"
                     size="sm"
                     disabled={busy}
-                    onClick={() =>
-                      void run(() => deleteOrgDocument(slug, document.id))
-                    }
+                    onClick={() => {
+                      // PLATFORM STAFF DELETE AT ONCE; everybody else asks,
+                      // with a reason, and a Platform Admin or Super Admin
+                      // decides (`deletions.acts_directly`, 2026-10-01).
+                      setNotice(null);
+                      if (staff) {
+                        if (
+                          !window.confirm(
+                            `Delete "${document.title}"? This cannot be undone.`,
+                          )
+                        ) {
+                          return;
+                        }
+                        void run(() => deleteOrgDocument(slug, document.id));
+                        return;
+                      }
+                      const answer = window.prompt(
+                        `Ask to delete "${document.title}"?\n\nNothing is removed until a Platform Admin or Super Admin approves it.\n\nWhy should it be deleted?`,
+                        "",
+                      );
+                      if (answer === null) return;
+                      if (!answer.trim()) {
+                        setError("Say why it should be deleted. The request needs a reason.");
+                        return;
+                      }
+                      void run(async () => {
+                        await deleteOrgDocument(slug, document.id, answer.trim());
+                        setNotice(
+                          `Asked to delete "${document.title}". Nothing is removed until a Platform Admin or Super Admin approves it.`,
+                        );
+                      });
+                    }}
                   >
-                    Delete
+                    {staff ? "Delete" : "Ask to delete"}
                   </Action>
                 ) : canWrite ? (
                   /* Said, rather than left as a gap. A row identical to an

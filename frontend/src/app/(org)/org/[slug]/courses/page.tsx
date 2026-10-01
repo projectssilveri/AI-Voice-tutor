@@ -21,6 +21,7 @@ import {
   listOrgCourses,
   listOrgDocuments,
   updateOrgCourse,
+  deleteOrgCourse,
 } from "@/lib/orgPortal";
 
 const FIELD =
@@ -44,6 +45,7 @@ export default function OrgCoursesPage() {
   const [documents, setDocuments] = useState<OrgDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [newCourse, setNewCourse] = useState({
@@ -194,6 +196,14 @@ export default function OrgCoursesPage() {
           className="mb-6 rounded-2xl border border-error-500 bg-error-50 p-4 text-sm text-error-700 dark:bg-error-500/10 dark:text-error-400"
         >
           {error}
+        </div>
+      ) : null}
+      {notice ? (
+        <div
+          role="status"
+          className="mb-6 rounded-2xl border border-success-500 bg-success-50 p-4 text-sm text-success-700 dark:bg-success-500/10 dark:text-success-400"
+        >
+          {notice}
         </div>
       ) : null}
 
@@ -385,6 +395,41 @@ export default function OrgCoursesPage() {
                     >
                       {course.is_published ? "Unpublish" : "Publish"}
                     </Action>
+                  ) : null}
+                  {/* PLATFORM STAFF DELETE AT ONCE; anybody else who can
+                      edit the course asks, with a reason, and a Platform
+                      Admin or Super Admin decides (2026-10-01). */}
+                  {canWrite && course.can_edit ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setNotice(null);
+                        const staff = profile?.is_platform_staff ?? false;
+                        const answer = window.prompt(
+                          staff
+                            ? `Delete "${course.title}"? This happens at once and cannot be undone.\n\nWhy? It is kept on this organisation's record.`
+                            : `Ask to delete "${course.title}"?\n\nNothing is removed until a Platform Admin or Super Admin approves it.\n\nWhy should it be deleted?`,
+                          "",
+                        );
+                        if (answer === null) return;
+                        if (!staff && !answer.trim()) {
+                          setError("Say why it should be deleted. The request needs a reason.");
+                          return;
+                        }
+                        void run(async () => {
+                          const result = await deleteOrgCourse(
+                            slug,
+                            course.id,
+                            answer.trim(),
+                          );
+                          setNotice(result.explanation);
+                        });
+                      }}
+                      className="rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
+                    >
+                      {profile?.is_platform_staff ? "Delete" : "Ask to delete"}
+                    </button>
                   ) : null}
                 </div>
               </div>

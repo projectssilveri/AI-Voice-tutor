@@ -231,9 +231,8 @@ async def list_held_plans(session: AsyncSession, user: User) -> list[HeldPlan]:
                 # Cancelled but not yet expired: they keep it until the period
                 # ends, and saying "renews" would be a lie.
                 cancelled=subscription.cancelled_at is not None,
-                covers_everything=(
-                    catalogue_size > 0 and len(members) >= catalogue_size
-                ),
+                covers_everything=plan.all_access
+                or (catalogue_size > 0 and len(members) >= catalogue_size),
                 courses=[
                     BundleCourse(
                         course=course,

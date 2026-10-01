@@ -10,7 +10,7 @@ const FIELD =
   "h-11 w-full rounded-lg border border-gray-300 bg-transparent px-4 text-sm text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/25 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90";
 
 /**
- * What the AI tutor may do on this course. Super admin only.
+ * What the AI tutor may do on this course. Platform staff only.
  *
  * Two numbers: how many times a student may play the tutor on ONE module, and
  * how long each play runs. Both apply to every module in the course.
@@ -35,7 +35,8 @@ export default function TutorLimitControls({
   onChanged: (updated: CourseRow) => void;
 }) {
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
+  // Platform staff, both tiers, since the role model of 2026-10-01.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
 
   const [plays, setPlays] = useState(
     course.ai_sessions_per_module === null
@@ -59,7 +60,7 @@ export default function TutorLimitControls({
       ? `Using the ${course.ai_limit_basis} course default.`
       : "Set for this course.";
 
-  if (!isSuperAdmin) {
+  if (!isPlatformStaff) {
     return (
       <div className="rounded-xl border border-gray-200 p-5 dark:border-gray-800">
         <h3 className="text-sm font-semibold text-gray-800 dark:text-white/90">

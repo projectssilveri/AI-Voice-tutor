@@ -24,7 +24,6 @@ from app.deps import (
     CurrentUser,
     DbSession,
     RequireAdmin,
-    RequireSuperAdmin,
     require_role,
 )
 from app.models.certification import CertAttempt, Certificate
@@ -78,6 +77,8 @@ class MyProgress(BaseModel):
     modules_total: int
     courses_enrolled: int
     voice_minutes: int
+    # Seconds too: whole minutes showed a short first session as 0.
+    voice_seconds: int = 0
     questions_asked: int
     quizzes_taken: int
     best_quiz_score: float | None
@@ -295,6 +296,7 @@ async def my_analytics(
         modules_total=modules_total,
         courses_enrolled=len(enrolled_course_ids),
         voice_minutes=int((voice_seconds or 0) // 60),
+        voice_seconds=int(voice_seconds or 0),
         questions_asked=questions,
         quizzes_taken=quizzes_taken,
         best_quiz_score=float(best_quiz) if best_quiz is not None else None,
@@ -340,6 +342,7 @@ class LeaderboardRow(BaseModel):
     email: str
     modules_completed: int
     voice_minutes: int
+    voice_seconds: int = 0
     certificates: int
     # A single sortable figure so the table has an obvious default order.
     score: float
@@ -354,6 +357,9 @@ class PlatformAnalytics(BaseModel):
     certificates_issued: int
     cert_pass_rate: float
     total_voice_minutes: int
+    # The same total in seconds, so the dashboard and each person's row can be
+    # shown in one format and agree.
+    total_voice_seconds: int = 0
     total_interruptions: int
     signups_per_day: list[DayPoint]
     voice_minutes_per_day: list[DayPoint]
@@ -370,21 +376,15 @@ async def platform_analytics(
 ) -> PlatformAnalytics:
     """Platform-wide figures.
 
-    The per-course charts name courses, and a customer's private course title
-    is exactly the thing the walled garden exists to keep off other people's
-    screens. `_public_only` scopes them for an ordinary admin — the course
-    listing already hides those courses, so a chart naming them beside it was
-    both a leak and a contradiction.
+    Platform staff, both tiers, see every customer here since the role model
+    of 2026-10-01, the same as their course listing. Only the staff ladder
+    above a platform admin is left out of the people counts.
     """
     since = datetime.now(UTC) - timedelta(days=days)
 
-    # A super admin sees across tenants for support; nobody else does.
-    # Spread into each `.where()` so an empty tuple is a no-op for them.
-    course_scope = (
-        ()
-        if actor.role is UserRole.SUPER_ADMIN
-        else (Course.organization_id.is_(None),)
-    )
+    # Platform staff, both tiers, see across tenants since the role model of
+    # 2026-10-01. Kept as a tuple so each `.where()` below stays unchanged.
+    course_scope: tuple = ()
 
     # AND THE PEOPLE, which was the half that leaked. Only the per-course charts
     # below were ever scoped; every headline number on this page — students,
@@ -398,10 +398,15 @@ async def platform_analytics(
     # support. Everyone else counts public B2C accounts only — the same rule
     # `admin.list_users` has always applied to the Users screen, so the two
     # screens finally agree.
+    #
+    # Since 2026-10-01 a platform admin counts every customer too, and only
+    # the staff ladder above them stays out, the same rule as their Users
+    # page (`admin_users.visible_filter`).
+    from app.routers.admin_users import visible_filter
+
+    ladder = visible_filter(actor)
     visible_people = (
-        None
-        if actor.role is UserRole.SUPER_ADMIN
-        else select(User.id).where(User.organization_id.is_(None)).scalar_subquery()
+        None if not ladder else select(User.id).where(*ladder).scalar_subquery()
     )
 
     def mine(column):
@@ -409,9 +414,7 @@ async def platform_analytics(
         return () if visible_people is None else (column.in_(visible_people),)
 
     student_filter = User.role == UserRole.STUDENT
-    people_scope = (
-        () if visible_people is None else (User.organization_id.is_(None),)
-    )
+    people_scope = tuple(ladder)
 
     total_students = await session.scalar(
         select(func.count()).select_from(User).where(student_filter, *people_scope)
@@ -611,6 +614,7 @@ async def platform_analytics(
             else 0.0
         ),
         total_voice_minutes=int(voice_seconds // 60),
+        total_voice_seconds=int(voice_seconds),
         total_interruptions=interruptions,
         signups_per_day=[
             DayPoint(day=day, value=float(count)) for day, count in signup_rows
@@ -719,6 +723,7 @@ async def _leaderboard(
             email=email,
             modules_completed=int(completed_count),
             voice_minutes=int(float(seconds) // 60),
+            voice_seconds=int(float(seconds)),
             certificates=int(cert_count),
             score=round(
                 completed_count * 10 + cert_count * 50 + float(seconds) / 600, 1
@@ -762,7 +767,7 @@ class RevenueAnalytics(BaseModel):
 @router.get("/revenue", response_model=RevenueAnalytics)
 async def revenue_analytics(
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
     days: int = Query(default=30, ge=7, le=365),
 ) -> RevenueAnalytics:
     since = datetime.now(UTC) - timedelta(days=days)

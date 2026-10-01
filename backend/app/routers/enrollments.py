@@ -11,9 +11,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.deps import CurrentUser, DbSession
+from app.models.audit import AuditAction
 from app.models.certification import CertExam
 from app.models.enrollment import ProgressStatus
-from app.services import access
+from app.services import access, audit
 from app.services import courses as course_service
 from app.services import enrollments as enrollment_service
 
@@ -155,6 +156,25 @@ async def set_my_module_progress(
     progress = await enrollment_service.set_module_status(
         session, user.id, module.id, payload.status
     )
+
+    # A NAMED EVENT naming the module. The middleware filed this as "Other
+    # changes", and the user's Full record read the path as "Replaced module
+    # progress". `set_module_status` has committed, so this is its own write.
+    # Issues 59 and 66.
+    await audit.record_safely(
+        session,
+        action=(
+            AuditAction.MODULE_COMPLETED
+            if payload.status is ProgressStatus.COMPLETED
+            else AuditAction.MODULE_REOPENED
+        ),
+        actor=user,
+        target_type="module",
+        target_id=module.id,
+        metadata={"name": module.title},
+    )
+    await session.commit()
+
     return ModuleProgressOut(module_id=progress.module_id, status=progress.status.value)
 
 

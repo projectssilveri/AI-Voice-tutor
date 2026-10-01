@@ -242,7 +242,7 @@ export default function OrganizationsPage() {
   /* Presentation only. Every endpoint behind this is `RequireSuperAdmin`
      server-side, which is what actually protects it. */
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <Console />
     </RequireAuth>
   );

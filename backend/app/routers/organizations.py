@@ -1,39 +1,22 @@
 """Creating and structuring organizations.
 
-WHO MAY DO WHAT HERE, and the line is between reading and writing rather than
-between two roles:
+WHO MAY DO WHAT HERE. Platform staff, a super admin or a platform admin, read
+and write all of it: the list, one organization in full, its branches,
+departments and limits, and every customer's own courses on
+`/courses/all`. Platform admins were limited to reading the structure until
+the role model of 2026-10-01 gave them the super admin's work, customers
+included. The rest of that boundary moved with it, in the same change:
 
-  * READING THE STRUCTURE is open to any platform admin: the list, one
-    organization in full, its branches and departments, its seat limits and
-    usage, and a COUNT of the courses it has built. The ladder is super admin >
-    platform admin > organisation admin, and a platform admin is above the
-    person who runs the company, so answering "how big is Acme" and "how many
-    seats are they using" is ordinary support work. It used to require signing
-    in as one of the customer's own admins, which is worse for the customer
-    than reading the shape of their account honestly.
+    courses.list_courses      `include_organization_courses` for staff.
+    audit_log._filters        staff read every organisation's trail.
+    reports._scope            the same for the training report.
+    deps.require_org_scope    staff cross into a tenant, logged each time.
 
-    READING THE CONTENTS IS NOT. A platform admin does not get a customer's
-    courses, their audit trail or their training report, and this docstring
-    used to say they did. The three routers that decide it:
+One thing still waits for a super admin: a new organisation admin made by a
+platform admin cannot sign in until it is approved (`services/approvals`).
 
-        courses.list_courses      `include_organization_courses` is set only
-                                  for a SUPER_ADMIN.
-        audit_log._filters        below SUPER_ADMIN, forces
-                                  `organization_id IS NULL`.
-        reports._scope            the same rule for the training report.
-
-    And `deps.require_org_scope` treats only a SUPER_ADMIN as platform staff,
-    so `/org/{slug}/...` is a 404 to a platform admin. A count of courses is
-    the most any route here gives them, on purpose: it answers "are they using
-    the product" without opening anything the customer wrote.
-  * WRITING stays with the super admin: creating an organization, renaming or
-    deactivating it, adding branches and departments, and setting limits.
-    Decision 50 put that gate around revenue and role management, and creating
-    a tenant decides who exists on the platform at all.
-
-NOTHING HERE DELETES. An organization's people, training and documents can only
-be destroyed with that organization's own administrator agreeing — see
-`services/deletions.py`.
+NOTHING HERE DELETES. Who may delete an organization's people, training and
+documents, and who approves it, is `services/deletions.py`.
 
 Phase 2 scope: the structure. Nothing here reads the tenancy columns for access
 control yet; that rule lands in `services/access.py` in phase 4. Until then no
@@ -49,7 +32,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from app.deps import DbSession, RequireAdmin, RequireSuperAdmin
+from app.deps import DbSession, RequireAdmin
 from app.models.audit import AuditAction
 from app.models.organization import Branch, Department, Organization
 from app.models.user import User, UserRole
@@ -272,7 +255,7 @@ async def list_organization_names(
 
 @router.post("", response_model=OrganizationRead, status_code=status.HTTP_201_CREATED)
 async def create_organization(
-    payload: OrganizationCreate, session: DbSession, actor: RequireSuperAdmin
+    payload: OrganizationCreate, session: DbSession, actor: RequireAdmin
 ) -> OrganizationRead:
     try:
         organization = await org_service.create_organization(
@@ -361,7 +344,7 @@ async def update_organization(
     organization_id: uuid.UUID,
     payload: OrganizationUpdate,
     session: DbSession,
-    actor: RequireSuperAdmin,
+    actor: RequireAdmin,
 ) -> OrganizationRead:
     organization = await _load(session, organization_id)
 
@@ -402,7 +385,7 @@ async def create_branch(
     organization_id: uuid.UUID,
     payload: BranchCreate,
     session: DbSession,
-    actor: RequireSuperAdmin,
+    actor: RequireAdmin,
 ) -> BranchRead:
     await _load(session, organization_id)
     # A NAME THIS ORGANISATION ALREADY USES answered 500 before this. There was
@@ -436,7 +419,7 @@ async def update_branch(
     branch_id: uuid.UUID,
     payload: BranchUpdate,
     session: DbSession,
-    _: RequireSuperAdmin,
+    _: RequireAdmin,
 ) -> BranchRead:
     branch = await session.get(Branch, branch_id)
     # The organization is checked as well as the id: without it, knowing a
@@ -471,7 +454,7 @@ async def create_department(
     organization_id: uuid.UUID,
     payload: DepartmentCreate,
     session: DbSession,
-    actor: RequireSuperAdmin,
+    actor: RequireAdmin,
 ) -> DepartmentRead:
     await _load(session, organization_id)
 
@@ -547,18 +530,14 @@ class CustomerCourseRow(BaseModel):
 @router.get("/courses/all", response_model=list[CustomerCourseRow])
 async def list_customer_courses(
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
     organization_id: uuid.UUID | None = None,
 ) -> list[CustomerCourseRow]:
     """Every organization's own training, in one list.
 
-    SUPER ADMIN ONLY, and read-only. It was `RequireAdmin`, which handed any
-    platform admin every customer's course titles, descriptions, module counts
-    and enrolment numbers, while the docstring at the top of this file, the
-    sidebar and `courses.list_courses` all said a platform admin sees a count
-    of a customer's courses and nothing more. The screen that calls this was
-    already super-admin only; the route behind it was not, so typing the URL
-    was enough. Found by testing the rule against the running API.
+    PLATFORM STAFF, and read-only. It was super admin only while platform
+    admins were kept out of customers; the role model of 2026-10-01 let them
+    in, and this moved with `courses.list_courses` and the other three.
 
     This exists so support can answer "what has Acme actually built" without
     signing in as one of their admins. It is deliberately separate from
@@ -715,13 +694,12 @@ async def set_limits(
     organization_id: uuid.UUID,
     payload: OrganizationLimits,
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
 ) -> OrganizationUsage:
     """Set what a customer is allowed.
 
-    SUPER ADMIN ONLY. These are the terms of a commercial agreement, which
-    decision 50 keeps with revenue and role management rather than with
-    ordinary platform administration.
+    PLATFORM STAFF. These are the terms of a commercial agreement, and since
+    2026-10-01 platform admins hold revenue alongside the super admin.
 
     A limit is allowed to be BELOW current use. An organization that has
     twenty-five people and renews for twenty needs the smaller number recorded

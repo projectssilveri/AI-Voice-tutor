@@ -1,12 +1,11 @@
-"""Bundles and packages, for the super admin.
+"""Bundles and packages, for platform staff.
 
 List them, see who bought each one, change what they cost and what they cover,
 and create new ones.
 
-SUPER ADMIN ONLY, all of it — including the read. Decision 50 puts money with
-the super admin rather than with ordinary staff, and this screen shows revenue
-per bundle and names the customers on it. An ordinary admin authors courses;
-they do not need the subscriber list.
+PLATFORM STAFF, all of it, including the read: a super admin or a platform
+admin. Money was the super admin's alone until the role model of 2026-10-01
+gave platform admins the same work.
 
 A bundle is never deleted here. `subscriptions.plan_id` and `orders.plan_id`
 are RESTRICT, so deleting one would either fail or orphan a receipt. Retiring
@@ -23,7 +22,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.deps import DbSession, RequireSuperAdmin
+from app.deps import DbSession, RequireAdmin
 from app.models.subscription import BillingInterval, SubscriptionPlan
 from app.schemas.text import NonBlankName, OptionalNonBlankName
 from app.services import audit, plans
@@ -53,8 +52,11 @@ class BundleRead(BaseModel):
     courses: list[BundleCourseRead]
     course_count: int
     #: Covers the whole published catalogue, so it is All Access rather than a
-    #: stack bundle. Counted from the course links, never stored.
+    #: stack bundle. Counted from the course links, or true when flagged.
     covers_everything: bool
+    #: Flagged All Access: every public course is in it automatically,
+    #: including ones created later.
+    all_access: bool
     #: What those courses cost bought one at a time, at today's prices.
     separate_total_minor: int
 
@@ -101,6 +103,7 @@ def _to_read(summary: plans.PlanSummary) -> BundleRead:
         ],
         course_count=len(summary.courses),
         covers_everything=summary.covers_everything,
+        all_access=summary.all_access,
         separate_total_minor=summary.separate_total_minor,
         active_subscribers=summary.active_subscribers,
         total_subscribers=summary.total_subscribers,
@@ -113,7 +116,7 @@ def _to_read(summary: plans.PlanSummary) -> BundleRead:
 
 @router.get("", response_model=list[BundleRead])
 async def list_bundles(
-    session: DbSession, admin: RequireSuperAdmin
+    session: DbSession, admin: RequireAdmin
 ) -> list[BundleRead]:
     """Every bundle and package, on sale or retired, with its numbers."""
     return [_to_read(summary) for summary in await plans.list_plans(session)]
@@ -121,7 +124,7 @@ async def list_bundles(
 
 @router.get("/{plan_id}/holders", response_model=list[BundleHolderRead])
 async def list_bundle_holders(
-    plan_id: uuid.UUID, session: DbSession, admin: RequireSuperAdmin
+    plan_id: uuid.UUID, session: DbSession, admin: RequireAdmin
 ) -> list[BundleHolderRead]:
     """Who bought this bundle, and where each of them stands.
 
@@ -149,6 +152,8 @@ class BundleCreate(BaseModel):
     billing_interval: BillingInterval = BillingInterval.MONTHLY
     course_ids: list[uuid.UUID] = Field(default_factory=list)
     is_active: bool = True
+    #: Every public course, now and later, whatever `course_ids` leaves out.
+    all_access: bool = False
 
 
 class BundleUpdate(BaseModel):
@@ -167,11 +172,14 @@ class BundleUpdate(BaseModel):
     billing_interval: BillingInterval | None = None
     is_active: bool | None = None
     course_ids: list[uuid.UUID] | None = None
+    #: Switching it on links every public course straight away; switching it
+    #: off leaves the list as it is, now an ordinary bundle.
+    all_access: bool | None = None
 
 
 @router.post("", response_model=BundleRead, status_code=status.HTTP_201_CREATED)
 async def create_bundle(
-    payload: BundleCreate, session: DbSession, admin: RequireSuperAdmin
+    payload: BundleCreate, session: DbSession, admin: RequireAdmin
 ) -> BundleRead:
     """Add a bundle."""
     try:
@@ -184,6 +192,7 @@ async def create_bundle(
             billing_interval=payload.billing_interval,
             course_ids=payload.course_ids,
             is_active=payload.is_active,
+            all_access=payload.all_access,
         )
     except plans.PlanError as exc:
         raise HTTPException(
@@ -202,6 +211,7 @@ async def create_bundle(
             "currency": plan.currency,
             "interval": plan.billing_interval.value,
             "course_count": len(payload.course_ids),
+            "all_access": plan.all_access,
         },
     )
     await session.commit()
@@ -214,7 +224,7 @@ async def update_bundle(
     plan_id: uuid.UUID,
     payload: BundleUpdate,
     session: DbSession,
-    admin: RequireSuperAdmin,
+    admin: RequireAdmin,
 ) -> BundleRead:
     """Change a bundle's price, name, availability or contents.
 
@@ -265,6 +275,7 @@ async def update_bundle(
             "course_count": (
                 len(course_ids) if course_ids is not None else None
             ),
+            "all_access": plan.all_access,
         },
     )
     await session.commit()

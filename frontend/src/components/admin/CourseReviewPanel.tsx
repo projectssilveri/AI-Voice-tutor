@@ -31,6 +31,8 @@ export default function CourseReviewPanel({
   onChanged: (updated: CourseRow) => void;
 }) {
   const { user } = useAuth();
+  // Platform staff, both tiers, since the role model of 2026-10-01.
+  const isPlatformStaff = user?.role === "admin" || user?.role === "super_admin";
   const isSuperAdmin = user?.role === "super_admin";
 
   const [saving, setSaving] = useState(false);
@@ -58,8 +60,12 @@ export default function CourseReviewPanel({
     draft: {
       tone: "border-gray-200 dark:border-gray-800",
       heading: "Draft",
+      // Only the super admin approves a new course (2026-10-01). A platform
+      // admin's Publish below sends it to them.
       body: isSuperAdmin
-        ? "Not on sale. You can publish it yourself from the price panel below, or send it through review like anyone else."
+        ? "Not on sale. You can publish it yourself from the price panel below."
+        : isPlatformStaff
+          ? "Not on sale. Send it to the Super Admin for approval, here or with Publish below. It goes on sale once they approve it."
         : "Only you can see this. When it is ready, send it to the super admin for approval.",
     },
     pending: {
@@ -72,7 +78,9 @@ export default function CourseReviewPanel({
       heading: course.is_published ? "Approved and live" : "Approved",
       body: course.is_published
         ? "On the public catalogue now."
-        : "Approved but not on sale. The super admin switches it on.",
+        : isPlatformStaff
+          ? "Approved but not on sale. Publish it from the price panel below."
+          : "Approved but not on sale. The super admin switches it on.",
     },
     rejected: {
       tone: "border-error-500 bg-error-50 dark:bg-error-500/10",

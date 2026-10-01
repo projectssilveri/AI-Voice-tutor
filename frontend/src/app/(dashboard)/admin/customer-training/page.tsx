@@ -7,6 +7,7 @@ import RequireAuth from "@/components/auth/RequireAuth";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { apiFetch } from "@/lib/api";
+import { deleteCourse } from "@/lib/authoring";
 import { counted } from "@/lib/plural";
 
 /**
@@ -20,9 +21,11 @@ import { counted } from "@/lib/plural";
  * Collapsing them is what let an ordinary platform admin rename and then delete
  * a customer's course (decision 170). There is no edit control anywhere on this
  * page — changes are made by that organisation's own admins, in their portal.
+ * The one action here is deleting a course, at once since 2026-10-01, with a
+ * reason kept on the customer's own record (`services/deletions.py`).
  *
- * Super admin only, matching `services/access.py`: an ordinary platform admin
- * does not read customer data (decision 159).
+ * Platform staff, matching `services/access.py`. Until the role model of
+ * 2026-10-01 a platform admin did not read customer data (decision 159).
  */
 
 const CELL = "px-4 py-3 align-middle text-sm";
@@ -54,7 +57,40 @@ function CustomerTraining() {
   const [courses, setCourses] = useState<CustomerCourse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+
+  /**
+   * Delete one of a customer's courses.
+   *
+   * AT ONCE since 2026-10-01: platform staff delete inside a customer
+   * directly, and it is the customer's own people who ask. The reason goes on
+   * that customer's record of the deletion, so it is still asked for.
+   */
+  async function deleteTheirs(course: CustomerCourse) {
+    const company = course.organization_name;
+    const answer = window.prompt(
+      `Delete "${course.title}" from ${company}? This happens at once and ` +
+        `cannot be undone.\n\nWhy? ${company} sees this on their record.`,
+      "",
+    );
+    if (answer === null) return;
+    setBusyId(course.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteCourse(course.id, answer.trim());
+      setNotice(`"${course.title}" has been deleted from ${company}.`);
+      await load();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not delete it.",
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -140,6 +176,15 @@ function CustomerTraining() {
         </p>
       ) : null}
 
+      {notice ? (
+        <p
+          role="status"
+          className="mb-4 rounded-lg border border-success-500 bg-success-50 px-4 py-2.5 text-sm text-success-800 dark:bg-success-500/10 dark:text-success-400"
+        >
+          {notice}
+        </p>
+      ) : null}
+
       {loading ? (
         <SkeletonRows rows={6} />
       ) : byOrganization.length === 0 ? (
@@ -200,6 +245,9 @@ function CustomerTraining() {
                         <th className="px-4 py-3">Enrolled</th>
                         <th className="px-4 py-3">Published</th>
                         <th className="px-4 py-3">Updated</th>
+                        <th className="px-4 py-3">
+                          <span className="sr-only">Actions</span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -250,6 +298,16 @@ function CustomerTraining() {
                           >
                             {day(course.updated_at)}
                           </td>
+                          <td className={`${CELL} whitespace-nowrap text-right`}>
+                            <button
+                              type="button"
+                              onClick={() => void deleteTheirs(course)}
+                              disabled={busyId === course.id}
+                              className="rounded-lg border border-error-500 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:text-error-400 dark:hover:bg-error-500/10"
+                            >
+                              {busyId === course.id ? "Deleting…" : "Delete"}
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -266,7 +324,7 @@ function CustomerTraining() {
 
 export default function AdminCustomerTrainingPage() {
   return (
-    <RequireAuth roles={["super_admin"]}>
+    <RequireAuth roles={["admin"]}>
       <CustomerTraining />
     </RequireAuth>
   );

@@ -197,10 +197,10 @@ async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
         direction that leaks, because an org's internal compliance training
         would otherwise appear anywhere a public course can.
 
-    The single exception is a platform SUPER_ADMIN, matching
-    `deps.require_org_scope`: support work is real, and it is audited. A
-    platform ADMIN is deliberately NOT included — decision 50 keeps customer
-    data with revenue and role management, above ordinary admin.
+    The exception is platform staff, a super admin or a platform admin,
+    matching `deps.require_org_scope`: support work is real, and it is audited.
+    Platform admins were kept out until 2026-10-01, when the role model gave
+    them the super admin's reach into customers.
     """
     if user.organization_id is not None:
         if course.organization_id != user.organization_id:
@@ -229,7 +229,7 @@ async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
         return AccessDecision(True, "organization")
 
     if course.organization_id is not None:
-        if user.role is UserRole.SUPER_ADMIN:
+        if user.role in STAFF_ROLES:
             return AccessDecision(True, "platform_staff")
         return AccessDecision(False, "not_in_organization")
 
@@ -509,19 +509,10 @@ async def accessible_course_ids(
 
         return set((await session.scalars(select(Course.id).where(*filters))).all())
 
-    if user.role is UserRole.SUPER_ADMIN:
-        return None
-
+    # Platform staff, both tiers, reach every course: a platform admin has the
+    # super admin's reach into customers since 2026-10-01.
     if user.role in STAFF_ROLES:
-        # Platform staff who are not super admins see the public catalogue and
-        # no customer's private training.
-        return set(
-            (
-                await session.scalars(
-                    select(Course.id).where(Course.organization_id.is_(None))
-                )
-            ).all()
-        )
+        return None
 
     # A public learner. Every branch below is additionally constrained to
     # public courses, so an organization course can never enter this set even
