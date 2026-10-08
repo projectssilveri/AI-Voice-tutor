@@ -97,6 +97,12 @@ async def list_for_user(
             (OrganizationDocument.extracted_text.is_not(None)).label("has_text"),
         )
         .where(OrganizationDocument.organization_id == organization_id)
+        # A document a department admin uploaded is not in the library until the
+        # org admin approves it (Sir's rule of 2026-10-01). It is held with
+        # `pending_approval` set and must not show in any listing, not even the
+        # admin's own — the org admin decides it from the change queue, and it
+        # appears here the moment they approve. See `services/org_changes.py`.
+        .where(OrganizationDocument.pending_approval.is_(False))
         .order_by(OrganizationDocument.title)
     )
     if not include_all:
@@ -116,6 +122,7 @@ async def add_document(
     visibility: DocumentVisibility,
     branch_id: uuid.UUID | None,
     department_id: uuid.UUID | None,
+    pending_approval: bool = False,
 ) -> OrganizationDocument:
     """Store one file. Does not commit — the caller owns the transaction.
 
@@ -123,8 +130,17 @@ async def add_document(
     than trusting a header, and refuses anything whose first five bytes are not
     `%PDF-`. A real PDF named `.txt` is accepted and renamed; `<script>` named
     `.pdf` is not.
+
+    `pending_approval` holds a department admin's upload out of the library
+    until the org admin approves it. The row exists (so the request can point at
+    it and the title is reserved), but no listing or download returns it while
+    the flag is set.
     """
-    content_type, clean_name = validate(data, filename)
+    # `validate` returns (safe_filename, content_type) in that order — the same
+    # as `materials.add_material`. Unpacking it the other way round stored every
+    # document's filename as "pdf.pdf" and put the real filename in the
+    # content-type column, so downloads came out misnamed and mis-typed.
+    clean_name, content_type = validate(data, filename)
 
     document = OrganizationDocument(
         organization_id=organization_id,
@@ -135,6 +151,7 @@ async def add_document(
         size_bytes=len(data),
         content_type=content_type,
         data=data,
+        pending_approval=pending_approval,
         # Pulled out now so it can be offered later. Never applied on its own —
         # see decision 97.
         extracted_text=extract_text(data),

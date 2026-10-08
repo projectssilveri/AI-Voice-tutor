@@ -7,7 +7,14 @@ import { unreadCount } from "@/lib/messages";
 import { Dropdown } from "../ui/dropdown/Dropdown";
 import { DropdownItem } from "../ui/dropdown/DropdownItem";
 
-export default function UserDropdown() {
+export default function UserDropdown({
+  // Where sign out lands. The dashboard returns to /signin; the organisation
+  // portal passes its own login so a customer's person is not dropped on the
+  // public sign-in page.
+  signOutHref = "/signin",
+}: {
+  signOutHref?: string;
+} = {}) {
   // WROTE `unreadCount` AND CALLED IT FROM NOWHERE. Same defect as the four
   // recorded in the spec, committed an hour after writing about them: an
   // inbox nobody is told about is an inbox nobody opens.
@@ -37,7 +44,7 @@ export default function UserDropdown() {
   async function handleSignOut() {
     setIsOpen(false);
     await signOut();
-    router.push("/signin");
+    router.push(signOutHref);
     router.refresh();
   }
 

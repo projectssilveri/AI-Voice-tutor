@@ -7,6 +7,7 @@ import CurriculumAccordion from "@/components/marketing/course/CurriculumAccordi
 import { getPublicCourse } from "@/lib/catalogue";
 import { counted } from "@/lib/plural";
 import CoursePurchase from "@/components/marketing/course/CoursePurchase";
+import MarketplaceOnly from "@/components/org/MarketplaceOnly";
 import OrgRedirectNotice from "@/components/org/OrgRedirectNotice";
 
 interface PageProps {
@@ -124,14 +125,20 @@ export default async function PublicCoursePage({ params }: PageProps) {
               {/* Price and the buy decision. This block used to be two links
                   and no price at all — see CoursePurchase for why that
                   mattered. */}
-              <CoursePurchase
-                id="buy"
-                courseId={course.id}
-                priceMinor={course.priceMinor}
-                listPriceMinor={course.listPriceMinor}
-                accessDays={course.accessDays}
-                currency={course.currency}
-              />
+              {/* No buy or start control for an organisation member: the
+                  course is not theirs to take, and the start CTA led to "We
+                  can't find that course". The notice above tells them where
+                  their training is. */}
+              <MarketplaceOnly>
+                <CoursePurchase
+                  id="buy"
+                  courseId={course.id}
+                  priceMinor={course.priceMinor}
+                  listPriceMinor={course.listPriceMinor}
+                  accessDays={course.accessDays}
+                  currency={course.currency}
+                />
+              </MarketplaceOnly>
             </div>
 
             <div>

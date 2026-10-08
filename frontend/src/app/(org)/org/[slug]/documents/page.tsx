@@ -109,7 +109,14 @@ export default function OrgDocumentsPage() {
   // theirs to remove is `document.can_edit`, decided per row by the server.
   const canWrite = profile?.can_author ?? false;
   const isDeptAdmin = profile?.is_dept_admin ?? false;
-  const staff = profile?.is_platform_staff ?? false;
+  // A BRANCH MANAGER asks for their branch's files. The server files every
+  // upload of theirs against their own branch, the way it files a department
+  // admin's against their department.
+  const isBranchManager = profile?.is_branch_manager ?? false;
+  // DELETES AT ONCE: the org admin and platform staff. A department admin or
+  // branch manager asks, and the org admin approves (2026-10-01).
+  const staff =
+    (profile?.is_org_admin ?? false) || (profile?.is_platform_staff ?? false);
 
   // Departments narrowed to the chosen branch, plus the organization-wide
   // ones — a department under another branch is not a valid choice.
@@ -149,7 +156,9 @@ export default function OrgDocumentsPage() {
               ? "Loading…"
               : isDeptAdmin
                 ? `${counted(documents.length, "document")} you can see: your department's, and the ones shared with everybody.`
-                : canWrite
+                : isBranchManager
+                  ? `${counted(documents.length, "document")} you can see: ${profile?.branch_name ?? "your branch"}'s, and the ones shared with everybody.`
+                  : canWrite
                   ? `${counted(documents.length, "document")} in your library.`
                   : "Policies and handbooks shared with you."}
           </p>
@@ -184,13 +193,20 @@ export default function OrgDocumentsPage() {
               setError("Choose a PDF first.");
               return;
             }
+            setNotice(null);
             void run(async () => {
-              await uploadOrgDocument(slug, file, {
+              const result = await uploadOrgDocument(slug, file, {
                 title: form.title.trim() || file.name,
                 description: form.description,
-                visibility: form.visibility,
-                branch_id: form.branch_id || null,
-                department_id: form.department_id || null,
+                // A branch manager's file is their branch's; the server
+                // forces it either way, this only says the same thing.
+                visibility: isBranchManager ? "branch" : form.visibility,
+                branch_id: isBranchManager
+                  ? (profile?.branch_id ?? null)
+                  : form.branch_id || null,
+                department_id: isBranchManager
+                  ? null
+                  : form.department_id || null,
               });
               setForm({
                 title: "",
@@ -202,6 +218,15 @@ export default function OrgDocumentsPage() {
               setFile(null);
               if (fileInput.current) fileInput.current.value = "";
               setAdding(false);
+              // A department admin's upload is held back: say so, because the
+              // file will not appear in the list below until the org admin
+              // approves it.
+              if (result.requested) {
+                setNotice(
+                  result.message ??
+                    "Your document was sent to the organisation administrator to approve.",
+                );
+              }
             });
           }}
           className="mb-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-raised dark:border-gray-800 dark:bg-white/[0.03]"
@@ -256,6 +281,15 @@ export default function OrgDocumentsPage() {
                 </span>
                 . Nobody outside it will see this file.
               </p>
+            ) : isBranchManager ? (
+              <p className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
+                Visible to{" "}
+                <span className="font-medium text-gray-800 dark:text-white/90">
+                  {profile?.branch_name ?? "your branch"}
+                </span>
+                . Nobody outside it will see this file, and it is added once
+                the organisation administrator approves it.
+              </p>
             ) : (
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
@@ -282,7 +316,7 @@ export default function OrgDocumentsPage() {
               </div>
             )}
 
-            {form.visibility === "branch" && !isDeptAdmin ? (
+            {form.visibility === "branch" && !isDeptAdmin && !isBranchManager ? (
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                   Branch
@@ -305,7 +339,9 @@ export default function OrgDocumentsPage() {
               </div>
             ) : null}
 
-            {form.visibility === "department" && !isDeptAdmin ? (
+            {form.visibility === "department" &&
+            !isDeptAdmin &&
+            !isBranchManager ? (
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400">
                   Department
@@ -348,7 +384,7 @@ export default function OrgDocumentsPage() {
 
           <div className="mt-5 flex gap-3">
             <Action type="submit" loading={busy}>
-              Upload
+              {staff ? "Upload" : "Ask to upload"}
             </Action>
             <Action variant="secondary" onClick={() => setAdding(false)}>
               Cancel
@@ -370,7 +406,9 @@ export default function OrgDocumentsPage() {
               canWrite
                 ? isDeptAdmin
                   ? "Upload the handbooks and procedures your team needs. Everything you add here is for your department only."
-                  : "Upload your policies, handbooks and procedures. You choose whether each one is for everyone, one branch, or one department."
+                  : isBranchManager
+                    ? "Ask to add the handbooks and procedures your branch needs. Everything you add here is for your branch only, once the organisation administrator approves it."
+                    : "Upload your policies, handbooks and procedures. You choose whether each one is for everyone, one branch, or one department."
                 : "Your administrator has not shared any documents with you yet."
             }
             action={
@@ -424,9 +462,9 @@ export default function OrgDocumentsPage() {
                     size="sm"
                     disabled={busy}
                     onClick={() => {
-                      // PLATFORM STAFF DELETE AT ONCE; everybody else asks,
-                      // with a reason, and a Platform Admin or Super Admin
-                      // decides (`deletions.acts_directly`, 2026-10-01).
+                      // THE ORG ADMIN AND PLATFORM STAFF DELETE AT ONCE; a
+                      // department admin asks, with a reason, and the org admin
+                      // approves (`services/org_changes`, 2026-10-01).
                       setNotice(null);
                       if (staff) {
                         if (
@@ -440,7 +478,7 @@ export default function OrgDocumentsPage() {
                         return;
                       }
                       const answer = window.prompt(
-                        `Ask to delete "${document.title}"?\n\nNothing is removed until a Platform Admin or Super Admin approves it.\n\nWhy should it be deleted?`,
+                        `Ask to delete "${document.title}"?\n\nNothing is removed until the organisation administrator approves it.\n\nWhy should it be deleted?`,
                         "",
                       );
                       if (answer === null) return;
@@ -451,7 +489,7 @@ export default function OrgDocumentsPage() {
                       void run(async () => {
                         await deleteOrgDocument(slug, document.id, answer.trim());
                         setNotice(
-                          `Asked to delete "${document.title}". Nothing is removed until a Platform Admin or Super Admin approves it.`,
+                          `Asked to delete "${document.title}". Nothing is removed until the organisation administrator approves it.`,
                         );
                       });
                     }}

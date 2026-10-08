@@ -46,6 +46,12 @@ export interface OrgProfile {
    */
   can_manage_people: boolean;
   can_author: boolean;
+  /**
+   * A branch manager writes for their own branch only: documents filed against
+   * it, courses for one of its departments. Their changes, like a department
+   * admin's, wait for the organisation admin.
+   */
+  is_branch_manager: boolean;
 }
 
 export interface OrgMember {
@@ -66,6 +72,12 @@ export interface OrgMember {
    * admin. A new account stays switched off, a promotion unapplied, until then.
    */
   pending_approval?: boolean;
+  /**
+   * A branch manager or department admin's edit to this member, waiting for the
+   * org admin. The row comes back unchanged with this set, so the screen can say
+   * the change was sent rather than that nothing happened.
+   */
+  change_requested?: boolean;
 }
 
 export interface MemberList {
@@ -146,6 +158,13 @@ export function listMembers(slug: string): Promise<MemberList> {
   return apiFetch<MemberList>(`/org/${slug}/members`, authed);
 }
 
+/** Created at once, or sent to the org admin to approve. */
+export interface MemberCreateResult {
+  requested: boolean;
+  member?: OrgMember | null;
+  message?: string | null;
+}
+
 export function createMember(
   slug: string,
   body: {
@@ -155,9 +174,11 @@ export function createMember(
     role: string;
     branch_id?: string | null;
     department_id?: string | null;
+    /** Why, when a branch manager or department admin adds somebody. */
+    reason?: string;
   },
-): Promise<OrgMember> {
-  return apiFetch<OrgMember>(`/org/${slug}/members`, {
+): Promise<MemberCreateResult> {
+  return apiFetch<MemberCreateResult>(`/org/${slug}/members`, {
     ...authed,
     method: "POST",
     body,
@@ -360,6 +381,22 @@ export interface OrgCourse {
    * answers with a 403.
    */
   can_edit: boolean;
+  /** A department admin's edit, waiting for the org admin. */
+  change_requested?: boolean;
+}
+
+/** Created at once, or sent to the org admin to approve. */
+export interface OrgCourseCreateResult {
+  requested: boolean;
+  course?: OrgCourse | null;
+  message?: string | null;
+}
+
+/** Added to the library at once, or sent to the org admin to approve. */
+export interface OrgDocumentUploadResult {
+  requested: boolean;
+  document?: OrgDocument | null;
+  message?: string | null;
 }
 
 export function listOrgDocuments(
@@ -386,7 +423,7 @@ export async function uploadOrgDocument(
     branch_id?: string | null;
     department_id?: string | null;
   },
-): Promise<OrgDocument> {
+): Promise<OrgDocumentUploadResult> {
   const params = new URLSearchParams({
     title: meta.title,
     visibility: meta.visibility,
@@ -477,7 +514,7 @@ export function createOrgCourse(
     /** Narrows it to one department. Omit for everyone in the organization. */
     department_id?: string | null;
   },
-): Promise<OrgCourse> {
+): Promise<OrgCourseCreateResult> {
   return apiFetch(`/org/${slug}/courses`, { ...authed, method: "POST", body });
 }
 
@@ -505,13 +542,84 @@ export function createOrgModule(
   // `order` omitted means append; the server reads the highest position
   // that exists. This screen used to send the module COUNT, which collides
   // with an existing module as soon as one has been deleted.
-  body: { title: string; order?: number; content?: string | null },
-): Promise<{ id: string; title: string; order: number; has_content: boolean }> {
+  body: {
+    title: string;
+    order?: number;
+    content?: string | null;
+    reason?: string | null;
+  },
+): Promise<OrgModuleResult> {
   return apiFetch(`/org/${slug}/courses/${courseId}/modules`, {
     ...authed,
     method: "POST",
     body,
   });
+}
+
+/**
+ * A module change: made at once (`requested: false`, with the module), or sent
+ * to the organisation admin to approve (`requested: true`, with a message). A
+ * department admin's or branch manager's change always waits.
+ */
+export interface OrgModuleResult {
+  requested: boolean;
+  message?: string;
+  id?: string;
+  title?: string;
+  order?: number;
+  has_content?: boolean;
+}
+
+export interface OrgModule {
+  id: string;
+  title: string;
+  order: number;
+  content: string | null;
+  has_content: boolean;
+}
+
+/** The modules of an org course, with content, so they can be edited. */
+export function listOrgModules(
+  slug: string,
+  courseId: string,
+): Promise<OrgModule[]> {
+  return apiFetch(`/org/${slug}/courses/${courseId}/modules`, authed);
+}
+
+/** Edit an existing module: its title, content or position. */
+export function updateOrgModule(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+  body: {
+    title?: string;
+    order?: number;
+    content?: string | null;
+    reason?: string | null;
+  },
+): Promise<OrgModuleResult> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}`,
+    { ...authed, method: "PATCH", body },
+  );
+}
+
+/**
+ * Remove a module from an org course. Nothing comes back when it is removed
+ * at once; a department admin's or branch manager's request comes back with
+ * `requested: true` and needs a reason.
+ */
+export function deleteOrgModule(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+  reason = "",
+): Promise<OrgModuleResult | undefined> {
+  const query = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}${query}`,
+    { ...authed, method: "DELETE" },
+  );
 }
 
 /** Human file size. 1366 bytes reads better as "1.3 KB". */

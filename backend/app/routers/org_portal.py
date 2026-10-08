@@ -41,7 +41,12 @@ from app.deps import (
 from app.models.approval import ApprovalKind
 from app.models.audit import AuditAction, AuditEvent
 from app.models.deletion import DeletionRequest, DeletionStatus, DeletionTarget
-from app.models.org_change import ChangeAction, ChangeKind
+from app.models.org_change import (
+    ChangeAction,
+    ChangeKind,
+    ChangeStatus,
+    OrgChangeRequest,
+)
 from app.models.organization import Branch, Department, Organization
 from app.models.user import User, UserRole
 from app.services import (
@@ -154,12 +159,16 @@ class OrgProfile(BaseModel):
     department_id: uuid.UUID | None = None
     department_name: str | None = None
 
-    # Two capabilities rather than a role test in the browser. `can_author`
-    # covers an org admin and a department admin; `can_manage_people` adds a
-    # branch manager. Presentation only — every route re-checks server-side —
-    # but keeping the rule in one place stops the UI drifting from the API.
+    # Two capabilities rather than a role test in the browser. Both cover an
+    # org admin, a branch manager and a department admin; the managers' changes
+    # wait for the org admin. Presentation only — every route re-checks
+    # server-side — but keeping the rule in one place stops the UI drifting
+    # from the API.
     can_manage_people: bool = False
     can_author: bool = False
+    # A branch manager writes for their own branch only: their documents are
+    # filed against it and their courses go to one of its departments.
+    is_branch_manager: bool = False
 
 
 class OrgMember(BaseModel):
@@ -385,6 +394,7 @@ async def get_profile(session: DbSession, scope: OrgScope) -> OrgProfile:
         department_name=department.name if department else None,
         can_manage_people=scope.can_manage_people,
         can_author=scope.can_author,
+        is_branch_manager=scope.is_branch_manager,
     )
 
 
@@ -589,7 +599,10 @@ async def create_member(
                 action=ChangeAction.CREATE,
                 target_id=None,
                 label=f"{payload.name.strip()} ({email})",
-                reason=payload.reason or "",
+                # Canned fallback, like a new course or document: adding someone
+                # does not need a typed reason the way removing them does, and the
+                # org admin sees who is being added when they decide.
+                reason=payload.reason or "New member requested.",
                 actor=scope.user,
                 payload={
                     "name": payload.name.strip(),
@@ -930,19 +943,18 @@ async def remove_member(
     response: Response,
     reason: str = "",
 ) -> MemberRemoval:
-    """Remove someone from the organization, or ask an administrator to.
+    """Remove someone from the organization, or ask the org admin to.
 
-    PLATFORM STAFF remove; an org admin removes a branch manager or a
-    department admin; a branch manager or department admin removes the people
-    in their own branch or department. The account is deleted outright when
-    it has no history, and closed when it does. See `services/accounts.py`
-    for why those are different operations and why the caller is told which
-    one ran.
+    PLATFORM STAFF remove; an org admin removes directly; a branch manager or a
+    department admin asks. The account is deleted outright when it has no
+    history, and closed when it does. See `services/accounts.py` for why those
+    are different operations and why the caller is told which one ran.
 
-    AN ORG ADMIN REMOVING A LEARNER OR ANOTHER ADMIN asks: 202, the account is
-    untouched, and it waits for a Platform Admin or Super Admin. `outcome` is
-    "requested" in that case, which is how the screen knows to say so rather
-    than announcing a removal that has not happened.
+    A BRANCH MANAGER OR DEPARTMENT ADMIN REMOVING one of their people asks: 202,
+    the account is untouched, and it waits for the organisation admin to
+    approve (`services/org_changes.py`). `outcome` is "requested" in that case,
+    which is how the screen knows to say so rather than announcing a removal
+    that has not happened.
 
     Same guards as editing either way: a branch manager may only reach their own
     branch's people, nobody senior to them, and nobody may remove themselves.
@@ -1373,3 +1385,154 @@ async def org_audit(
         limit=limit,
         offset=offset,
     )
+
+
+# ---------------------------------------------------------------------------
+# Change requests a branch manager or department admin raised, for the
+# organisation admin to approve. Sir's rule of 2026-10-01: the org admin runs
+# their organisation and decides what the managers ask to do. See
+# `services/org_changes.py`. The org admin and platform staff act directly and
+# never appear here.
+# ---------------------------------------------------------------------------
+
+
+class OrgChangeRow(BaseModel):
+    id: uuid.UUID
+    #: member | training | document
+    kind: str
+    #: create | edit | delete
+    action: str
+    label: str
+    reason: str
+    status: str
+    requested_at: datetime
+    requested_by_name: str | None
+    requested_by_email: str | None
+    #: You raised this, so another administrator decides it.
+    requested_by_me: bool
+    decided_at: datetime | None
+    decided_by_name: str | None
+    decision_note: str | None
+    outcome: str | None
+
+
+async def _change_rows(
+    session: DbSession, requests: list[OrgChangeRequest], reader: User
+) -> list[OrgChangeRow]:
+    ids = {r.requested_by for r in requests} | {
+        r.decided_by for r in requests if r.decided_by
+    }
+    people: dict[uuid.UUID, User] = {}
+    if ids:
+        found = await session.scalars(select(User).where(User.id.in_(ids)))
+        people = {person.id: person for person in found}
+    rows = []
+    for r in requests:
+        asked = people.get(r.requested_by)
+        decided = people.get(r.decided_by) if r.decided_by else None
+        rows.append(
+            OrgChangeRow(
+                id=r.id,
+                kind=r.kind.value,
+                action=r.action.value,
+                label=r.label,
+                reason=r.reason,
+                status=r.status.value,
+                requested_at=r.requested_at,
+                requested_by_name=asked.name if asked else None,
+                requested_by_email=asked.email if asked else None,
+                requested_by_me=r.requested_by == reader.id,
+                decided_at=r.decided_at,
+                decided_by_name=decided.name if decided else None,
+                decision_note=r.decision_note,
+                outcome=r.outcome,
+            )
+        )
+    return rows
+
+
+@router.get("/change-requests", response_model=list[OrgChangeRow])
+async def list_change_requests(
+    session: DbSession, scope: OrgAdminScope, include_decided: bool = False
+) -> list[OrgChangeRow]:
+    """What this organisation's managers have asked to change. Admin scope:
+    only the org admin decides these, as only they decide deletions."""
+    requests = await org_changes.list_for_org(
+        session,
+        scope.organization.id,
+        status=None if include_decided else ChangeStatus.PENDING,
+    )
+    return await _change_rows(session, requests, scope.user)
+
+
+async def _load_change(
+    session: DbSession, scope: OrgContext, request_id: uuid.UUID
+) -> OrgChangeRequest:
+    # Locked, like the deletion queue: deciding is read-then-apply-then-write,
+    # and two administrators must not both apply the same change.
+    r = await session.get(OrgChangeRequest, request_id, with_for_update=True)
+    if r is None or r.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found."
+        )
+    return r
+
+
+@router.post("/change-requests/{request_id}/approve", response_model=OrgChangeRow)
+async def approve_change(
+    request_id: uuid.UUID,
+    payload: Decision,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> OrgChangeRow:
+    """Agree, and the change is applied in the same transaction."""
+    r = await _load_change(session, scope, request_id)
+    try:
+        await org_changes.decide(
+            session, request_row=r, actor=scope.user, approve=True, note=payload.note
+        )
+    except org_changes.ChangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+    await audit.record(
+        session,
+        action="org.change_approved",
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type=r.kind.value,
+        target_id=r.target_id or r.id,
+        metadata={"action": r.action.value, "label": r.label, "outcome": r.outcome},
+    )
+    await session.commit()
+    return (await _change_rows(session, [r], scope.user))[0]
+
+
+@router.post("/change-requests/{request_id}/decline", response_model=OrgChangeRow)
+async def decline_change(
+    request_id: uuid.UUID,
+    payload: Decision,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> OrgChangeRow:
+    """Refuse, with a reason. Nothing is applied."""
+    r = await _load_change(session, scope, request_id)
+    try:
+        await org_changes.decide(
+            session, request_row=r, actor=scope.user, approve=False, note=payload.note
+        )
+    except org_changes.ChangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+    await audit.record(
+        session,
+        action="org.change_declined",
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type=r.kind.value,
+        target_id=r.target_id or r.id,
+        metadata={"action": r.action.value, "label": r.label},
+    )
+    await session.commit()
+    return (await _change_rows(session, [r], scope.user))[0]

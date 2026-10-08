@@ -1,4 +1,4 @@
-# Voice Tutor LMS - backend dependencies
+# Voice Tutor LMS — backend dependencies
 #   pip install -r requirements.txt
 
 # --- Web framework ---

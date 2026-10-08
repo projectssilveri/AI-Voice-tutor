@@ -1555,16 +1555,16 @@ function UsersConsole() {
                           </td>
                           <td className={`${CELL} text-right`}>
                             <div className="cell-actions flex flex-wrap justify-end gap-2">
-                              {/* SOMEBODY INSIDE THE CUSTOMER ASKED. It waits
-                                  for platform staff, so the pill leads to the
-                                  queue where it is decided. */}
+                              {/* AN OLD REQUEST, from before 2026-10-01, when
+                                  a customer's deletions waited for platform
+                                  staff. Nothing new is filed that way, and
+                                  its staff page is gone, so this says so and
+                                  links nowhere. Platform staff can delete the
+                                  person directly. */}
                               {row.deletion_pending ? (
-                                <Link
-                                  href="/admin/deletion-requests"
-                                  className="rounded-full bg-warning-50 px-2.5 py-1 text-xs font-medium text-warning-900 hover:underline dark:bg-warning-500/15 dark:text-warning-300"
-                                >
+                                <span className="rounded-full bg-warning-50 px-2.5 py-1 text-xs font-medium text-warning-900 dark:bg-warning-500/15 dark:text-warning-300">
                                   Deletion requested
-                                </Link>
+                                </span>
                               ) : null}
                               {/* READ-ONLY, AND SAID SO. A platform admin sees
                                   a customer's people in full and changes none

@@ -23,11 +23,11 @@ from sqlalchemy.exc import IntegrityError
 from app.deps import DbSession, OrgAuthorScope, OrgScope
 from app.models.audit import AuditAction
 from app.models.course import Course, Module
-from app.models.deletion import DeletionTarget
+from app.models.org_change import ChangeAction, ChangeKind
 from app.models.org_document import DocumentVisibility
 from app.models.organization import Branch, Department
 from app.models.user import User, UserRole
-from app.services import audit, deletions, limits, materials
+from app.services import audit, limits, materials, org_changes
 from app.services import courses as course_service
 from app.services import org_documents as doc_service
 
@@ -65,6 +65,19 @@ class DocumentList(BaseModel):
     total: int
 
 
+class DocumentUploadResult(BaseModel):
+    """Added to the library at once, or sent to the org admin to approve.
+
+    A department admin or branch manager gets `requested=True` and no document:
+    the file is held out of the library until the org admin approves it. An org
+    admin or platform staff gets the stored document straight away.
+    """
+
+    requested: bool
+    document: DocumentRow | None = None
+    message: str | None = None
+
+
 def _visibility_of(value) -> DocumentVisibility:
     """The listing hands back the column value, the detail routes an ORM row.
 
@@ -75,21 +88,30 @@ def _visibility_of(value) -> DocumentVisibility:
     return value if isinstance(value, DocumentVisibility) else DocumentVisibility(value)
 
 
-def _may_manage_document(scope, visibility, department_id) -> bool:
-    """Whether this caller may remove this document.
+def _may_manage_document(scope, visibility, branch_id, department_id) -> bool:
+    """Whether this caller may remove this document, or ask to.
 
     An org admin looks after the whole library. A department admin looks after
-    the files scoped to their own department and nothing else — not another
-    department's, and not the organization-wide ones, which belong to everybody.
+    the files scoped to their own department, and a branch manager the files
+    scoped to their own branch, and nothing else: not another department's or
+    branch's, and not the organization-wide ones, which belong to everybody.
     """
     if scope.is_org_admin:
         return True
+    seen = _visibility_of(visibility)
+    if scope.is_branch_manager:
+        own = scope.user.branch_id
+        return (
+            own is not None
+            and seen is DocumentVisibility.BRANCH
+            and branch_id == own
+        )
     if not scope.is_dept_admin:
         return False
     scoped = scope.scoped_department_id()
     return (
         scoped is not None
-        and _visibility_of(visibility) is DocumentVisibility.DEPARTMENT
+        and seen is DocumentVisibility.DEPARTMENT
         and department_id == scoped
     )
 
@@ -143,7 +165,9 @@ async def list_documents(session: DbSession, scope: OrgScope) -> DocumentList:
                 created_at=r.created_at,
                 uploaded_by=r.uploaded_by,
                 has_text=bool(r.has_text),
-                can_edit=_may_manage_document(scope, r.visibility, r.department_id),
+                can_edit=_may_manage_document(
+                    scope, r.visibility, r.branch_id, r.department_id
+                ),
             )
             for r in rows
         ],
@@ -152,7 +176,9 @@ async def list_documents(session: DbSession, scope: OrgScope) -> DocumentList:
 
 
 @router.post(
-    "/documents", response_model=DocumentRow, status_code=status.HTTP_201_CREATED
+    "/documents",
+    response_model=DocumentUploadResult,
+    status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
     session: DbSession,
@@ -163,14 +189,22 @@ async def upload_document(
     visibility: str = DocumentVisibility.ORGANIZATION.value,
     branch_id: uuid.UUID | None = None,
     department_id: uuid.UUID | None = None,
-) -> DocumentRow:
-    """Add a file to the library.
+) -> DocumentUploadResult:
+    """Add a file to the library, or ask the org admin to.
 
     Open to a DEPARTMENT ADMIN as well as an org admin. The HR admin
     maintaining HR's training needs the HR handbook in the library, and being
     able to write the course while having to ask somebody else to upload its
     source document is half a role. Their file is filed against their own
     department, and nowhere else.
+
+    A BRANCH MANAGER may ask too, for a file filed against their own branch.
+
+    A DEPARTMENT ADMIN'S OR BRANCH MANAGER'S UPLOAD WAITS for the org admin
+    (Sir's rule of 2026-10-01), the same as their course. The file is stored
+    held back with `pending_approval` set so the title is reserved and the
+    request can point at it, but it is in no listing and downloadable by nobody
+    until the org admin approves. The org admin and platform staff add at once.
 
     The upload is validated by magic bytes, not by what the browser claimed —
     `services/materials.validate`, shared with module handouts so the rule has
@@ -202,6 +236,20 @@ async def upload_document(
         department_id = scoped
         branch_id = None
 
+    # THE SAME FOR A BRANCH MANAGER, one level up: their file is filed against
+    # their own branch, whatever was sent. "Everyone in the organization" is
+    # above their branch, and another branch is not theirs to file for.
+    if scope.is_branch_manager:
+        own_branch = scope.user.branch_id
+        if own_branch is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You have no branch assigned, so you cannot add documents.",
+            )
+        chosen = DocumentVisibility.BRANCH
+        branch_id = own_branch
+        department_id = None
+
     # A scope must name the thing it scopes to, and that thing must belong to
     # THIS organization — otherwise a document could be filed against another
     # customer's branch.
@@ -222,6 +270,11 @@ async def upload_document(
                 detail="Choose a department in this organization.",
             )
 
+    # A department admin's or branch manager's upload waits; the org admin and
+    # platform staff add at once. Decided before the row is built, so the file
+    # is stored held back.
+    waits = org_changes.needs_approval(scope.user)
+
     data = await file.read()
     try:
         document = await doc_service.add_document(
@@ -235,6 +288,7 @@ async def upload_document(
             visibility=chosen,
             branch_id=branch_id,
             department_id=department_id,
+            pending_approval=waits,
         )
     except materials.MaterialError as exc:
         raise HTTPException(
@@ -258,6 +312,36 @@ async def upload_document(
             ),
         ) from None
 
+    # HELD BACK FOR APPROVAL. The request points at the stored-but-hidden row;
+    # approving clears the flag and it appears, declining deletes it
+    # (`services/org_changes.py`). No "uploaded" audit yet — it is not in the
+    # library until the org admin agrees, and the approval writes that record.
+    if waits:
+        try:
+            await org_changes.request(
+                session,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.DOCUMENT,
+                action=ChangeAction.CREATE,
+                target_id=document.id,
+                label=document.filename,
+                reason="New document requested.",
+                actor=scope.user,
+            )
+        except org_changes.ChangeError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        await session.commit()
+        return DocumentUploadResult(
+            requested=True,
+            message=(
+                f"{document.title} has not been added yet. The organisation "
+                "administrator has to approve it."
+            ),
+        )
+
     await audit.record_safely(
         session,
         action=AuditAction.ORG_DOCUMENT_UPLOADED,
@@ -275,20 +359,23 @@ async def upload_document(
     await session.commit()
     await session.refresh(document)
 
-    return DocumentRow(
-        id=document.id,
-        title=document.title,
-        description=document.description,
-        filename=document.filename,
-        size_bytes=document.size_bytes,
-        content_type=document.content_type,
-        visibility=document.visibility.value,
-        branch_id=document.branch_id,
-        department_id=document.department_id,
-        created_at=document.created_at,
-        uploaded_by=document.uploaded_by,
-        has_text=document.extracted_text is not None,
-        can_edit=True,
+    return DocumentUploadResult(
+        requested=False,
+        document=DocumentRow(
+            id=document.id,
+            title=document.title,
+            description=document.description,
+            filename=document.filename,
+            size_bytes=document.size_bytes,
+            content_type=document.content_type,
+            visibility=document.visibility.value,
+            branch_id=document.branch_id,
+            department_id=document.department_id,
+            created_at=document.created_at,
+            uploaded_by=document.uploaded_by,
+            has_text=document.extracted_text is not None,
+            can_edit=True,
+        ),
     )
 
 
@@ -305,6 +392,14 @@ async def download_document(
         session, scope.organization.id, document_id
     )
     if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
+        )
+
+    # A document still waiting for the org admin's approval is not in the library
+    # yet, so it is not downloadable by its id either — 404, the same answer the
+    # listing gives by leaving it out.
+    if document.pending_approval:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
         )
@@ -341,10 +436,9 @@ async def delete_document(
     otherwise have removed another department's document by the time anything
     looked at whose it was.
 
-    PLATFORM STAFF REMOVE; ANYBODY ELSE ASKS, the organisation admin included,
-    and a Platform Admin or Super Admin decides. A document is a customer's
-    data, and deleting one is small and irreversible. 202 and no body when it
-    is queued.
+    THE ORG ADMIN AND PLATFORM STAFF REMOVE AT ONCE; a department admin, or
+    anyone who cannot manage the file, asks, and the org admin approves. 202 and
+    no body when it is queued (Sir's rule of 2026-10-01).
     """
     document = await doc_service.get_with_data(
         session, scope.organization.id, document_id
@@ -366,62 +460,36 @@ async def delete_document(
     if not _document_readable(
         scope, document.visibility, document.branch_id, document.department_id
     ) and not _may_manage_document(
-        scope, document.visibility, document.department_id
+        scope, document.visibility, document.branch_id, document.department_id
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
         )
 
-    # Platform staff remove it outright; everybody else asks, the organisation
-    # admin included, and a Platform Admin or Super Admin decides
-    # (`deletions.acts_directly`, 2026-10-01).
-    if not deletions.acts_directly(scope.user) or not _may_manage_document(
-        scope, document.visibility, document.department_id
+    # The org admin and platform staff delete it at once. A department admin,
+    # a branch manager, or anyone who cannot manage this file, asks, and the
+    # org admin approves (`services/org_changes`, Sir's rule of 2026-10-01).
+    if org_changes.needs_approval(scope.user) or not _may_manage_document(
+        scope, document.visibility, document.branch_id, document.department_id
     ):
         try:
-            request = await deletions.request_deletion(
+            await org_changes.request(
                 session,
-                organization=scope.organization,
-                target_type=DeletionTarget.DOCUMENT,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.DOCUMENT,
+                action=ChangeAction.DELETE,
                 target_id=document_id,
-                target_label=document.filename,
-                actor=scope.user,
+                label=document.filename,
                 reason=reason,
+                actor=scope.user,
             )
-        except deletions.DeletionError as exc:
+        except org_changes.ChangeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
-
-        await audit.record(
-            session,
-            action=AuditAction.DELETION_REQUESTED,
-            actor=scope.user,
-            organization_id=scope.organization.id,
-            target_type="organization_document",
-            target_id=document_id,
-            metadata={"name": document.filename, "request": str(request.id)},
-        )
         await session.commit()
         response.status_code = status.HTTP_202_ACCEPTED
         return
-
-    # Platform staff acting alone. Recorded as raised and approved in the same
-    # moment, so the history of a document has one shape whoever removed it.
-    try:
-        await deletions.record_direct(
-            session,
-            organization=scope.organization,
-            target_type=DeletionTarget.DOCUMENT,
-            target_id=document_id,
-            target_label=document.filename,
-            actor=scope.user,
-            reason=reason or "Removed by platform staff.",
-        )
-    except deletions.DeletionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from None
 
     removed = await doc_service.delete_document(
         session, scope.organization.id, document_id
@@ -461,8 +529,12 @@ async def document_text(
     document = await doc_service.get_with_data(
         session, scope.organization.id, document_id
     )
-    if document is None or not _document_readable(
-        scope, document.visibility, document.branch_id, document.department_id
+    if (
+        document is None
+        or document.pending_approval
+        or not _document_readable(
+            scope, document.visibility, document.branch_id, document.department_id
+        )
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
@@ -490,6 +562,21 @@ class OrgCourseRow(BaseModel):
     # touch them; without this the screen would offer an Edit button that the
     # server answers with a 403. Presentation only — the route re-checks.
     can_edit: bool = True
+    # A department admin's edit, waiting for the org admin. The row is returned
+    # unchanged with this set, so the screen can say the change was sent.
+    change_requested: bool = False
+
+
+class OrgCourseCreateResult(BaseModel):
+    """Created at once, or sent to the org admin to approve.
+
+    A department admin gets `requested=True` and no course: nothing exists until
+    the org admin approves. An org admin or platform staff gets the course.
+    """
+
+    requested: bool
+    course: OrgCourseRow | None = None
+    message: str | None = None
 
 
 class OrgCourseCreate(BaseModel):
@@ -515,34 +602,76 @@ class OrgCourseUpdate(BaseModel):
     # the route checks `model_fields_set` rather than testing for None.
     department_id: uuid.UUID | None = None
     is_published: bool | None = None
+    #: Why, for a department admin's edit, which waits for the org admin.
+    reason: str | None = Field(default=None, max_length=2_000)
 
 
-def _may_edit(scope, course: Course) -> bool:
+async def _editable_departments(session, scope) -> set[uuid.UUID] | None:
+    """The departments whose courses this caller may change, or ask to change.
+
+    None means every course in the organization: an org admin, and platform
+    staff acting as one. A department admin has their own department. A branch
+    manager has the departments inside their own branch, because a course
+    reaches people through its department and a branch has no courses of its
+    own. Everybody else, and a manager with no department or branch, has none:
+    failing closed, as `scoped_department_id` asks.
+    """
+    if scope.is_org_admin:
+        return None
+    if scope.is_dept_admin:
+        scoped = scope.scoped_department_id()
+        return {scoped} if scoped is not None else set()
+    if scope.is_branch_manager and scope.user.branch_id is not None:
+        rows = await session.scalars(
+            select(Department.id).where(
+                Department.organization_id == scope.organization.id,
+                Department.branch_id == scope.user.branch_id,
+            )
+        )
+        return set(rows.all())
+    return set()
+
+
+def _may_edit(scope, course: Course, editable: set[uuid.UUID] | None) -> bool:
     """Whether this caller may change this course.
 
     An org admin may change anything in their organization. A department admin
-    may change their own department's courses and nothing else — not another
+    may change their own department's courses, and a branch manager the courses
+    of the departments in their branch, and nothing else: not another
     department's, and not the company-wide ones, which belong to everybody and
-    are the org admin's to write.
+    are the org admin's to write. `editable` is `_editable_departments`.
     """
-    if scope.is_org_admin:
+    if editable is None:
         return True
-    if scope.is_dept_admin:
-        scoped = scope.scoped_department_id()
-        return scoped is not None and course.department_id == scoped
-    return False
+    return course.department_id is not None and course.department_id in editable
 
 
-def _require_editable(scope, course: Course) -> None:
+def _require_editable(
+    scope, course: Course, editable: set[uuid.UUID] | None
+) -> None:
     """404, not 403, for a course outside the caller's department.
 
     Same reasoning as the tenant boundary: whether a course exists in another
     department is not something the sales admin should learn by the shape of
     the refusal. A course they can SEE but not edit — a company-wide one — is
     a 403, because they already know it exists.
+
+    A branch manager sees every course in the organization
+    (`limits.visible_department_ids`), so anything outside their branch is a
+    403 for them, never a 404.
     """
-    if _may_edit(scope, course):
+    if _may_edit(scope, course, editable):
         return
+    if scope.is_branch_manager:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This course is for the whole organization. Ask an administrator."
+                if course.department_id is None
+                else "This course is not for a department in your branch. "
+                "Ask an administrator."
+            ),
+        )
     visible = course.department_id is None or (
         scope.scoped_department_id() is not None
         and course.department_id == scope.scoped_department_id()
@@ -617,6 +746,7 @@ async def list_org_courses(session: DbSession, scope: OrgScope) -> list[OrgCours
             )
         ).all()
     }
+    editable = await _editable_departments(session, scope)
 
     return [
         OrgCourseRow(
@@ -627,7 +757,7 @@ async def list_org_courses(session: DbSession, scope: OrgScope) -> list[OrgCours
             module_count=count,
             department_id=course.department_id,
             department_name=department_names.get(course.department_id),
-            can_edit=_may_edit(scope, course),
+            can_edit=_may_edit(scope, course, editable),
         )
         for course, count in rows
     ]
@@ -652,11 +782,13 @@ async def _department_in_scope(session, scope, department_id):
 
 
 @router.post(
-    "/courses", response_model=OrgCourseRow, status_code=status.HTTP_201_CREATED
+    "/courses",
+    response_model=OrgCourseCreateResult,
+    status_code=status.HTTP_201_CREATED,
 )
 async def create_org_course(
     payload: OrgCourseCreate, session: DbSession, scope: OrgAuthorScope
-) -> OrgCourseRow:
+) -> OrgCourseCreateResult:
     """Create a course inside this organization.
 
     Stamped with the organization's id at creation, which is the single fact
@@ -688,6 +820,61 @@ async def create_org_course(
         department_id = await _department_in_scope(
             session, scope, payload.department_id
         )
+        # REQUIRED FOR A BRANCH MANAGER, and it must be in their branch. A
+        # course for everyone is above their branch, and another branch's
+        # department is not theirs to write for.
+        if scope.is_branch_manager:
+            editable = await _editable_departments(session, scope)
+            if not editable:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Your branch has no departments yet, and a course reaches "
+                        "people through a department. Ask the organisation "
+                        "administrator."
+                    ),
+                )
+            if department_id is None or department_id not in editable:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Choose a department in your branch. A course for "
+                        "everyone is the organisation administrator's to add."
+                    ),
+                )
+
+    # A DEPARTMENT ADMIN OR BRANCH MANAGER DOES NOT CREATE DIRECTLY. Sir's rule
+    # of 2026-10-01: the course is not made until the org admin approves. The
+    # org admin and platform staff create at once.
+    if org_changes.needs_approval(scope.user):
+        try:
+            await org_changes.request(
+                session,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.TRAINING,
+                action=ChangeAction.CREATE,
+                target_id=None,
+                label=payload.title.strip(),
+                reason="New course requested.",
+                actor=scope.user,
+                payload={
+                    "title": payload.title.strip(),
+                    "description": payload.description,
+                    "department_id": str(department_id) if department_id else None,
+                },
+            )
+        except org_changes.ChangeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        await session.commit()
+        return OrgCourseCreateResult(
+            requested=True,
+            message=(
+                f"{payload.title.strip()} has not been created yet. The "
+                "organisation administrator has to approve it."
+            ),
+        )
 
     course = await course_service.create_course(
         session,
@@ -706,19 +893,22 @@ async def create_org_course(
         metadata={"title": course.title},
     )
     await session.commit()
-    return OrgCourseRow(
-        id=course.id,
-        title=course.title,
-        description=course.description,
-        is_published=course.is_published,
-        module_count=0,
-        department_id=course.department_id,
-        department_name=(
-            (await session.get(Department, course.department_id)).name
-            if course.department_id
-            else None
+    return OrgCourseCreateResult(
+        requested=False,
+        course=OrgCourseRow(
+            id=course.id,
+            title=course.title,
+            description=course.description,
+            is_published=course.is_published,
+            module_count=0,
+            department_id=course.department_id,
+            department_name=(
+                (await session.get(Department, course.department_id)).name
+                if course.department_id
+                else None
+            ),
+            can_edit=True,
         ),
-        can_edit=True,
     )
 
 
@@ -738,7 +928,8 @@ async def update_org_course(
         )
     # AND THE DEPARTMENT, inside the tenant. The sales admin does not rename,
     # republish or rewrite HR's training.
-    _require_editable(scope, course)
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
 
     changes = payload.model_dump(exclude_unset=True)
 
@@ -752,6 +943,14 @@ async def update_org_course(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You cannot move a course out of your own department.",
             )
+    # The same wall one level up: a branch manager keeps a course inside their
+    # branch's departments, and cannot widen it to everyone with null.
+    if scope.is_branch_manager and "department_id" in changes:
+        if editable is not None and changes["department_id"] not in editable:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot move a course out of your own branch.",
+            )
 
     # A DEPARTMENT MUST BE ONE OF OURS. `model_dump` plus a blind setattr would
     # have written whatever id was sent, so an admin who knew another
@@ -763,6 +962,52 @@ async def update_org_course(
             session, scope, changes["department_id"]
         )
 
+    # A DEPARTMENT ADMIN'S EDIT WAITS for the org admin (Sir's rule of
+    # 2026-10-01). The guards above have run, so it only proposes something they
+    # are allowed to; nothing moves until the org admin approves.
+    proposed = {k: v for k, v in changes.items() if k != "reason"}
+    if org_changes.needs_approval(scope.user) and proposed:
+        payload_json = {
+            key: (str(value) if isinstance(value, uuid.UUID) else value)
+            for key, value in proposed.items()
+        }
+        try:
+            await org_changes.request(
+                session,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.TRAINING,
+                action=ChangeAction.EDIT,
+                target_id=course.id,
+                label=course.title,
+                reason=payload.reason or "Course edit requested.",
+                actor=scope.user,
+                payload=payload_json,
+            )
+        except org_changes.ChangeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from None
+        await session.commit()
+        count = await session.scalar(
+            select(func.count()).select_from(Module).where(Module.course_id == course.id)
+        )
+        return OrgCourseRow(
+            id=course.id,
+            title=course.title,
+            description=course.description,
+            is_published=course.is_published,
+            module_count=count or 0,
+            department_id=course.department_id,
+            department_name=(
+                (await session.get(Department, course.department_id)).name
+                if course.department_id
+                else None
+            ),
+            can_edit=_may_edit(scope, course, editable),
+            change_requested=True,
+        )
+
+    changes.pop("reason", None)
     for field, value in changes.items():
         setattr(course, field, value)
 
@@ -793,7 +1038,7 @@ async def update_org_course(
             if course.department_id
             else None
         ),
-        can_edit=_may_edit(scope, course),
+        can_edit=_may_edit(scope, course, editable),
     )
 
 
@@ -815,70 +1060,45 @@ async def delete_org_course(
 ) -> OrgCourseRemoval:
     """Delete one of this organisation's courses, or ask for it to be deleted.
 
-    Nobody inside a company could remove a course at all before this. Platform
-    staff delete it at once; whoever else may edit it (the organisation admin,
-    or a department admin for their own department's course) asks, 202, and a
-    Platform Admin or Super Admin decides (`deletions.acts_directly`,
-    2026-10-01).
+    The org admin deletes at once, with no approval, and so does platform staff.
+    A department admin or branch manager asks, 202, and the org admin approves
+    it (`services/org_changes`, Sir's rule of 2026-10-01).
     """
     course = await session.get(Course, course_id)
     if course is None or course.organization_id != scope.organization.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
         )
-    _require_editable(scope, course)
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
     name = course.title
 
-    if not deletions.acts_directly(scope.user):
+    if org_changes.needs_approval(scope.user):
         try:
-            request = await deletions.request_deletion(
+            await org_changes.request(
                 session,
-                organization=scope.organization,
-                target_type=DeletionTarget.TRAINING,
+                organization_id=scope.organization.id,
+                kind=ChangeKind.TRAINING,
+                action=ChangeAction.DELETE,
                 target_id=course.id,
-                target_label=name,
-                actor=scope.user,
+                label=name,
                 reason=reason,
+                actor=scope.user,
             )
-        except deletions.DeletionError as exc:
+        except org_changes.ChangeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from None
-        await audit.record(
-            session,
-            action=AuditAction.DELETION_REQUESTED,
-            actor=scope.user,
-            organization_id=scope.organization.id,
-            target_type="course",
-            target_id=course.id,
-            metadata={"name": name, "request": str(request.id)},
-        )
         await session.commit()
         response.status_code = status.HTTP_202_ACCEPTED
         return OrgCourseRemoval(
             outcome="requested",
             explanation=(
-                f"{name} has not been deleted. A Platform Admin or Super Admin "
-                "has to approve it, and it is waiting on them."
+                f"{name} has not been deleted. The organisation administrator "
+                "has to approve it."
             ),
         )
 
-    # Platform staff acting alone, recorded as raised and approved together so
-    # the history of the course has one shape whoever removed it.
-    try:
-        await deletions.record_direct(
-            session,
-            organization=scope.organization,
-            target_type=DeletionTarget.TRAINING,
-            target_id=course.id,
-            target_label=name,
-            actor=scope.user,
-            reason=reason or "Removed by platform staff.",
-        )
-    except deletions.DeletionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from None
     await session.delete(course)
     await audit.record(
         session,
@@ -901,6 +1121,62 @@ class OrgModuleCreate(BaseModel):
     # What the tutor teaches from. Reviewed and saved by a person, never
     # written straight from an extraction — decision 97.
     content: str | None = None
+    #: Why, for a department admin's or branch manager's change, which waits
+    #: for the org admin.
+    reason: str | None = Field(default=None, max_length=2_000)
+
+
+async def _request_module_change(
+    session,
+    scope,
+    course: Course,
+    *,
+    op: str,
+    target_id: uuid.UUID | None,
+    label: str,
+    reason: str,
+    fields: dict | None = None,
+) -> dict:
+    """Queue a module change for the org admin, instead of making it.
+
+    A MODULE IS THE COURSE. It is what the tutor reads out, so adding,
+    rewriting or removing one is editing the course, and Sir's rule of
+    2026-10-01 sends a department admin's or branch manager's course edit to
+    the org admin. These routes used to apply it at once.
+
+    Filed as an EDIT of the course, so the org admin's queue reads "Edit
+    course" with the module named in the label. `target_id` is the module for
+    an edit or removal, so each module carries one open request at a time
+    without blocking requests about the course's other modules; a new module
+    has none. `services/org_changes._apply_module` makes the change on approval.
+    """
+    payload = {"module_op": op, "course_id": str(course.id), **(fields or {})}
+    try:
+        await org_changes.request(
+            session,
+            organization_id=scope.organization.id,
+            kind=ChangeKind.TRAINING,
+            action=ChangeAction.EDIT,
+            target_id=target_id,
+            label=label,
+            # Blank is refused there, with the sentence to show. A removal
+            # must say why, as a course removal must.
+            reason=reason,
+            actor=scope.user,
+            payload=payload,
+        )
+    except org_changes.ChangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+    await session.commit()
+    return {
+        "requested": True,
+        "message": (
+            "Nothing has changed yet. The organisation administrator has to "
+            "approve it."
+        ),
+    }
 
 
 @router.post(
@@ -913,6 +1189,7 @@ async def create_org_module(
     payload: OrgModuleCreate,
     session: DbSession,
     scope: OrgAuthorScope,
+    response: Response,
 ) -> dict:
     course = await session.get(Course, course_id)
     if course is None or course.organization_id != scope.organization.id:
@@ -921,7 +1198,8 @@ async def create_org_module(
         )
     # Adding a module IS editing the course — it is what the tutor reads out —
     # so it is gated exactly as the course itself is.
-    _require_editable(scope, course)
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
     # The same cap as a platform course, except an organization may be given
     # its own limit — which is part of what a business plan is sold on.
     try:
@@ -930,6 +1208,24 @@ async def create_org_module(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from None
+
+    # A department admin or branch manager asks (Sir's rule of 2026-10-01).
+    if org_changes.needs_approval(scope.user):
+        response.status_code = status.HTTP_202_ACCEPTED
+        return await _request_module_change(
+            session,
+            scope,
+            course,
+            op="create",
+            target_id=None,
+            label=f'{course.title}: add module "{payload.title.strip()}"',
+            reason=payload.reason or "New module requested.",
+            fields={
+                "title": payload.title.strip(),
+                "content": payload.content,
+                "order": payload.order,
+            },
+        )
 
     # Same rule as the platform route: append unless the caller names a
     # position. This screen used to send `course.module_count`, so deleting a
@@ -972,11 +1268,192 @@ async def create_org_module(
         ) from None
     await session.refresh(module)
     return {
+        "requested": False,
         "id": str(module.id),
         "title": module.title,
         "order": module.order,
         "has_content": bool(module.content),
     }
+
+
+class OrgModuleUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    order: int | None = Field(default=None, ge=0)
+    content: str | None = None
+    #: Why, for a department admin's or branch manager's change.
+    reason: str | None = Field(default=None, max_length=2_000)
+
+
+@router.get("/courses/{course_id}/modules", response_model=list[dict])
+async def list_org_course_modules(
+    course_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAuthorScope,
+) -> list[dict]:
+    """The modules of one org course, with content, so they can be edited."""
+    course = await session.get(Course, course_id)
+    if course is None or course.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        )
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
+    modules = await course_service.list_modules(session, course_id)
+    return [
+        {
+            "id": str(m.id),
+            "title": m.title,
+            "order": m.order,
+            "content": m.content,
+            "has_content": bool(m.content),
+        }
+        for m in modules
+    ]
+
+
+@router.patch("/courses/{course_id}/modules/{module_id}", response_model=dict)
+async def update_org_module(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    payload: OrgModuleUpdate,
+    session: DbSession,
+    scope: OrgAuthorScope,
+    response: Response,
+) -> dict:
+    """Edit a module of an org course: its title, content or position.
+
+    The gap this closes: a course could only have modules ADDED, so a mistake
+    in an existing module could not be fixed from the portal. Gated exactly as
+    creating one is (`_require_editable`), and a department admin's or branch
+    manager's edit waits for the org admin the same way.
+    """
+    course = await session.get(Course, course_id)
+    if course is None or course.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        )
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
+    try:
+        module = await course_service.get_module(session, module_id)
+    except course_service.ModuleNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+    # The module must belong to the course in the URL, or knowing a module id
+    # would be enough to edit one through another course's path.
+    if module.course_id != course_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        )
+    changes = payload.model_dump(exclude_unset=True)
+    reason = changes.pop("reason", None)
+    if org_changes.needs_approval(scope.user):
+        if not changes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Nothing to change.",
+            )
+        response.status_code = status.HTTP_202_ACCEPTED
+        return await _request_module_change(
+            session,
+            scope,
+            course,
+            op="edit",
+            target_id=module.id,
+            label=f'{course.title}: change module "{module.title}"',
+            reason=reason or "Module edit requested.",
+            fields=changes,
+        )
+    try:
+        module = await course_service.update_module(session, module_id, **changes)
+    except course_service.ModuleNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+    except course_service.DuplicateModuleOrderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from None
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"edited_module": module.title},
+    )
+    await session.commit()
+    return {
+        "requested": False,
+        "id": str(module.id),
+        "title": module.title,
+        "order": module.order,
+        "has_content": bool(module.content),
+    }
+
+
+@router.delete(
+    "/courses/{course_id}/modules/{module_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    # Set, not inferred: 204 carries no body, and a department admin's or
+    # branch manager's removal answers 202 with one.
+    response_model=None,
+)
+async def delete_org_module(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAuthorScope,
+    response: Response,
+    reason: str = "",
+) -> dict | None:
+    """Remove a module from an org course. Gated as editing the course is.
+
+    The org admin and platform staff remove it at once, 204. A department
+    admin or branch manager asks, 202, and the org admin approves.
+    """
+    course = await session.get(Course, course_id)
+    if course is None or course.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        )
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
+    try:
+        module = await course_service.get_module(session, module_id)
+    except course_service.ModuleNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        ) from None
+    if module.course_id != course_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        )
+    name = module.title
+    if org_changes.needs_approval(scope.user):
+        response.status_code = status.HTTP_202_ACCEPTED
+        return await _request_module_change(
+            session,
+            scope,
+            course,
+            op="delete",
+            target_id=module.id,
+            label=f'{course.title}: remove module "{name}"',
+            reason=reason,
+        )
+    await course_service.delete_module(session, module_id)
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"removed_module": name},
+    )
+    await session.commit()
 
 
 class OrgLearnerRow(BaseModel):
@@ -1011,7 +1488,8 @@ async def course_audience(
     # could. A company-wide course is in every department admin's own listing,
     # and its audience is the WHOLE organization: asking about it handed the
     # sales admin every HR learner's name and address, from their own screen.
-    _require_editable(scope, course)
+    editable = await _editable_departments(session, scope)
+    _require_editable(scope, course, editable)
 
     filters = [
         User.organization_id == scope.organization.id,

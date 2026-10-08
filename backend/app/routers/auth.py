@@ -84,6 +84,18 @@ async def read_session(user: OptionalUser, session: DbSession) -> SessionUser | 
     )
 
 
-# GET/PATCH /users/me and /users/{id}. fastapi-users guards these so a user can
-# only edit themselves unless they are a superuser.
-users_router.include_router(fastapi_users.get_users_router(UserRead, UserUpdate))
+# GET/PATCH /users/me only.
+#
+# fastapi-users also mounts GET, PATCH and DELETE /users/{id}, guarded by
+# nothing but `is_superuser`. Every platform admin carries that flag
+# (`admin.set_user_role`, `admin_users.create_platform_user`), so those three
+# routes let a platform admin read, edit and delete a super admin or another
+# platform admin, and skipped the super admin floor, the organisation admin
+# floor, the approvals and the audit trail. Nothing in the frontend calls them:
+# people are managed through /admin/users and the organisation portal, which
+# apply Sir's rules. So they are not mounted.
+_users_router = fastapi_users.get_users_router(UserRead, UserUpdate)
+_users_router.routes = [
+    route for route in _users_router.routes if getattr(route, "path", "") == "/me"
+]
+users_router.include_router(_users_router)

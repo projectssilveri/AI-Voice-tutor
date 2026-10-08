@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Action } from "@/components/ui/Action";
 import Avatar from "@/components/ui/Avatar";
-import DeletionQueue from "@/components/org/DeletionQueue";
+import ChangeQueue from "@/components/org/ChangeQueue";
 import OrgShell from "@/components/org/OrgShell";
 import { useAuth } from "@/context/AuthContext";
 import EmptyState from "@/components/ui/EmptyState";
@@ -99,6 +99,14 @@ export default function OrgPeoplePage() {
     void load();
   }, [load]);
 
+  // SO A BLOCKED ACTION IS SEEN. The error and success banners sit at the top
+  // of the page; clicking Deactivate on a row far down the list set one and
+  // left it off screen, so a refusal (the 2-admin floor, say) looked like the
+  // button doing nothing. Bring the banner into view whenever it changes.
+  useEffect(() => {
+    if (error || notice) window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [error, notice]);
+
   async function run(work: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
@@ -130,18 +138,12 @@ export default function OrgPeoplePage() {
   const isDeptAdmin = profile?.is_dept_admin ?? false;
   const canWrite = profile?.can_manage_people ?? false;
 
-  // WHO REMOVES AT ONCE, the twin of `deletions.acts_directly` (2026-10-01).
-  // Platform staff always. This organisation's admin for a branch manager or
-  // a department admin. A branch manager or department admin for the people
-  // in their own branch or department, the only people listed for them. The
-  // org admin removing a learner or another admin asks, and a Platform Admin
-  // or Super Admin decides. Presentation only: the server decides the same.
-  const removesAtOnce = (role: string) =>
-    Boolean(profile?.is_platform_staff) ||
-    profile?.my_role === "branch_manager" ||
-    profile?.my_role === "dept_admin" ||
-    (profile?.my_role === "org_admin" &&
-      (role === "branch_manager" || role === "dept_admin"));
+  // WHO REMOVES AT ONCE (`org_changes.needs_approval`, Sir's rule of
+  // 2026-10-01). The org admin removes anyone at once, and so does platform
+  // staff. A branch manager or department admin asks, and the org admin
+  // approves. Presentation only: the server decides the same.
+  const removesAtOnce = () =>
+    Boolean(profile?.is_platform_staff) || profile?.my_role === "org_admin";
 
   // NOBODY HANDS OUT MORE POWER THAN THEY HOLD. Mirrors ROLE_RANK in
   // `routers/org_portal.py`: everyone may assign their own level and below, so
@@ -214,11 +216,7 @@ export default function OrgPeoplePage() {
           Renders nothing when the queue is empty, and reads as empty for
           anybody who is not an administrator. */}
       {profile?.is_org_admin ? (
-        <DeletionQueue
-          slug={slug}
-          canDecide={Boolean(profile?.is_platform_staff)}
-          onDecided={() => void load()}
-        />
+        <ChangeQueue slug={slug} onDecided={() => void load()} />
       ) : null}
 
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -269,22 +267,20 @@ export default function OrgPeoplePage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            setNotice(null);
+            // Captured now, the only moment the password exists in readable
+            // form anywhere, so clearing the form below cannot lose it.
+            const typed = {
+              name: form.name.trim(),
+              email: form.email.trim(),
+              password: form.password,
+            };
             void run(async () => {
               const made = await createMember(slug, {
-                name: form.name.trim(),
-                email: form.email.trim(),
-                password: form.password,
+                ...typed,
                 role: form.role,
                 branch_id: form.branch_id || null,
                 department_id: form.department_id || null,
-              });
-              // Captured BEFORE the form is cleared. This is the only
-              // moment the password exists in readable form anywhere.
-              setJustCreated({
-                name: form.name.trim(),
-                email: form.email.trim(),
-                password: form.password,
-                pendingApproval: Boolean(made.pending_approval),
               });
               setForm({
                 name: "",
@@ -295,6 +291,20 @@ export default function OrgPeoplePage() {
                 department_id: "",
               });
               setAdding(false);
+              // A branch manager or department admin's add waits for the org
+              // admin: no account exists yet, so there is no password to hand
+              // over. Say it was sent, and do not show the password card.
+              if (made.requested) {
+                setNotice(
+                  made.message ??
+                    "Sent to the organisation administrator to approve.",
+                );
+                return;
+              }
+              setJustCreated({
+                ...typed,
+                pendingApproval: Boolean(made.member?.pending_approval),
+              });
             });
           }}
           className="mb-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-raised dark:border-gray-800 dark:bg-white/[0.03]"
@@ -617,7 +627,7 @@ export default function OrgPeoplePage() {
                     type="button"
                     disabled={busy}
                     onClick={() => {
-                      const decides = removesAtOnce(member.role);
+                      const decides = removesAtOnce();
                       let reason = "";
 
                       if (decides) {
@@ -634,7 +644,7 @@ If they have any history their account is closed rather than deleted, so nothing
                         const answer = window.prompt(
                           `Ask to remove ${member.name}?
 
-Nothing happens to their account until a Platform Admin or Super Admin approves it.
+Nothing happens to their account until the organisation administrator approves it.
 
 Why should they be removed?`,
                           "",
@@ -660,7 +670,7 @@ Why should they be removed?`,
                     }}
                     className="shrink-0 rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
                   >
-                    {removesAtOnce(member.role) ? "Remove" : "Ask to remove"}
+                    {removesAtOnce() ? "Remove" : "Ask to remove"}
                   </button>
                 ) : null}
               </li>

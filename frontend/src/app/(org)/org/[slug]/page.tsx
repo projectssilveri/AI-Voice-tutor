@@ -241,20 +241,40 @@ export default function OrgHomePage() {
         ) : null}
 
         {!profile.is_org_admin && profile.my_role === "branch_manager" ? (
-          <Link
-            href={`/org/${slug}/admin`}
-            className="rounded-2xl border border-gray-200 bg-white p-5 shadow-raised transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lifted dark:border-gray-800 dark:bg-white/[0.03]"
-          >
-            <p className="mb-1 text-2xl" aria-hidden="true">
-              👥
-            </p>
-            <p className="font-semibold text-gray-800 dark:text-white/90">
-              My branch
-            </p>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              The people in {profile.branch_name ?? "your branch"}.
-            </p>
-          </Link>
+          <>
+            <Link
+              href={`/org/${slug}/admin`}
+              className="rounded-2xl border border-gray-200 bg-white p-5 shadow-raised transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lifted dark:border-gray-800 dark:bg-white/[0.03]"
+            >
+              <p className="mb-1 text-2xl" aria-hidden="true">
+                👥
+              </p>
+              <p className="font-semibold text-gray-800 dark:text-white/90">
+                My branch
+              </p>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                The people in {profile.branch_name ?? "your branch"}.
+              </p>
+            </Link>
+            {/* Sir's rule of 2026-10-01: a branch manager's course and
+                document changes go to the organisation admin, like their
+                people changes. Asking needs a way in. */}
+            <Link
+              href={`/org/${slug}/courses`}
+              className="rounded-2xl border border-gray-200 bg-white p-5 shadow-raised transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lifted dark:border-gray-800 dark:bg-white/[0.03]"
+            >
+              <p className="mb-1 text-2xl" aria-hidden="true">
+                🎓
+              </p>
+              <p className="font-semibold text-gray-800 dark:text-white/90">
+                {profile.branch_name ?? "Branch"} training
+              </p>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Ask to add or change courses for the departments in your
+                branch. The organisation administrator approves them.
+              </p>
+            </Link>
+          </>
         ) : null}
       </div>
     </OrgShell>

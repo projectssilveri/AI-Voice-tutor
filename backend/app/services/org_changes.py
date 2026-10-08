@@ -14,7 +14,9 @@ applying. `decide` applies it with the organisation admin's authority.
 Members and courses carry their proposed fields in `payload`; a member
 create carries the password already hashed, so nothing is stored in the
 clear. A document is stored at once with `pending_approval` set and its id in
-`target_id`: approving clears the flag, declining deletes the row.
+`target_id`: approving clears the flag, declining deletes the row. A module
+added, changed or removed is an edit of its course, with `module_op` and
+`course_id` in the payload and the module's id, if it has one, in `target_id`.
 
 Callers do not commit; they own the transaction.
 """
@@ -267,6 +269,10 @@ async def _apply_training(session: AsyncSession, r: OrgChangeRequest) -> str:
     from app.models.course import Course
 
     data = r.payload or {}
+    # A module added, rewritten or removed. Filed as an edit of its course
+    # (`org_content._request_module_change`), and told apart by its payload.
+    if "module_op" in data:
+        return await _apply_module(session, r, data)
     if r.action is ChangeAction.CREATE:
         course = Course(
             title=str(data["title"]).strip(),
@@ -296,6 +302,70 @@ async def _apply_training(session: AsyncSession, r: OrgChangeRequest) -> str:
     if "department_id" in data:
         course.department_id = _as_uuid(data.get("department_id"))
     return "updated"
+
+
+async def _apply_module(session: AsyncSession, r: OrgChangeRequest, data: dict) -> str:
+    """Add, change or remove one module of an organisation course.
+
+    Checked again here because the course may have changed while the request
+    waited: it may have left the organisation, the module may be gone, or the
+    course may have reached its module cap.
+    """
+    from app.models.course import Course, Module
+    from app.services import courses as course_service
+    from app.services import limits
+
+    course = await session.get(Course, _as_uuid(data.get("course_id")))
+    if course is None or course.organization_id != r.organization_id:
+        raise ChangeError("That course no longer belongs to this organisation.")
+
+    op = data["module_op"]
+    if op == "create":
+        try:
+            await limits.assert_can_add_module(session, course)
+        except limits.LimitReached as exc:
+            raise ChangeError(str(exc)) from None
+        order = data.get("order")
+        if order is None:
+            # Appended when approved, not when asked: other modules may have
+            # been added in between.
+            order = await course_service.next_module_order(session, course.id)
+        session.add(
+            Module(
+                course_id=course.id,
+                title=str(data["title"]).strip(),
+                order=int(order),
+                content=data.get("content"),
+            )
+        )
+        await _flush_module(session, int(order))
+        return "created"
+
+    module = await session.get(Module, r.target_id)
+    if module is None or module.course_id != course.id:
+        raise ChangeError("That module is no longer in this course.")
+
+    if op == "delete":
+        await session.delete(module)
+        return "deleted"
+
+    # EDIT. The same rule as the direct route: a null leaves a field as it is.
+    for key in ("title", "content", "order"):
+        if data.get(key) is not None:
+            setattr(module, key, data[key])
+    await _flush_module(session, module.order)
+    return "updated"
+
+
+async def _flush_module(session: AsyncSession, order: int) -> None:
+    """Write now, so a taken position is a sentence and not a 500 at commit."""
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise ChangeError(
+            f"The course already has a module at position {order}. "
+            "Decline this, and ask for it at another position."
+        ) from exc
 
 
 async def _apply_document(session: AsyncSession, r: OrgChangeRequest) -> str:

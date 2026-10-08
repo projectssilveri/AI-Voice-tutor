@@ -11,16 +11,20 @@ import { counted } from "@/lib/plural";
 import {
   type OrgCourse,
   type OrgDocument,
+  type OrgModule,
   type OrgProfile,
   courseAudience,
   createOrgCourse,
   createOrgModule,
+  deleteOrgModule,
   getOrgDocumentText,
   getOrgProfile,
   getOrgStructure,
   listOrgCourses,
+  listOrgModules,
   listOrgDocuments,
   updateOrgCourse,
+  updateOrgModule,
   deleteOrgCourse,
 } from "@/lib/orgPortal";
 
@@ -56,9 +60,10 @@ export default function OrgCoursesPage() {
     department_id: "",
   });
   // The organization's departments, for the picker. Loaded once; a
-  // failure here loses the picker, not the form.
+  // failure here loses the picker, not the form. The branch is kept so a
+  // branch manager is offered only their own branch's departments.
   const [departments, setDepartments] = useState<
-    { id: string; name: string }[]
+    { id: string; name: string; branch_id: string | null }[]
   >([]);
   // How many people each course actually reaches. Loaded per course once the
   // list is in, because it is the number that answers "did narrowing this to
@@ -69,6 +74,24 @@ export default function OrgCoursesPage() {
   // Which course is having a module added, and the module being written.
   const [openCourse, setOpenCourse] = useState<string | null>(null);
   const [module, setModule] = useState({ title: "", content: "" });
+
+  // Editing existing modules: which course's list is open, its modules, and
+  // the one being edited. A course could only have modules ADDED before, so a
+  // mistake could never be fixed. This is the fix.
+  const [managingCourse, setManagingCourse] = useState<string | null>(null);
+  const [courseModules, setCourseModules] = useState<OrgModule[]>([]);
+  const [editingModule, setEditingModule] = useState<string | null>(null);
+  const [moduleEdit, setModuleEdit] = useState({ title: "", content: "" });
+
+  async function openModules(courseId: string) {
+    setOpenCourse(null);
+    setEditingModule(null);
+    setManagingCourse(courseId);
+    setCourseModules([]);
+    await run(async () => {
+      setCourseModules(await listOrgModules(slug, courseId));
+    });
+  }
 
   const load = useCallback(async () => {
     try {
@@ -133,6 +156,7 @@ export default function OrgCoursesPage() {
           structure.departments.map((d) => ({
             id: String(d.id),
             name: String(d.name),
+            branch_id: d.branch_id ? String(d.branch_id) : null,
           })),
         ),
       )
@@ -159,6 +183,18 @@ export default function OrgCoursesPage() {
   // and cannot change them.
   const canWrite = profile?.can_author ?? false;
   const isDeptAdmin = profile?.is_dept_admin ?? false;
+  // A BRANCH MANAGER asks for courses for the departments in their branch. A
+  // course reaches people through its department, and a branch has none of its
+  // own, so the picker is their branch's departments and nothing wider.
+  const isBranchManager = profile?.is_branch_manager ?? false;
+  const branchDepartments = departments.filter(
+    (department) =>
+      profile?.branch_id != null && department.branch_id === profile.branch_id,
+  );
+  // CHANGES AT ONCE: the org admin and platform staff. Everybody else who can
+  // write here asks, and the org admin approves (2026-10-01).
+  const direct =
+    (profile?.is_org_admin ?? false) || (profile?.is_platform_staff ?? false);
 
   return (
     <OrgShell
@@ -182,7 +218,9 @@ export default function OrgCoursesPage() {
               ? "Loading…"
               : isDeptAdmin
                 ? `${counted(courses.length, "course")} you can see: your department's, and the ones written for everybody.`
-                : `${counted(courses.length, "course")} built for your organization. Only your people can see them.`}
+                : isBranchManager
+                  ? `${counted(courses.length, "course")} in your organization. You can ask to add or change the ones for departments in ${profile?.branch_name ?? "your branch"}.`
+                  : `${counted(courses.length, "course")} built for your organization. Only your people can see them.`}
           </p>
         </div>
         {canWrite && !creating ? (
@@ -212,11 +250,17 @@ export default function OrgCoursesPage() {
           onSubmit={(e) => {
             e.preventDefault();
             void run(async () => {
-              await createOrgCourse(slug, {
+              const res = await createOrgCourse(slug, {
                 title: newCourse.title.trim(),
                 description: newCourse.description.trim() || null,
                 department_id: newCourse.department_id || null,
               });
+              if (res.requested) {
+                setNotice(
+                  res.message ??
+                    "Sent to the organisation administrator to approve.",
+                );
+              }
               setNewCourse({ title: "", description: "", department_id: "" });
               setCreating(false);
             });
@@ -259,6 +303,47 @@ export default function OrgCoursesPage() {
                 </span>
                 . Nobody outside it will see this course.
               </p>
+            ) : isBranchManager ? (
+              branchDepartments.length > 0 ? (
+                <div>
+                  <label
+                    htmlFor="course-department"
+                    className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-400"
+                  >
+                    Which department in{" "}
+                    {profile?.branch_name ?? "your branch"} is it for?
+                  </label>
+                  <select
+                    id="course-department"
+                    value={newCourse.department_id}
+                    onChange={(e) =>
+                      setNewCourse({
+                        ...newCourse,
+                        department_id: e.target.value,
+                      })
+                    }
+                    className={FIELD}
+                    required
+                  >
+                    <option value="">Choose a department…</option>
+                    {branchDepartments.map((department) => (
+                      <option key={department.id} value={department.id}>
+                        {department.name} only
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    Nothing is created until the organisation administrator
+                    approves it. A course for everyone is theirs to add.
+                  </p>
+                </div>
+              ) : (
+                <p className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
+                  {profile?.branch_name ?? "Your branch"} has no departments
+                  yet, and a course reaches people through a department. Ask
+                  the organisation administrator.
+                </p>
+              )
             ) : departments.length > 0 ? (
               <div>
                 <label
@@ -295,8 +380,12 @@ export default function OrgCoursesPage() {
             ) : null}
           </div>
           <div className="mt-5 flex gap-3">
-            <Action type="submit" loading={busy}>
-              Create
+            <Action
+              type="submit"
+              loading={busy}
+              disabled={isBranchManager && branchDepartments.length === 0}
+            >
+              {direct ? "Create" : "Ask to create"}
             </Action>
             <Action variant="secondary" onClick={() => setCreating(false)}>
               Cancel
@@ -372,7 +461,11 @@ export default function OrgCoursesPage() {
                       buttons, which reads as a bug. */}
                   {canWrite && !course.can_edit ? (
                     <span className="text-xs text-gray-500 dark:text-gray-400">
-                      Company-wide · read only
+                      {/* A branch manager also sees other branches'
+                          department courses, which are not company-wide. */}
+                      {course.department_name
+                        ? "Read only"
+                        : "Company-wide · read only"}
                     </span>
                   ) : null}
                   {canWrite && course.can_edit ? (
@@ -386,34 +479,44 @@ export default function OrgCoursesPage() {
                           : undefined
                       }
                       onClick={() =>
-                        void run(() =>
-                          updateOrgCourse(slug, course.id, {
+                        void run(async () => {
+                          const res = await updateOrgCourse(slug, course.id, {
                             is_published: !course.is_published,
-                          }),
-                        )
+                          });
+                          if (res.change_requested) {
+                            setNotice(
+                              "Sent to the organisation administrator to approve.",
+                            );
+                          }
+                        })
                       }
                     >
-                      {course.is_published ? "Unpublish" : "Publish"}
+                      {direct
+                        ? course.is_published
+                          ? "Unpublish"
+                          : "Publish"
+                        : course.is_published
+                          ? "Ask to unpublish"
+                          : "Ask to publish"}
                     </Action>
                   ) : null}
-                  {/* PLATFORM STAFF DELETE AT ONCE; anybody else who can
-                      edit the course asks, with a reason, and a Platform
-                      Admin or Super Admin decides (2026-10-01). */}
+                  {/* THE ORG ADMIN (and platform staff) DELETE AT ONCE. A
+                      department admin asks, with a reason, and the org admin
+                      approves (2026-10-01). */}
                   {canWrite && course.can_edit ? (
                     <button
                       type="button"
                       disabled={busy}
                       onClick={() => {
                         setNotice(null);
-                        const staff = profile?.is_platform_staff ?? false;
                         const answer = window.prompt(
-                          staff
+                          direct
                             ? `Delete "${course.title}"? This happens at once and cannot be undone.\n\nWhy? It is kept on this organisation's record.`
-                            : `Ask to delete "${course.title}"?\n\nNothing is removed until a Platform Admin or Super Admin approves it.\n\nWhy should it be deleted?`,
+                            : `Ask to delete "${course.title}"?\n\nNothing is removed until the organisation administrator approves it.\n\nWhy should it be deleted?`,
                           "",
                         );
                         if (answer === null) return;
-                        if (!staff && !answer.trim()) {
+                        if (!direct && !answer.trim()) {
                           setError("Say why it should be deleted. The request needs a reason.");
                           return;
                         }
@@ -428,7 +531,7 @@ export default function OrgCoursesPage() {
                       }}
                       className="rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
                     >
-                      {profile?.is_platform_staff ? "Delete" : "Ask to delete"}
+                      {direct ? "Delete" : "Ask to delete"}
                     </button>
                   ) : null}
                 </div>
@@ -444,10 +547,18 @@ export default function OrgCoursesPage() {
                           // No position: the server appends. Sending
                           // `module_count` put the new module on top of an
                           // existing one as soon as any had been deleted.
-                          await createOrgModule(slug, course.id, {
+                          const res = await createOrgModule(slug, course.id, {
                             title: module.title.trim(),
                             content: module.content.trim() || null,
                           });
+                          // A department admin's or branch manager's module
+                          // waits for the org admin (2026-10-01).
+                          if (res.requested) {
+                            setNotice(
+                              res.message ??
+                                "Sent to the organisation administrator to approve.",
+                            );
+                          }
                           setModule({ title: "", content: "" });
                           setOpenCourse(null);
                         });
@@ -511,7 +622,7 @@ export default function OrgCoursesPage() {
 
                       <div className="flex gap-3">
                         <Action type="submit" size="sm" loading={busy}>
-                          Add module
+                          {direct ? "Add module" : "Ask to add"}
                         </Action>
                         <Action
                           variant="secondary"
@@ -523,14 +634,193 @@ export default function OrgCoursesPage() {
                       </div>
                     </form>
                   ) : (
-                    <Action
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setOpenCourse(course.id)}
-                    >
-                      Add a module
-                    </Action>
+                    <div className="flex flex-wrap gap-3">
+                      <Action
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setOpenCourse(course.id)}
+                      >
+                        Add a module
+                      </Action>
+                      {course.module_count > 0 ? (
+                        <Action
+                          variant="secondary"
+                          size="sm"
+                          onClick={() =>
+                            managingCourse === course.id
+                              ? setManagingCourse(null)
+                              : void openModules(course.id)
+                          }
+                        >
+                          {managingCourse === course.id
+                            ? "Done editing"
+                            : "Edit modules"}
+                        </Action>
+                      ) : null}
+                    </div>
                   )}
+
+                  {/* EDIT OR DELETE AN EXISTING MODULE. The gap this fills: a
+                      course could only have modules added, so a typo in one
+                      could never be corrected. */}
+                  {managingCourse === course.id && openCourse !== course.id ? (
+                    <ul className="mt-4 space-y-3">
+                      {courseModules.length === 0 ? (
+                        <li className="text-sm text-gray-500 dark:text-gray-400">
+                          {busy ? "Loading modules…" : "No modules yet."}
+                        </li>
+                      ) : null}
+                      {courseModules.map((m) => (
+                        <li
+                          key={m.id}
+                          className="rounded-lg border border-gray-200 p-3 dark:border-gray-800"
+                        >
+                          {editingModule === m.id ? (
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                void run(async () => {
+                                  const res = await updateOrgModule(
+                                    slug,
+                                    course.id,
+                                    m.id,
+                                    {
+                                      title: moduleEdit.title.trim(),
+                                      content:
+                                        moduleEdit.content.trim() || null,
+                                    },
+                                  );
+                                  setEditingModule(null);
+                                  setCourseModules(
+                                    await listOrgModules(slug, course.id),
+                                  );
+                                  setNotice(
+                                    res.requested
+                                      ? (res.message ??
+                                          "Sent to the organisation administrator to approve.")
+                                      : "Module updated.",
+                                  );
+                                });
+                              }}
+                              className="space-y-3"
+                            >
+                              <input
+                                value={moduleEdit.title}
+                                onChange={(e) =>
+                                  setModuleEdit({
+                                    ...moduleEdit,
+                                    title: e.target.value,
+                                  })
+                                }
+                                aria-label="Module title"
+                                className={FIELD}
+                                required
+                              />
+                              <textarea
+                                value={moduleEdit.content}
+                                onChange={(e) =>
+                                  setModuleEdit({
+                                    ...moduleEdit,
+                                    content: e.target.value,
+                                  })
+                                }
+                                rows={6}
+                                aria-label="Module content"
+                                className={FIELD}
+                              />
+                              <div className="flex gap-3">
+                                <Action type="submit" size="sm" loading={busy}>
+                                  {direct ? "Save" : "Ask to change"}
+                                </Action>
+                                <Action
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => setEditingModule(null)}
+                                >
+                                  Cancel
+                                </Action>
+                              </div>
+                            </form>
+                          ) : (
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-sm text-gray-800 dark:text-white/90">
+                                {m.order + 1}. {m.title}
+                                {m.has_content ? "" : " (no content)"}
+                              </span>
+                              <div className="flex gap-2">
+                                <Action
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => {
+                                    setEditingModule(m.id);
+                                    setModuleEdit({
+                                      title: m.title,
+                                      content: m.content ?? "",
+                                    });
+                                  }}
+                                >
+                                  Edit
+                                </Action>
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setNotice(null);
+                                    // THE ORG ADMIN AND PLATFORM STAFF remove
+                                    // it at once. Anyone else asks, with a
+                                    // reason, and the org admin approves.
+                                    let reason = "";
+                                    if (direct) {
+                                      if (
+                                        !window.confirm(
+                                          `Delete the module "${m.title}"? This cannot be undone.`,
+                                        )
+                                      ) {
+                                        return;
+                                      }
+                                    } else {
+                                      const answer = window.prompt(
+                                        `Ask to delete the module "${m.title}"?\n\nNothing is removed until the organisation administrator approves it.\n\nWhy should it be deleted?`,
+                                        "",
+                                      );
+                                      if (answer === null) return;
+                                      if (!answer.trim()) {
+                                        setError(
+                                          "Say why it should be deleted. The request needs a reason.",
+                                        );
+                                        return;
+                                      }
+                                      reason = answer.trim();
+                                    }
+                                    void run(async () => {
+                                      const res = await deleteOrgModule(
+                                        slug,
+                                        course.id,
+                                        m.id,
+                                        reason,
+                                      );
+                                      setCourseModules(
+                                        await listOrgModules(slug, course.id),
+                                      );
+                                      setNotice(
+                                        res?.requested
+                                          ? (res.message ??
+                                              "Sent to the organisation administrator to approve.")
+                                          : `Module "${m.title}" deleted.`,
+                                      );
+                                    });
+                                  }}
+                                  className="rounded-lg border border-error-300 px-3 py-1.5 text-xs font-medium text-error-600 transition hover:bg-error-50 disabled:opacity-50 dark:border-error-500/40 dark:text-error-400 dark:hover:bg-error-500/10"
+                                >
+                                  {direct ? "Delete" : "Ask to delete"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
               ) : null}
             </div>

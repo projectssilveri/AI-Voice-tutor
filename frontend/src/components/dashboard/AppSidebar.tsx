@@ -106,13 +106,10 @@ export const platformItems: NavItem[] = [
     name: "Customer training",
     path: "/admin/customer-training",
   },
-  // What people inside a customer asked to delete. Platform staff, both
-  // tiers, decide it since 2026-10-01.
-  {
-    icon: <TaskIcon />,
-    name: "Deletion requests",
-    path: "/admin/deletion-requests",
-  },
+  // No "Deletion requests" here. Since 2026-10-01 nothing inside a customer
+  // waits for platform staff: an org admin deletes at once, and a branch
+  // manager's or department admin's request goes to their own org admin
+  // (`services/org_changes.py`).
   { icon: <PageIcon />, name: "Website", path: "/admin/website" },
 ];
 

@@ -5,17 +5,18 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { ThemeToggleButton } from "@/components/common/ThemeToggleButton";
+import UserDropdown from "@/components/header/UserDropdown";
 import Logo from "@/components/marketing/ui/Logo";
-import Avatar from "@/components/ui/Avatar";
-import { useAuth } from "@/context/AuthContext";
-import { roleLabel } from "@/lib/orgPortal";
 
 /**
  * The chrome every organization page sits in.
  *
  * The portal pages were bare centred divs with no header, no navigation and no
- * way back — functional, and visibly below the standard of the rest of the
- * product. This gives them the same shell.
+ * way back. This gives them the same shell, and the same account menu the rest
+ * of the product uses: the avatar opens a dropdown with the photo, the name and
+ * role, a link to the account and settings page, and sign out. Org admins,
+ * managers and learners get exactly what a B2C learner and a platform admin
+ * already had, so nobody inside an organization is a second-class citizen.
  *
  * It is NOT the dashboard shell, deliberately: that one carries marketplace
  * nav, pricing and the platform admin section, none of which exists inside a
@@ -24,7 +25,6 @@ import { roleLabel } from "@/lib/orgPortal";
 export default function OrgShell({
   slug,
   organizationName,
-  role,
   canAuthor,
   canManagePeople,
   isAdmin,
@@ -33,17 +33,17 @@ export default function OrgShell({
 }: {
   slug: string;
   organizationName?: string | null;
+  /** The signed-in person's role. The account menu reads it from the session. */
   role?: string | null;
   /** Writes training. An org admin, or a department admin for their own team. */
   canAuthor?: boolean;
-  /** Adds and edits people — org admin, branch manager or department admin. */
+  /** Adds and edits people: org admin, branch manager or department admin. */
   canManagePeople?: boolean;
   isAdmin?: boolean;
   isPlatformStaff?: boolean;
   children: ReactNode;
 }) {
   const pathname = usePathname();
-  const { user, photoVersion } = useAuth();
 
   // THREE SEPARATE PERMISSIONS, not one "admin" flag.
   //
@@ -60,7 +60,7 @@ export default function OrgShell({
   const tabs = [
     { href: `/org/${slug}`, label: "Home", exact: true },
     { href: "/dashboard", label: "My training", exact: false },
-    // Documents are for everyone — a learner needs the handbook as much as an
+    // Documents are for everyone: a learner needs the handbook as much as an
     // admin does; the library itself decides which files they see.
     { href: `/org/${slug}/documents`, label: "Documents", exact: false },
     ...(mayAuthor
@@ -83,10 +83,6 @@ export default function OrgShell({
               href={`/org/${slug}`}
               className="flex min-w-0 items-center gap-3"
             >
-              {/* One component instead of two <Image> tags swapped by theme.
-                  Those pointed at the free template's own logo files, and the
-                  pair existed only because a flat SVG cannot change colour
-                  with the theme. This one inherits it. */}
               <Logo className="shrink-0 text-gray-900 dark:text-white" />
               {organizationName ? (
                 <>
@@ -102,28 +98,12 @@ export default function OrgShell({
             </Link>
 
             <div className="flex items-center gap-3">
-              {/* The same control as the dashboard header. This used to be
-                  `ThemeTogglerTwo`, the big solid-blue one built to float
-                  alone on the sign-in page, and at 56px it was taller than
-                  the avatar and louder than the company name. */}
               <ThemeToggleButton />
-              <div className="hidden text-right sm:block">
-                <p className="text-sm font-medium text-gray-800 dark:text-white/90">
-                  {user?.name}
-                </p>
-                {role ? (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {roleLabel(role)}
-                  </p>
-                ) : null}
-              </div>
-              <Avatar
-                userId={user?.id}
-                name={user?.name}
-                size="sm"
-                version={photoVersion}
-                hasPhoto={user?.has_photo}
-              />
+              {/* The same account menu as the dashboard: avatar with photo,
+                  name and role, a link to the account and settings page, and
+                  sign out. Sign out returns to this organization's login, not
+                  the public sign-in page. */}
+              <UserDropdown signOutHref={`/org/${slug}/login`} />
             </div>
           </div>
 

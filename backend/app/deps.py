@@ -145,8 +145,14 @@ class OrgContext:
 
     @property
     def can_author(self) -> bool:
-        """May write training. WHOSE is decided by `scoped_department_id`."""
-        return self.is_org_admin or self.is_dept_admin
+        """May write training and documents, or ask to.
+
+        WHOSE is decided by the route: a department admin their own department,
+        a branch manager their own branch (`org_content`). Both of them only
+        ever ask; the org admin approves (Sir's rule of 2026-10-01,
+        `services/org_changes.needs_approval`).
+        """
+        return self.is_org_admin or self.is_dept_admin or self.is_branch_manager
 
     def scoped_branch_id(self) -> uuid.UUID | None:
         """The branch this person's view is limited to, or None for all of it.
@@ -285,17 +291,16 @@ def require_org_scope(
                 detail="Only an administrator or manager can do that.",
             )
 
-        # Writing training. An org admin writes for the whole company; a
-        # department admin writes for their department and may touch nothing
-        # else. A branch manager is deliberately NOT here: they run people, not
-        # content, and widening that is the customer's decision to ask for.
+        # Writing training and documents. An org admin writes for the whole
+        # company. A department admin asks for changes to their department's,
+        # and a branch manager to their branch's, and the org admin approves
+        # (Sir's rule of 2026-10-01). A branch manager was kept out of here
+        # until that rule, which says their course and document changes go to
+        # the org admin like their people changes do.
         if author_only and not context.can_author:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "Only an organization or department administrator "
-                    "can manage training."
-                ),
+                detail="Only an administrator or manager can manage training.",
             )
 
         if not belongs:
@@ -333,5 +338,5 @@ def require_org_scope(
 OrgScope = Annotated[OrgContext, Depends(require_org_scope())]
 OrgAdminScope = Annotated[OrgContext, Depends(require_org_scope(admin_only=True))]
 OrgManagerScope = Annotated[OrgContext, Depends(require_org_scope(staff_only=True))]
-#: Writes training: an org admin, or a department admin within their department.
+#: Writes training: an org admin. A department admin or branch manager asks.
 OrgAuthorScope = Annotated[OrgContext, Depends(require_org_scope(author_only=True))]
