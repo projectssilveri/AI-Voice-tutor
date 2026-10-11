@@ -103,6 +103,10 @@ function SignedInCart({
   name?: string | null;
   email?: string | null;
 }) {
+  // Card payments off (no Razorpay keys): checkout only ever 503s, so it is
+  // turned off here and said plainly rather than left to dead-end.
+  const { user } = useAuth();
+  const paymentsOff = user?.payments_enabled === false;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -242,10 +246,21 @@ function SignedInCart({
             </p>
           ) : null}
 
+          {/* CARD PAYMENTS ARE OFF. Said here rather than left for the Check out
+              button to answer with a 503. `payments_enabled` rides on the
+              session. */}
+          {paymentsOff ? (
+            <p className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
+              Online payment isn&apos;t available right now, so checkout is
+              turned off. Ask an administrator to enrol you, or contact us to
+              arrange access.
+            </p>
+          ) : null}
+
           <button
             type="button"
             onClick={checkout}
-            disabled={busy || !cart.ready}
+            disabled={busy || !cart.ready || paymentsOff}
             className="w-full rounded-lg bg-[var(--mk-brand)] px-6 py-3 text-base font-semibold text-white transition hover:bg-[var(--mk-brand)]/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? "Opening checkout…" : "Check out"}

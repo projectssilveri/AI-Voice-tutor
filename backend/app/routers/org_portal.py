@@ -26,7 +26,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 
 from app.core import passwords
 from app.core.users import password_helper
@@ -48,6 +48,7 @@ from app.models.org_change import (
     OrgChangeRequest,
 )
 from app.models.organization import Branch, Department, Organization
+from app.models.profile import UserAvatar
 from app.models.user import User, UserRole
 from app.services import (
     access,
@@ -169,6 +170,10 @@ class OrgProfile(BaseModel):
     # A branch manager writes for their own branch only: their documents are
     # filed against it and their courses go to one of its departments.
     is_branch_manager: bool = False
+    # THE TEAM PLAN. True means this organization's people also get the whole
+    # public catalogue. The portal reads it to show a "browse courses" surface
+    # without prices; the access layer is what actually grants the courses.
+    catalogue_access: bool = False
 
 
 class OrgMember(BaseModel):
@@ -195,6 +200,10 @@ class OrgMember(BaseModel):
     # The row is returned UNCHANGED with this set, so the screen can say the
     # change was sent rather than applied.
     change_requested: bool = False
+    # Whether this person has a photo, so the People list asks for one only when
+    # there is one, rather than firing a 404 per member. Same flag the header
+    # avatar already uses.
+    has_photo: bool = False
 
 
 class MemberCreate(BaseModel):
@@ -311,13 +320,23 @@ def _manageable(scope, member: User) -> None:
         )
 
 
-async def _member_row(session: DbSession, user: User) -> OrgMember:
+async def _member_row(
+    session: DbSession, user: User, *, has_photo: bool | None = None
+) -> OrgMember:
     branch = await session.get(Branch, user.branch_id) if user.branch_id else None
     department = (
         await session.get(Department, user.department_id)
         if user.department_id
         else None
     )
+    # Passed in by the list, which looks them all up in one query; computed here
+    # for the single-row create/edit paths, where one lookup is fine.
+    if has_photo is None:
+        has_photo = bool(
+            await session.scalar(
+                select(exists().where(UserAvatar.user_id == user.id))
+            )
+        )
     return OrgMember(
         id=user.id,
         name=user.name,
@@ -331,6 +350,7 @@ async def _member_row(session: DbSession, user: User) -> OrgMember:
         department_name=department.name if department else None,
         created_at=user.created_at,
         pending_approval=await approvals.open_for(session, user.id) is not None,
+        has_photo=has_photo,
     )
 
 
@@ -395,6 +415,7 @@ async def get_profile(session: DbSession, scope: OrgScope) -> OrgProfile:
         can_manage_people=scope.can_manage_people,
         can_author=scope.can_author,
         is_branch_manager=scope.is_branch_manager,
+        catalogue_access=scope.organization.catalogue_access,
     )
 
 
@@ -488,8 +509,22 @@ async def list_members(session: DbSession, scope: OrgScope) -> MemberList:
     # it wrong rather than private.
     admin_count = await org_service.count_org_admins(session, scope.organization.id)
 
+    # Who has a photo, in one query, so each row can skip the request when there
+    # is none instead of the People page firing a 404 per member.
+    with_photo = set(
+        (
+            await session.scalars(
+                select(UserAvatar.user_id).where(
+                    UserAvatar.user_id.in_([u.id for u in users])
+                )
+            )
+        ).all()
+    )
+
     return MemberList(
-        members=[await _member_row(session, u) for u in users],
+        members=[
+            await _member_row(session, u, has_photo=u.id in with_photo) for u in users
+        ],
         total=len(users),
         admin_count=admin_count,
         min_admins=org_service.MIN_ORG_ADMINS,

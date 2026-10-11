@@ -48,6 +48,16 @@ class SessionUser(UserRead):
     """
 
     has_photo: bool = False
+    # THE TEAM PLAN, resolved from the member's organization so the frontend
+    # knows without a second request: true means this person's company gives
+    # them the public catalogue, so the catalogue is shown (without prices)
+    # rather than hidden. False for a public B2C account and for an org with no
+    # catalogue access. Presentation only; `services/access.py` is the gate.
+    org_catalogue_access: bool = False
+    # Whether card payments are switched on (Razorpay keys set). False means
+    # checkout cannot work, so the frontend hides Buy and the cart's checkout
+    # rather than letting them dead-end at a 503.
+    payments_enabled: bool = False
 
 
 class UserCreate(schemas.BaseUserCreate):

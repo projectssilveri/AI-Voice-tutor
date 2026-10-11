@@ -80,6 +80,21 @@ class Organization(TimestampMixin, Base):
     # that it does not fit the columns.
     plan_note: Mapped[str | None] = mapped_column(String(500))
 
+    # THE TEAM PLAN. True means this organization's people get the whole public
+    # catalogue, every published course, with full coursework, the same as if
+    # the company had bought each one. Off by default, so an organization
+    # created before this behaves exactly as it did: its people see only their
+    # own organization's courses.
+    #
+    # The Team plan is sold by invoice (the Business page), so platform staff
+    # switch this on from the Limits screen once the seat count is agreed.
+    # Seats themselves are `max_members`, which already exists and is enforced.
+    # `access.tenancy_decision` reads this; it opens only the safe direction
+    # (an org member reaching a PUBLIC course), never another org's training.
+    catalogue_access: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+
     branches: Mapped[list[Branch]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
     )

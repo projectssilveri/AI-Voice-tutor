@@ -78,6 +78,12 @@ export interface OrgMember {
    * the change was sent rather than that nothing happened.
    */
   change_requested?: boolean;
+  /**
+   * Whether this person has a photo. When false the row draws the initial and
+   * does not ask the server for an image, so the People page stops firing a
+   * 404 per member.
+   */
+  has_photo?: boolean;
 }
 
 export interface MemberList {
@@ -653,4 +659,125 @@ export function courseAudience(
     `/org/${slug}/courses/${courseId}/audience`,
     authed,
   );
+}
+
+// Assessments an org admin builds on their own course: quiz questions,
+// assignments and a certification exam. Backed by the org-scoped routes in
+// `routers/org_content.py`; students consume them through the ordinary
+// quiz/assignment/exam routes once they exist.
+
+export interface OrgQuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correct_answer: number;
+}
+
+export function listOrgQuizQuestions(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+): Promise<OrgQuizQuestion[]> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}/quiz-questions`,
+    authed,
+  );
+}
+
+export function createOrgQuizQuestion(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+  body: { question: string; options: string[]; correct_answer: number },
+): Promise<OrgQuizQuestion> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}/quiz-questions`,
+    { ...authed, method: "POST", body },
+  );
+}
+
+export function deleteOrgQuizQuestion(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+  questionId: string,
+): Promise<void> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}/quiz-questions/${questionId}`,
+    { ...authed, method: "DELETE" },
+  );
+}
+
+export interface OrgAssignment {
+  id: string;
+  title: string;
+  prompt: string;
+  accepted_answers: string[];
+  max_score: number;
+}
+
+export function listOrgAssignments(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+): Promise<OrgAssignment[]> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}/assignments`,
+    authed,
+  );
+}
+
+export function createOrgAssignment(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+  body: {
+    title: string;
+    prompt: string;
+    accepted_answers: string[];
+    max_score?: number;
+  },
+): Promise<OrgAssignment> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}/assignments`,
+    { ...authed, method: "POST", body },
+  );
+}
+
+export function deleteOrgAssignment(
+  slug: string,
+  courseId: string,
+  moduleId: string,
+  assignmentId: string,
+): Promise<void> {
+  return apiFetch(
+    `/org/${slug}/courses/${courseId}/modules/${moduleId}/assignments/${assignmentId}`,
+    { ...authed, method: "DELETE" },
+  );
+}
+
+export interface OrgCertExam {
+  id: string;
+  course_id: string;
+  title: string;
+  default_max_attempts: number;
+}
+
+export function listOrgCertExams(
+  slug: string,
+  courseId: string,
+): Promise<OrgCertExam[]> {
+  return apiFetch(`/org/${slug}/courses/${courseId}/cert-exams`, authed);
+}
+
+export function createOrgCertExam(
+  slug: string,
+  courseId: string,
+  body: { title: string; default_max_attempts?: number },
+): Promise<OrgCertExam> {
+  return apiFetch(`/org/${slug}/courses/${courseId}/cert-exams`, {
+    ...authed,
+    method: "POST",
+    body,
+  });
 }

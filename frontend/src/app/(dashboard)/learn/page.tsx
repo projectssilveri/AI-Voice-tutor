@@ -215,11 +215,20 @@ export default function LearnIndexPage() {
 
       {!loading && inOrganization && available.length > 0 ? (
         <section>
+          {/* For a Team plan company this list also holds the public
+              catalogue, so the heading says "available to you" rather than
+              "from your organisation", which would be wrong for a catalogue
+              course. The server decides what is in the list; this only names
+              it. */}
           <h2 className="mb-1 text-base font-semibold text-gray-800 dark:text-white/90">
-            From your organisation
+            {user?.org_catalogue_access
+              ? "Courses available to you"
+              : "From your organisation"}
           </h2>
           <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-            Published for you. Open one and press Enrol to start.
+            {user?.org_catalogue_access
+              ? "Your company's courses and the full catalogue it includes. Open one and press Enrol to start."
+              : "Published for you. Open one and press Enrol to start."}
           </p>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {available.map((course) => (

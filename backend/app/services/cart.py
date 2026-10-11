@@ -80,9 +80,13 @@ async def _problem_with(
     if not course.is_published:
         return UNAVAILABLE
 
-    decision = await access.tenancy_decision(user, course)
+    decision = await access.tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         return OUTSIDE_TENANT
+    # A Team plan member already has every public course through their company,
+    # so there is nothing to buy. Said the same way a subscription is.
+    if decision is not None and decision.reason == "team_plan":
+        return COVERED_BY_PLAN
 
     if course.price_minor <= 0:
         return FREE_COURSE

@@ -83,6 +83,13 @@ async def list_courses(session: DbSession, user: CurrentUser) -> list[CourseRead
     # Platform staff, or somebody running their own organization. An org admin
     # who cannot see their own drafts cannot find the course they are writing.
     is_staff = user.role in access.STAFF_ROLES or user.role in access.ORG_STAFF_ROLES
+    # THE TEAM PLAN. An organization with catalogue access also sees the public
+    # catalogue, so its people's listing matches what `access.tenancy_decision`
+    # now opens per course. Only asked for an org member.
+    on_team_plan = (
+        user.organization_id is not None
+        and await access.has_catalogue_access(session, user.organization_id)
+    )
     rows = await course_service.list_courses_with_counts(
         session,
         include_unpublished=is_staff,
@@ -90,8 +97,10 @@ async def list_courses(session: DbSession, user: CurrentUser) -> list[CourseRead
         # The walled garden. An organization member sees exactly their own
         # organization's courses and nothing from the marketplace — including
         # one who is in STAFF_ROLES and would otherwise be shown every course
-        # on the platform by the line above.
+        # on the platform by the line above. The Team plan widens this to the
+        # public catalogue, and nothing else.
         organization_id=user.organization_id,
+        include_public_catalogue=on_team_plan,
         # Only platform staff see across tenants, matching `require_org_scope`
         # and `access.tenancy_decision`.
         include_organization_courses=(

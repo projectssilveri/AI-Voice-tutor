@@ -105,6 +105,8 @@ export default function OrganizationLimits({
   const [minutes, setMinutes] = useState("");
   const [modules, setModules] = useState("");
   const [note, setNote] = useState("");
+  // THE TEAM PLAN. On gives this company's people the public catalogue.
+  const [catalogue, setCatalogue] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -117,6 +119,7 @@ export default function OrganizationLimits({
       setMinutes(found.ai_minutes_allowed?.toString() ?? "");
       setModules(found.max_modules_per_course.toString());
       setNote(found.plan_note ?? "");
+      setCatalogue(found.catalogue_access);
       setError(null);
     } catch (caught) {
       setError(
@@ -138,6 +141,7 @@ export default function OrganizationLimits({
         max_ai_minutes_per_month: toValue(minutes),
         max_modules_per_course: toValue(modules),
         plan_note: note.trim() || null,
+        catalogue_access: catalogue,
       });
       setUsage(found);
       setSaved(true);
@@ -282,6 +286,32 @@ export default function OrganizationLimits({
           className={FIELD}
         />
       </div>
+
+      {/* THE TEAM PLAN. Switched on here once the seats are agreed and the
+          invoice is handled: it gives this company's people the whole public
+          catalogue, on top of their own organisation's courses. */}
+      <label
+        htmlFor="limit-catalogue"
+        className="mt-5 flex cursor-pointer items-start gap-3 rounded-xl border border-gray-200 p-4 dark:border-gray-800"
+      >
+        <input
+          id="limit-catalogue"
+          type="checkbox"
+          checked={catalogue}
+          onChange={(event) => setCatalogue(event.target.checked)}
+          className="mt-0.5 size-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500/25 dark:border-gray-600"
+        />
+        <span>
+          <span className="block text-sm font-medium text-gray-800 dark:text-white/90">
+            Team plan: give this company the full catalogue
+          </span>
+          <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+            On, every person here gets every published public course, with
+            quizzes and certificates, at no extra charge. Off, they see only
+            their own company&apos;s courses. Seats are the limit above.
+          </span>
+        </span>
+      </label>
 
       {/* Said plainly, because an admin about to lower a seat count needs to
           know it will not throw anybody out. */}

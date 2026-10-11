@@ -1446,6 +1446,9 @@ function UsersConsole() {
                                 userId={row.id}
                                 name={row.name}
                                 size="sm"
+                                // Only ask for a photo when there is one, so
+                                // the table stops firing a 404 per account.
+                                hasPhoto={row.has_photo ?? false}
                               />
                               {/* A LINK WHEREVER THE RECORD OPENS, which
                                   now includes every customer's people — the

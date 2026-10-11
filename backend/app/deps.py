@@ -211,9 +211,10 @@ def require_org_scope(
     Platform staff (a super admin or a platform admin) pass for support
     access, and that access is recorded. Nobody else crosses a tenant line.
 
-    404 rather than 403 for a non-member: whether a given organization exists
-    is not a stranger's business, and confirming it would turn this into a
-    directory of our customers.
+    A non-member of a real organization gets 403, not 404 (the owner's call,
+    2026-10-11), so a signed-in person is told plainly this is not theirs. An
+    unknown slug still 404s. Trade-off accepted: a signed-in user can now tell
+    which org slugs are real.
     """
 
     async def guard(
@@ -242,9 +243,17 @@ def require_org_scope(
         belongs = user.organization_id == organization.id
 
         if not belongs and not platform_staff:
+            # 403, not 404, since 2026-10-11 (the owner's call): a signed-in
+            # person who is not a member is told plainly that this is not
+            # theirs, rather than that it does not exist. A truly unknown slug
+            # still 404s above. The trade-off accepted with that decision: a
+            # signed-in user can now tell which org slugs are real.
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Organization not found.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "You are not a member of this organisation. Ask its "
+                    "administrator to add you."
+                ),
             )
 
         # A suspended tenant is closed to its own people but still reachable by

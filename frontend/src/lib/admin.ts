@@ -45,6 +45,12 @@ export interface AdminUserRow {
    * super admin, so switched off until then.
    */
   approval_pending?: boolean;
+  /**
+   * Whether this account has a photo. When false the row draws the initial and
+   * does not ask the server for an image, so the users table stops firing one
+   * 404 per account. Same flag the header avatar already uses.
+   */
+  has_photo?: boolean;
 }
 
 /**

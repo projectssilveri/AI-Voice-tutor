@@ -12,12 +12,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import exists, select
 
+from app.core.config import settings
 from app.core.users import auth_backend, fastapi_users
 from app.deps import CurrentUser, DbSession, OptionalUser
 from app.models.audit import AuditAction
 from app.models.profile import UserAvatar
 from app.schemas.user import SessionUser, UserCreate, UserRead, UserUpdate
-from app.services import audit
+from app.services import access, audit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -79,8 +80,20 @@ async def read_session(user: OptionalUser, session: DbSession) -> SessionUser | 
     has_photo = await session.scalar(
         select(exists().where(UserAvatar.user_id == user.id))
     )
+    # THE TEAM PLAN. One more lookup, only for an org member, so the frontend
+    # can show the catalogue without prices rather than hide it. A public B2C
+    # account has no organization and stays False.
+    catalogue_access = False
+    if user.organization_id is not None:
+        catalogue_access = await access.has_catalogue_access(
+            session, user.organization_id
+        )
     return SessionUser.model_validate(user).model_copy(
-        update={"has_photo": bool(has_photo)}
+        update={
+            "has_photo": bool(has_photo),
+            "org_catalogue_access": catalogue_access,
+            "payments_enabled": settings.payments_enabled,
+        }
     )
 
 

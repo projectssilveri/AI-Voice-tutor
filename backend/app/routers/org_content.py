@@ -20,16 +20,24 @@ from pydantic import BaseModel, Field
 from sqlalchemy import false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
-from app.deps import DbSession, OrgAuthorScope, OrgScope
+from app.core.config import settings
+from app.deps import DbSession, OrgAdminScope, OrgAuthorScope, OrgScope
+from app.models.assignment import Assignment
 from app.models.audit import AuditAction
+from app.models.certification import CertExam
 from app.models.course import Course, Module
 from app.models.org_change import ChangeAction, ChangeKind
 from app.models.org_document import DocumentVisibility
 from app.models.organization import Branch, Department
+from app.models.quiz import QuizQuestion
 from app.models.user import User, UserRole
+from app.schemas.assignment import AssignmentAdmin, AssignmentCreate
+from app.schemas.quiz import QuizQuestionAdmin, QuizQuestionCreate
+from app.services import assignments as assignment_service
 from app.services import audit, limits, materials, org_changes
 from app.services import courses as course_service
 from app.services import org_documents as doc_service
+from app.services import quizzes as quiz_service
 
 router = APIRouter(prefix="/org/{slug}", tags=["organization content"])
 
@@ -1521,3 +1529,287 @@ async def course_audience(
         )
         for user, branch_name in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Assessments on an organisation's own courses: quiz questions, assignments,
+# and a certification exam.
+#
+# The whole assessment layer was platform-staff only, so a customer could write
+# a course and its modules but never a quiz, an assignment or a certificate for
+# it. An organisation admin now builds these for their own courses, directly
+# (their rule: an org admin acts at once). Platform staff acting inside the
+# tenant pass too; nobody else does, and every route is scoped to the
+# organisation in the URL. The student side already works through the ordinary
+# quiz/assignment/exam routes once the content exists.
+# ---------------------------------------------------------------------------
+
+
+async def _org_course_or_404(session, scope, course_id: uuid.UUID) -> Course:
+    """The course, or 404 unless it belongs to the organisation in the URL."""
+    course = await session.get(Course, course_id)
+    if course is None or course.organization_id != scope.organization.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Course not found."
+        )
+    return course
+
+
+async def _org_module_or_404(session, course_id: uuid.UUID, module_id: uuid.UUID):
+    """The module, or 404 unless it belongs to the course in the URL.
+
+    Checked against the course so a module id from another course (or another
+    tenant) cannot be reached through this path.
+    """
+    module = await session.get(Module, module_id)
+    if module is None or module.course_id != course_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Module not found."
+        )
+    return module
+
+
+@router.get(
+    "/courses/{course_id}/modules/{module_id}/quiz-questions",
+    response_model=list[QuizQuestionAdmin],
+)
+async def list_org_quiz_questions(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> list[QuizQuestionAdmin]:
+    """The module's quiz questions, WITH answers, for the author."""
+    await _org_course_or_404(session, scope, course_id)
+    await _org_module_or_404(session, course_id, module_id)
+    questions = await quiz_service.list_questions(session, module_id)
+    return [QuizQuestionAdmin.model_validate(q) for q in questions]
+
+
+@router.post(
+    "/courses/{course_id}/modules/{module_id}/quiz-questions",
+    response_model=QuizQuestionAdmin,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_org_quiz_question(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    payload: QuizQuestionCreate,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> QuizQuestionAdmin:
+    await _org_course_or_404(session, scope, course_id)
+    await _org_module_or_404(session, course_id, module_id)
+    # The same guard the platform route applies: the right answer has to be one
+    # of the options offered.
+    if payload.correct_answer >= len(payload.options):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The correct answer is not one of the options given.",
+        )
+    question = QuizQuestion(
+        module_id=module_id,
+        question=payload.question,
+        options=payload.options,
+        correct_answer=payload.correct_answer,
+    )
+    session.add(question)
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"added_quiz_question": payload.question[:120]},
+    )
+    await session.commit()
+    await session.refresh(question)
+    return QuizQuestionAdmin.model_validate(question)
+
+
+@router.delete(
+    "/courses/{course_id}/modules/{module_id}/quiz-questions/{question_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_org_quiz_question(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    question_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> None:
+    await _org_course_or_404(session, scope, course_id)
+    await _org_module_or_404(session, course_id, module_id)
+    question = await session.get(QuizQuestion, question_id)
+    if question is None or question.module_id != module_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Question not found."
+        )
+    await session.delete(question)
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"removed_quiz_question": question.question[:120]},
+    )
+    await session.commit()
+
+
+@router.get(
+    "/courses/{course_id}/modules/{module_id}/assignments",
+    response_model=list[AssignmentAdmin],
+)
+async def list_org_assignments(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> list[AssignmentAdmin]:
+    await _org_course_or_404(session, scope, course_id)
+    await _org_module_or_404(session, course_id, module_id)
+    items = await assignment_service.list_for_module(session, module_id)
+    return [AssignmentAdmin.model_validate(a) for a in items]
+
+
+@router.post(
+    "/courses/{course_id}/modules/{module_id}/assignments",
+    response_model=AssignmentAdmin,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_org_assignment(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    payload: AssignmentCreate,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> AssignmentAdmin:
+    await _org_course_or_404(session, scope, course_id)
+    await _org_module_or_404(session, course_id, module_id)
+    assignment = Assignment(module_id=module_id, **payload.model_dump())
+    session.add(assignment)
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"added_assignment": payload.title[:120]},
+    )
+    await session.commit()
+    await session.refresh(assignment)
+    return AssignmentAdmin.model_validate(assignment)
+
+
+@router.delete(
+    "/courses/{course_id}/modules/{module_id}/assignments/{assignment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_org_assignment(
+    course_id: uuid.UUID,
+    module_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> None:
+    await _org_course_or_404(session, scope, course_id)
+    await _org_module_or_404(session, course_id, module_id)
+    assignment = await session.get(Assignment, assignment_id)
+    if assignment is None or assignment.module_id != module_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found."
+        )
+    name = assignment.title
+    await session.delete(assignment)
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"removed_assignment": name[:120]},
+    )
+    await session.commit()
+
+
+class OrgCertExamRow(BaseModel):
+    id: uuid.UUID
+    course_id: uuid.UUID
+    title: str
+    default_max_attempts: int
+
+
+class OrgCertExamCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    #: Defaults to the platform setting when not given, same as the platform route.
+    default_max_attempts: int | None = Field(default=None, ge=1, le=100)
+
+
+@router.get("/courses/{course_id}/cert-exams", response_model=list[OrgCertExamRow])
+async def list_org_cert_exams(
+    course_id: uuid.UUID, session: DbSession, scope: OrgAdminScope
+) -> list[OrgCertExamRow]:
+    await _org_course_or_404(session, scope, course_id)
+    exams = (
+        await session.scalars(select(CertExam).where(CertExam.course_id == course_id))
+    ).all()
+    return [
+        OrgCertExamRow(
+            id=e.id,
+            course_id=e.course_id,
+            title=e.title,
+            default_max_attempts=e.default_max_attempts,
+        )
+        for e in exams
+    ]
+
+
+@router.post(
+    "/courses/{course_id}/cert-exams",
+    response_model=OrgCertExamRow,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_org_cert_exam(
+    course_id: uuid.UUID,
+    payload: OrgCertExamCreate,
+    session: DbSession,
+    scope: OrgAdminScope,
+) -> OrgCertExamRow:
+    """Create a certification exam for an org course.
+
+    Its questions are the course's own quiz questions, so a useful exam needs
+    the modules to carry questions first (added above). An exam with no
+    questions is allowed, the same as on the platform side, so the exam can be
+    set up before the questions are written.
+    """
+    await _org_course_or_404(session, scope, course_id)
+    exam = CertExam(
+        course_id=course_id,
+        title=payload.title.strip(),
+        default_max_attempts=(
+            payload.default_max_attempts or settings.cert_default_max_attempts
+        ),
+    )
+    session.add(exam)
+    await audit.record_safely(
+        session,
+        action=AuditAction.ORG_COURSE_UPDATED,
+        actor=scope.user,
+        organization_id=scope.organization.id,
+        target_type="course",
+        target_id=course_id,
+        metadata={"added_cert_exam": exam.title[:120]},
+    )
+    await session.commit()
+    await session.refresh(exam)
+    return OrgCertExamRow(
+        id=exam.id,
+        course_id=exam.course_id,
+        title=exam.title,
+        default_max_attempts=exam.default_max_attempts,
+    )

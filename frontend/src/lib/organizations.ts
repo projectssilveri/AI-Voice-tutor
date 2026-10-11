@@ -147,6 +147,8 @@ export interface OrganizationLimitsInput {
   max_ai_minutes_per_month?: number | null;
   max_modules_per_course?: number | null;
   plan_note?: string | null;
+  /** The Team plan: true gives this company's people the public catalogue. */
+  catalogue_access?: boolean;
 }
 
 export interface OrganizationUsage {
@@ -159,6 +161,8 @@ export interface OrganizationUsage {
   /** Always a number: the platform default applies when there is no override. */
   max_modules_per_course: number;
   plan_note: string | null;
+  /** Whether this company is on the Team plan (the public catalogue). */
+  catalogue_access: boolean;
 }
 
 export function getOrganizationLimits(

@@ -42,6 +42,11 @@ export default function BuyCourseButton({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // CARD PAYMENTS ARE OFF. Showing a Buy button that only ever answers 503 is
+  // worse than saying so: offer the real route in (an administrator enrols you)
+  // instead of a dead end. `payments_enabled` rides on the session.
+  const paymentsOff = user?.payments_enabled === false;
+
   async function handleBuy() {
     setBusy(true);
     setError(null);
@@ -71,6 +76,18 @@ export default function BuyCourseButton({
       setBusy(false);
       setError(errorText(caught, CHECKOUT_FAILED));
     }
+  }
+
+  if (paymentsOff) {
+    return (
+      <div className={className}>
+        <p className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
+          Online payment isn&apos;t available right now
+          {priceMinor > 0 ? ` (${formatMoney(priceMinor, currency)})` : ""}. Ask
+          an administrator to enrol you, or contact us to arrange access.
+        </p>
+      </div>
+    );
   }
 
   return (

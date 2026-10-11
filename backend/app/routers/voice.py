@@ -583,62 +583,65 @@ async def voice_test_session(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
 
+    # The session stays open for the whole handler, as the module endpoint does:
+    # `websocket.state.db_session` is read by the auth check below, and leaving
+    # the block early left it pointing at a closed session for everything after.
     async with SessionLocal() as db:
         websocket.state.db_session = db
         user = await _authenticate(websocket)
 
-    if user is None or user.role is not UserRole.ADMIN:
-        await _send_json_safe(
-            websocket,
-            {
-                "type": "error",
-                "message": "Sign in as an admin to use the test harness.",
-            },
+        if user is None or user.role is not UserRole.ADMIN:
+            await _send_json_safe(
+                websocket,
+                {
+                    "type": "error",
+                    "message": "Sign in as an admin to use the test harness.",
+                },
+            )
+            await websocket.close(code=1008)
+            return
+
+        if not settings.gemini_api_key:
+            await _send_json_safe(
+                websocket,
+                {
+                    "type": "error",
+                    "message": (
+                        "GEMINI_API_KEY is not set on the backend. Add it to "
+                        "backend/.env and restart the service."
+                    ),
+                },
+            )
+            await websocket.close(code=1011)
+            return
+
+        # A factory, not a config: each leg of the lesson needs its own, built
+        # with the newest resumption handle. See `_run_bridge`.
+        instruction = gemini_live.module_system_instruction(
+            _TEST_MODULE_TITLE, _TEST_MODULE_CONTENT
         )
-        await websocket.close(code=1008)
-        return
 
-    if not settings.gemini_api_key:
-        await _send_json_safe(
-            websocket,
-            {
-                "type": "error",
-                "message": (
-                    "GEMINI_API_KEY is not set on the backend. Add it to "
-                    "backend/.env and restart the service."
-                ),
-            },
-        )
-        await websocket.close(code=1011)
-        return
+        def config(handle: str | None):
+            return gemini_live.build_config(instruction, resumption_handle=handle)
 
-    # A factory, not a config: each leg of the lesson needs its own, built
-    # with the newest resumption handle. See `_run_bridge`.
-    instruction = gemini_live.module_system_instruction(
-        _TEST_MODULE_TITLE, _TEST_MODULE_CONTENT
-    )
-
-    def config(handle: str | None):
-        return gemini_live.build_config(instruction, resumption_handle=handle)
-
-    try:
-        await _run_bridge(websocket, config)
-    except GeminiNotConfiguredError as exc:
-        await _send_json_safe(websocket, {"type": "error", "message": str(exc)})
-    except WebSocketDisconnect:
-        logger.info("Voice test client disconnected")
-    except Exception:
-        logger.exception("Voice test session failed")
-        await _send_json_safe(
-            websocket,
-            {
-                "type": "error",
-                "message": "The voice session ended unexpectedly. Check backend logs.",
-            },
-        )
-    finally:
-        if websocket.client_state is WebSocketState.CONNECTED:
-            await websocket.close()
+        try:
+            await _run_bridge(websocket, config)
+        except GeminiNotConfiguredError as exc:
+            await _send_json_safe(websocket, {"type": "error", "message": str(exc)})
+        except WebSocketDisconnect:
+            logger.info("Voice test client disconnected")
+        except Exception:
+            logger.exception("Voice test session failed")
+            await _send_json_safe(
+                websocket,
+                {
+                    "type": "error",
+                    "message": "The voice session ended unexpectedly. Check backend logs.",
+                },
+            )
+        finally:
+            if websocket.client_state is WebSocketState.CONNECTED:
+                await websocket.close()
 
 
 @router.websocket("/ws/module/{module_id}")
@@ -681,12 +684,18 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
         course_for_access = await course_service.get_course(db, module.course_id)
         decision = await access.can_access_course(db, user, course_for_access)
         if not decision.allowed:
+            # Another organization's course is not for sale, so "Buy this" is
+            # the wrong thing to say: it both misleads and implies the course
+            # exists. Matches the HTTP layer, where tenancy answers 404 and the
+            # paywall answers 402.
+            message = (
+                "This course is not available on your account."
+                if decision.reason == "not_in_organization"
+                else "Buy this course, or subscribe, to use the tutor."
+            )
             await _send_json_safe(
                 websocket,
-                {
-                    "type": "error",
-                    "message": "Buy this course, or subscribe, to use the tutor.",
-                },
+                {"type": "error", "message": message},
             )
             await websocket.close(code=1008)
             return

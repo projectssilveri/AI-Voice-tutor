@@ -26,6 +26,7 @@ from app.models.contact import ContactMessage
 from app.models.course import Course, Module
 from app.models.deletion import DeletionTarget
 from app.models.enrollment import Enrollment
+from app.models.profile import UserAvatar
 from app.models.suspension import SuspensionRequest, SuspensionStatus
 from app.models.user import User, UserRole
 from app.models.voice import Transcript, VoiceSession
@@ -83,6 +84,13 @@ class AdminUserRow(BaseModel):
     # Made an organisation admin by a platform admin and not approved yet by
     # a super admin, so switched off until then (`services/approvals`).
     approval_pending: bool = False
+
+    # WHETHER THIS PERSON HAS A PHOTO, so the row asks the server for one only
+    # when there is one. Without it the users table requested a photo for every
+    # account, got a 404 for each that had none, and filled the console and the
+    # network tab with one blocked request per row. Same flag, same reason, as
+    # `SessionUser.has_photo` for the header avatar.
+    has_photo: bool = False
 
 
 class ActivityLogRow(BaseModel):
@@ -310,6 +318,18 @@ async def list_users(
         (await session.execute(select(Organization.id, Organization.name))).all()
     )
 
+    # WHO HAS A PHOTO, for this page only. One query so the table can skip the
+    # per-row photo request for the accounts that have none.
+    with_photo = set(
+        (
+            await session.execute(
+                select(UserAvatar.user_id).where(UserAvatar.user_id.in_(page_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     rows: list[AdminUserRow] = []
     for user in users:
         count, seconds, last = session_stats.get(user.id, (0, 0, None))
@@ -333,6 +353,7 @@ async def list_users(
                 suspension_pending=user.id in pending_suspensions,
                 deletion_pending=user.id in pending_deletions,
                 approval_pending=user.id in waiting,
+                has_photo=user.id in with_photo,
             )
         )
     return AdminUserPage(items=rows, total=total, limit=limit, offset=offset)

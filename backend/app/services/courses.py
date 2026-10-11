@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -43,6 +43,10 @@ async def list_courses_with_counts(
     visible_to_user_id: uuid.UUID | None = None,
     organization_id: uuid.UUID | None = None,
     include_organization_courses: bool = False,
+    # THE TEAM PLAN. When the caller's organization has catalogue access, their
+    # listing is their own organization's courses PLUS every published public
+    # course. Only meaningful together with `organization_id`.
+    include_public_catalogue: bool = False,
     # Which departments' training this caller may see. `None` means no
     # department filter — org admins, branch managers, and anyone flagged
     # `sees_all_departments`. An EMPTY set means they see organization-wide
@@ -80,7 +84,22 @@ async def list_courses_with_counts(
     )
 
     if organization_id is not None:
-        query = query.where(Course.organization_id == organization_id)
+        if include_public_catalogue:
+            # Their own organization's courses, plus the public catalogue. A
+            # public DRAFT is excluded here and again by the unpublished filter
+            # below, matching `access.tenancy_decision` and
+            # `access.accessible_course_ids`.
+            query = query.where(
+                or_(
+                    Course.organization_id == organization_id,
+                    and_(
+                        Course.organization_id.is_(None),
+                        Course.is_published.is_(True),
+                    ),
+                )
+            )
+        else:
+            query = query.where(Course.organization_id == organization_id)
     elif not include_organization_courses:
         query = query.where(Course.organization_id.is_(None))
 

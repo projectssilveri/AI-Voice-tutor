@@ -35,6 +35,7 @@ from app.models.certification import CertAttempt, CertExam, Certificate
 from app.models.course import Course, Module
 from app.models.enrollment import Enrollment, ModuleProgress, ProgressStatus
 from app.models.organization import Organization
+from app.models.profile import UserAvatar
 from app.models.quiz import QuizAttempt
 from app.models.user import User, UserRole
 from app.models.voice import VoiceSession
@@ -51,6 +52,9 @@ class TrainingRow(BaseModel):
     user_name: str
     user_email: str
     user_role: str
+    # Whether this person has a photo, so the report asks for one only when
+    # there is one instead of firing a 404 per row.
+    has_photo: bool = False
     organization_name: str | None
     branch_name: str | None
     department_name: str | None
@@ -257,6 +261,16 @@ async def _build(
             await session.execute(select(Organization.id, Organization.name))
         ).all()
     }
+
+    # Who has a photo, in one query, so each row can skip the request when there
+    # is none rather than the report firing a 404 per person.
+    with_photo = set(
+        (
+            await session.scalars(
+                select(UserAvatar.user_id).where(UserAvatar.user_id.in_(user_ids))
+            )
+        ).all()
+    )
     from app.models.organization import Branch, Department
 
     branch_names = {
@@ -414,6 +428,7 @@ async def _build(
                 user_name=person.name,
                 user_email=person.email,
                 user_role=person.role.value,
+                has_photo=person.id in with_photo,
                 organization_name=org_names.get(person.organization_id),
                 branch_name=branch_names.get(person.branch_id),
                 department_name=dept_names.get(person.department_id),

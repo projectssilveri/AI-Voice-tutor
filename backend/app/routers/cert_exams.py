@@ -402,6 +402,101 @@ async def download_certificate(
     )
 
 
+async def _certificate_by_id(session, user, certificate_id: uuid.UUID):
+    """A certificate by its own id, if this caller may see it.
+
+    Added because the issued certificate id is what `/certificates/mine` hands
+    out and what a third party is given to check, but there was no endpoint that
+    took it: everything went through the EXAM id, so a direct link by
+    certificate id answered 404. The owner sees their own; platform staff see
+    any, within tenancy; everybody else gets 404 rather than a hint it exists.
+    """
+    certificate = await session.get(Certificate, certificate_id)
+    if certificate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Certificate not found."
+        )
+    exam = await session.get(CertExam, certificate.cert_exam_id)
+    if exam is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Certificate not found."
+        )
+    # Tenancy for the caller, same wall as the exam-based route.
+    try:
+        await access.require_course_in_tenant(session, user, exam.course_id)
+    except access.CourseOutsideTenantError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Certificate not found."
+        ) from None
+    # The owner, or platform staff. Anyone else is told it does not exist.
+    if certificate.user_id != user.id and user.role not in (
+        UserRole.ADMIN,
+        UserRole.SUPER_ADMIN,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Certificate not found."
+        )
+    return certificate, exam
+
+
+async def _best_passing_score(session, user_id: uuid.UUID, exam_id: uuid.UUID):
+    attempts = await certification.list_attempts(session, user_id, exam_id)
+    return max((float(a.score) for a in attempts if a.passed), default=None)
+
+
+@router.get("/certificates/{certificate_id}", response_model=EarnedCertificate)
+async def get_certificate_by_id(
+    certificate_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> EarnedCertificate:
+    """One certificate's details, by the certificate's own id."""
+    certificate, exam = await _certificate_by_id(session, user, certificate_id)
+    course = await session.get(Course, exam.course_id)
+    return EarnedCertificate(
+        id=certificate.id,
+        cert_exam_id=exam.id,
+        exam_title=exam.title,
+        course_id=exam.course_id,
+        course_title=course.title if course else "",
+        issued_at=certificate.issued_at,
+        score=await _best_passing_score(session, certificate.user_id, exam.id),
+    )
+
+
+@router.get("/certificates/{certificate_id}/download")
+async def download_certificate_by_id(
+    certificate_id: uuid.UUID, session: DbSession, user: CurrentUser
+) -> Response:
+    """The certificate PDF, by the certificate's own id."""
+    certificate, exam = await _certificate_by_id(session, user, certificate_id)
+    course = await session.get(Course, exam.course_id)
+    holder = await session.get(User, certificate.user_id)
+    try:
+        pdf = certificate_pdf.render_certificate(
+            certificate_id=certificate.id,
+            student_name=holder.name if holder else "",
+            course_title=course.title if course else "",
+            exam_title=exam.title,
+            score=await _best_passing_score(session, certificate.user_id, exam.id),
+            issued_at=certificate.issued_at,
+        )
+    except Exception:
+        logger.exception("Could not render certificate %s", certificate.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "We could not build your certificate just now. It is still "
+                "yours and nothing has been lost. Try again, and tell us if "
+                "it keeps happening."
+            ),
+        ) from None
+    filename = _safe_filename(course.title if course else "certificate")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @router.get(
     "/cert-exams/{exam_id}/questions", response_model=list[QuizQuestionForStudent]
 )

@@ -9,10 +9,12 @@ import { useCallback, useEffect, useState } from "react";
 import { Action } from "@/components/ui/Action";
 import Avatar from "@/components/ui/Avatar";
 import ChangeQueue from "@/components/org/ChangeQueue";
+import OrgNotMember from "@/components/org/OrgNotMember";
 import OrgShell from "@/components/org/OrgShell";
 import { useAuth } from "@/context/AuthContext";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { ApiError } from "@/lib/api";
 import { counted } from "@/lib/plural";
 import {
   ORG_ROLES,
@@ -48,6 +50,7 @@ export default function OrgPeoplePage() {
   const [structure, setStructure] = useState<OrgStructure | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [denied, setDenied] = useState(false);
   // What HAPPENED, as opposed to what went wrong. Removal needs it: the server
   // decides whether an account was deleted or closed, and the person who
   // pressed the button has to be told which.
@@ -85,11 +88,15 @@ export default function OrgPeoplePage() {
       setStructure(s);
       setError(null);
     } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Could not load your people.",
-      );
+      if (caught instanceof ApiError && (caught.status === 403 || caught.status === 404) && !caught.message.toLowerCase().includes("suspend")) {
+        setDenied(true);
+      } else {
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "Could not load your people.",
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -187,6 +194,8 @@ export default function OrgPeoplePage() {
       </div>
     );
   }
+
+  if (denied) return <OrgNotMember slug={slug} />;
 
   return (
     <OrgShell
@@ -479,7 +488,12 @@ export default function OrgPeoplePage() {
                 key={member.id}
                 className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4"
               >
-                <Avatar userId={member.id} name={member.name} size="md" />
+                <Avatar
+                  userId={member.id}
+                  name={member.name}
+                  size="md"
+                  hasPhoto={member.has_photo ?? false}
+                />
 
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-gray-800 dark:text-white/90">

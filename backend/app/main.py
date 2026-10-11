@@ -7,8 +7,9 @@ over HTTP for regular requests and over WebSocket for voice sessions.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from enum import Enum
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -63,6 +64,28 @@ def _error_response(status_code: int, detail: str, code: str) -> JSONResponse:
         status_code=status_code,
         content=ErrorResponse(detail=detail, code=code).model_dump(),
     )
+
+
+def _clean_detail(detail: object) -> str:
+    """A readable message out of any HTTPException detail.
+
+    fastapi-users raises HTTPException with a dict detail,
+    `{"code": ErrorCode, "reason": "..."}`, or a bare `ErrorCode` enum.
+    `str()` on either leaked a Python repr into the response body, like
+    `{'code': <ErrorCode.UPDATE_USER_INVALID_PASSWORD: '...'>, 'reason': '...'}`
+    — which broke client-side parsing and exposed internal enum names (the
+    change-password screen showed it on a wrong current password). This pulls
+    out the human reason and leaves nothing Python-shaped in the body.
+    """
+    if isinstance(detail, Mapping):
+        for key in ("reason", "detail", "message"):
+            value = detail.get(key)
+            if value:
+                return str(getattr(value, "value", value))
+        return "Request failed."
+    if isinstance(detail, Enum):
+        return str(detail.value)
+    return str(detail)
 
 
 async def _catch_unhandled(
@@ -202,7 +225,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def http_exception_handler(
         request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
-        return _error_response(exc.status_code, str(exc.detail), "http_error")
+        return _error_response(exc.status_code, _clean_detail(exc.detail), "http_error")
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(

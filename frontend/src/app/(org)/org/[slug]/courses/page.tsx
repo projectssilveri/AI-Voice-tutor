@@ -3,8 +3,11 @@
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import OrgCourseAssessments from "@/components/org/OrgCourseAssessments";
+import OrgNotMember from "@/components/org/OrgNotMember";
 import OrgShell from "@/components/org/OrgShell";
 import { Action } from "@/components/ui/Action";
+import { ApiError } from "@/lib/api";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonCards } from "@/components/ui/Skeleton";
 import { counted } from "@/lib/plural";
@@ -49,6 +52,7 @@ export default function OrgCoursesPage() {
   const [documents, setDocuments] = useState<OrgDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [denied, setDenied] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -105,9 +109,15 @@ export default function OrgCoursesPage() {
       setDocuments(d.documents.filter((doc) => doc.has_text));
       setError(null);
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not load courses.",
-      );
+      // A 404 here means "not a member of this organisation" (the API hides
+      // whether it exists). Show that plainly rather than a generic error.
+      if (caught instanceof ApiError && (caught.status === 403 || caught.status === 404) && !caught.message.toLowerCase().includes("suspend")) {
+        setDenied(true);
+      } else {
+        setError(
+          caught instanceof Error ? caught.message : "Could not load courses.",
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -195,6 +205,8 @@ export default function OrgCoursesPage() {
   // write here asks, and the org admin approves (2026-10-01).
   const direct =
     (profile?.is_org_admin ?? false) || (profile?.is_platform_staff ?? false);
+
+  if (denied) return <OrgNotMember slug={slug} />;
 
   return (
     <OrgShell
@@ -820,6 +832,14 @@ export default function OrgCoursesPage() {
                         </li>
                       ))}
                     </ul>
+                  ) : null}
+
+                  {/* Quiz, assignment and certification for this course. Org
+                      admins and platform staff only: the endpoints are
+                      org-admin scoped, so a manager editing modules via the
+                      approval flow does not see controls that would 403. */}
+                  {managingCourse === course.id && direct ? (
+                    <OrgCourseAssessments slug={slug} courseId={course.id} />
                   ) : null}
                 </div>
               ) : null}

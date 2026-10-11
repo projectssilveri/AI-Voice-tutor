@@ -40,6 +40,10 @@ htmlcov/
 # --- Dev-only scripts (local setup helpers, not for the repo) ---
 backend/scripts/
 
+# --- Claude AI assistant files (not for the repo) ---
+CLAUDE.md
+.claude/
+
 # --- Editor / OS ---
 .vscode/
 .idea/

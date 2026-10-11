@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -230,16 +230,37 @@ async def tutor_allowance_for(
     )
 
 
+#: A tutor connection that drops within this many seconds does not count as a
+#: play. A session is written the moment it starts, so without this a Wi-Fi
+#: blip or a page reload in the first seconds of a lecture burned the student's
+#: only play and locked them out of the tutor for good — with a free course's
+#: single session, one glitch ended their access to the core feature. Short
+#: enough that any real lecture (a leg runs minutes) counts; long enough to
+#: forgive a reconnect. Not abusable: each reconnect restarts the lecture from
+#: the top, so a string of sub-20-second sessions teaches nothing.
+MIN_BILLABLE_SECONDS = 20
+
+
 async def tutor_plays_used(
     session: AsyncSession, user_id: uuid.UUID, module_id: uuid.UUID
 ) -> int:
-    """How many times this student has already played the tutor on this module.
+    """How many times this student has really played the tutor on this module.
 
-    Counts `voice_sessions` rows, which are written when a session STARTS. That
-    is the honest count for a cap on plays: a student who opens the tutor,
-    listens to half a lecture and closes it has used a play, and counting only
-    finished sessions would let the same lecture be restarted indefinitely.
+    Counts `voice_sessions` rows, which are written when a session STARTS. A
+    student who opens the tutor, listens to half a lecture and closes it has
+    used a play, and counting only finished sessions would let the same lecture
+    be restarted indefinitely.
+
+    BUT a connection that dropped within `MIN_BILLABLE_SECONDS` does not count:
+    it is a glitch, not a lesson, and consuming a play for it locked students
+    out of the tutor on a momentary disconnect. A session still open (in
+    progress) counts; a closed one counts only if it ran long enough to be real.
     """
+    billable = or_(
+        VoiceSession.ended_at.is_(None),
+        func.extract("epoch", VoiceSession.ended_at - VoiceSession.started_at)
+        >= MIN_BILLABLE_SECONDS,
+    )
     return int(
         await session.scalar(
             select(func.count())
@@ -247,6 +268,7 @@ async def tutor_plays_used(
             .where(
                 VoiceSession.user_id == user_id,
                 VoiceSession.module_id == module_id,
+                billable,
             )
         )
         or 0

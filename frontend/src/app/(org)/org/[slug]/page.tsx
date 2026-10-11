@@ -39,10 +39,12 @@ export default function OrgHomePage() {
         setStatus("ok");
       })
       .catch((caught) => {
-        // 404 here means "not your organization" as often as it means "no such
-        // organization" — the backend refuses to distinguish them, on purpose,
-        // so that this page cannot be used to enumerate customers.
-        if (caught instanceof ApiError && caught.status === 404) {
+        // A non-member of a real organization now gets 403 (the owner's call,
+        // 2026-10-11); an unknown slug still 404s. Either way this is not
+        // theirs, so both show the "not your organization" page. The one 403
+        // that is NOT about membership is a suspended org, which its own
+        // members should see named, so it is excluded here.
+        if (caught instanceof ApiError && (caught.status === 403 || caught.status === 404) && !caught.message.toLowerCase().includes("suspend")) {
           setStatus("denied");
         } else {
           setMessage(

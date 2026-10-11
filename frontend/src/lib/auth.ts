@@ -40,6 +40,19 @@ export interface AuthUser {
    * not ask for a picture that is not there.
    */
   has_photo?: boolean;
+  /**
+   * The Team plan. True means this person's company gives them the public
+   * catalogue, so catalogue courses show up in their dashboard without prices.
+   * Sent by `/users/session` only; false for a public account or an org that
+   * is not on the Team plan.
+   */
+  org_catalogue_access?: boolean;
+  /**
+   * Whether card payments are switched on. False means checkout cannot work,
+   * so Buy and the cart's checkout are hidden instead of dead-ending at a 503.
+   * Sent by `/users/session` only.
+   */
+  payments_enabled?: boolean;
   is_superuser: boolean;
   is_verified: boolean;
 }

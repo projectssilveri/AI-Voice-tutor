@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import false, or_, select
+from sqlalchemy import and_, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -37,6 +37,7 @@ from app.models.course import Course, Module
 from app.models.enrollment import Enrollment
 from app.models.material import ModuleMaterial
 from app.models.order import Order, OrderStatus
+from app.models.organization import Organization
 from app.models.quiz import QuizQuestion
 from app.models.subscription import PlanCourse, Subscription, SubscriptionStatus
 from app.models.user import User, UserRole
@@ -175,7 +176,26 @@ async def subscription_covers_course(
     return found is not None
 
 
-async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
+async def has_catalogue_access(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> bool:
+    """Whether this organization is on the Team plan (`catalogue_access`).
+
+    One column read. Only ever asked when an org member reaches a PUBLIC
+    course, so the common path (their own org's course) pays nothing for it.
+    """
+    return bool(
+        await session.scalar(
+            select(Organization.catalogue_access).where(
+                Organization.id == organization_id
+            )
+        )
+    )
+
+
+async def tenancy_decision(
+    session: AsyncSession, user: User, course: Course
+) -> AccessDecision | None:
     """The walled garden, applied in BOTH directions.
 
     Returns a decision when tenancy settles the question, or None when the
@@ -192,10 +212,16 @@ async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
 
       * An ORG user may only ever reach their own organization's courses.
         Never the marketplace: their employer bought training, not a shop.
+        THE EXCEPTION is the Team plan: an org whose `catalogue_access` is on
+        gives its people every PUBLISHED PUBLIC course, with full coursework,
+        the same as if the company had bought each one. A draft stays hidden,
+        and another organization's course is still never reachable.
 
       * A PUBLIC user may never reach ANY organization's course. This is the
         direction that leaks, because an org's internal compliance training
-        would otherwise appear anywhere a public course can.
+        would otherwise appear anywhere a public course can. UNCHANGED by the
+        Team plan: it only ever lets an org member OUT to the public shelf,
+        never a stranger IN to a customer's training.
 
     The exception is platform staff, a super admin or a platform admin,
     matching `deps.require_org_scope`: support work is real, and it is audited.
@@ -204,6 +230,16 @@ async def tenancy_decision(user: User, course: Course) -> AccessDecision | None:
     """
     if user.organization_id is not None:
         if course.organization_id != user.organization_id:
+            # THE TEAM PLAN, and only the safe direction of it. A published
+            # PUBLIC course is included when this member's organization has
+            # catalogue access; a draft is off sale and stays hidden, and a
+            # course belonging to any organization is never opened this way.
+            if (
+                course.organization_id is None
+                and course.is_published
+                and await has_catalogue_access(session, user.organization_id)
+            ):
+                return AccessDecision(True, "team_plan")
             return AccessDecision(False, "not_in_organization")
 
         # THE DEPARTMENT WALL, inside the tenant.
@@ -251,7 +287,7 @@ async def can_access_course(
     session: AsyncSession, user: User, course: Course
 ) -> AccessDecision:
     """The decision. Call this; do not re-derive the rule at the call site."""
-    tenancy = await tenancy_decision(user, course)
+    tenancy = await tenancy_decision(session, user, course)
     if tenancy is not None:
         return tenancy
 
@@ -344,7 +380,7 @@ async def require_course_in_tenant(
     course = await session.get(Course, course_id)
     if course is None:
         return  # The caller's own 404 is the better error.
-    decision = await tenancy_decision(user, course)
+    decision = await tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         raise CourseOutsideTenantError(course.title)
 
@@ -370,7 +406,7 @@ async def require_module_in_tenant(
     )
     if course is None:
         return  # No such module; the caller's own 404 is the better error.
-    decision = await tenancy_decision(user, course)
+    decision = await tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         raise CourseOutsideTenantError(course.title)
 
@@ -397,7 +433,7 @@ async def require_material_in_tenant(
     )
     if course is None:
         return  # No such material; the caller's own 404 is the better error.
-    decision = await tenancy_decision(user, course)
+    decision = await tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         raise CourseOutsideTenantError(course.title)
 
@@ -426,7 +462,7 @@ async def require_assignment_in_tenant(
     )
     if course is None:
         return  # No such assignment; the caller's own 404 is the better error.
-    decision = await tenancy_decision(user, course)
+    decision = await tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         raise CourseOutsideTenantError(course.title)
 
@@ -449,7 +485,7 @@ async def require_submission_in_tenant(
     )
     if course is None:
         return
-    decision = await tenancy_decision(user, course)
+    decision = await tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         raise CourseOutsideTenantError(course.title)
 
@@ -470,7 +506,7 @@ async def require_question_in_tenant(
     )
     if course is None:
         return
-    decision = await tenancy_decision(user, course)
+    decision = await tenancy_decision(session, user, course)
     if decision is not None and not decision.allowed:
         raise CourseOutsideTenantError(course.title)
 
@@ -486,9 +522,8 @@ async def accessible_course_ids(
     """
     # Tenancy first, for the same reason as in `can_access_course`.
     if user.organization_id is not None:
-        # Exactly their own organization's courses. Nothing public, nothing
-        # anyone else's — regardless of role.
-        filters = [Course.organization_id == user.organization_id]
+        # Their own organization's courses, with the department wall applied.
+        own = [Course.organization_id == user.organization_id]
 
         # AND THE SAME DEPARTMENT WALL THE DETAIL ROUTE APPLIES.
         #
@@ -500,14 +535,30 @@ async def accessible_course_ids(
         # bug and still a bug.
         visible = await limits.visible_department_ids(user)
         if visible is not None:
-            filters.append(
+            own.append(
                 or_(
                     Course.department_id.is_(None),
                     Course.department_id.in_(visible) if visible else false(),
                 )
             )
 
-        return set((await session.scalars(select(Course.id).where(*filters))).all())
+        clause = and_(*own)
+
+        # THE TEAM PLAN. An organization with catalogue access also reaches
+        # every published public course, so the listing matches what
+        # `tenancy_decision` now allows per course. Only published, only
+        # public: a draft and another organization's course stay out, exactly
+        # as the detail gate keeps them out.
+        if await has_catalogue_access(session, user.organization_id):
+            clause = or_(
+                clause,
+                and_(
+                    Course.organization_id.is_(None),
+                    Course.is_published.is_(True),
+                ),
+            )
+
+        return set((await session.scalars(select(Course.id).where(clause))).all())
 
     # Platform staff, both tiers, reach every course: a platform admin has the
     # super admin's reach into customers since 2026-10-01.

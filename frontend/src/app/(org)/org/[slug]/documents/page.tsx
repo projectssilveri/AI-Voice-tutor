@@ -3,10 +3,12 @@
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import OrgNotMember from "@/components/org/OrgNotMember";
 import OrgShell from "@/components/org/OrgShell";
 import { Action } from "@/components/ui/Action";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { ApiError } from "@/lib/api";
 import { counted } from "@/lib/plural";
 import {
   type DocumentVisibility,
@@ -51,6 +53,7 @@ export default function OrgDocumentsPage() {
   const [structure, setStructure] = useState<OrgStructure | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [denied, setDenied] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -76,9 +79,13 @@ export default function OrgDocumentsPage() {
       setStructure(s);
       setError(null);
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not load documents.",
-      );
+      if (caught instanceof ApiError && (caught.status === 403 || caught.status === 404) && !caught.message.toLowerCase().includes("suspend")) {
+        setDenied(true);
+      } else {
+        setError(
+          caught instanceof Error ? caught.message : "Could not load documents.",
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -135,6 +142,8 @@ export default function OrgDocumentsPage() {
       "One department"
     );
   }
+
+  if (denied) return <OrgNotMember slug={slug} />;
 
   return (
     <OrgShell

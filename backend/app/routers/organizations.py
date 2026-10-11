@@ -640,6 +640,10 @@ class OrganizationLimits(BaseModel):
     max_ai_minutes_per_month: int | None = Field(default=None, ge=0, le=1_000_000)
     max_modules_per_course: int | None = Field(default=None, ge=1, le=200)
     plan_note: str | None = Field(default=None, max_length=500)
+    # THE TEAM PLAN. True gives this organization's people the whole public
+    # catalogue. Only applied when actually sent, so setting a seat count does
+    # not silently switch it either way.
+    catalogue_access: bool | None = Field(default=None)
 
 
 class OrganizationUsage(BaseModel):
@@ -653,6 +657,8 @@ class OrganizationUsage(BaseModel):
     ai_minutes_remaining: int | None
     max_modules_per_course: int
     plan_note: str | None
+    # Whether this organization is on the Team plan (the public catalogue).
+    catalogue_access: bool
 
 
 @router.get("/{organization_id}/limits", response_model=OrganizationUsage)
@@ -686,6 +692,7 @@ async def get_limits(
             organization.max_modules_per_course or settings.max_modules_per_course
         ),
         plan_note=organization.plan_note,
+        catalogue_access=organization.catalogue_access,
     )
 
 
@@ -730,6 +737,12 @@ async def set_limits(
     if "plan_note" in payload.model_fields_set:
         organization.plan_note = (payload.plan_note or "").strip() or None
         changed["plan_note"] = "set" if organization.plan_note else "cleared"
+
+    # The Team plan switch. A bool, so applied on its own rather than in the
+    # numeric loop above, and only when the field was actually sent.
+    if "catalogue_access" in payload.model_fields_set:
+        organization.catalogue_access = bool(payload.catalogue_access)
+        changed["catalogue_access"] = "on" if organization.catalogue_access else "off"
 
     if changed:
         # `record`, not `record_safely`: what a customer is entitled to is a

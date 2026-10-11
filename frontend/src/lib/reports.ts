@@ -18,6 +18,8 @@ export interface TrainingRow {
   user_name: string;
   user_email: string;
   user_role: string;
+  /** Whether this person has a photo, so the row skips the request when not. */
+  has_photo?: boolean;
   organization_name: string | null;
   branch_name: string | null;
   department_name: string | null;

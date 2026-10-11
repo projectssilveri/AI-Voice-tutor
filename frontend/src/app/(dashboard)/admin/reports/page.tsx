@@ -366,6 +366,7 @@ function Reports() {
                             userId={row.user_id}
                             name={row.user_name}
                             size="sm"
+                            hasPhoto={row.has_photo ?? false}
                           />
                           <div className="min-w-0">
                             <Link
