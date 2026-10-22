@@ -455,6 +455,19 @@ export function useVoiceSession({ moduleId }: VoiceSessionOptions = {}) {
           // through `error` would put a red banner on a lesson that worked.
           // The server writes the sentence, because only it knows which of
           // the two happened.
+          case "lesson_complete":
+            // The tutor finished teaching and the backend ended the lesson on
+            // its own, so the student no longer has to press End. A clean end
+            // like session_limit: show the sentence, hand the microphone back,
+            // and never flash a red error banner.
+            setSupersededMessage(
+              message.message ??
+                "That is the end of this lesson. Your transcript is saved.",
+            );
+            setState("superseded");
+            void releaseDevices();
+            break;
+
           case "session_limit":
             setSupersededMessage(
               message.message ??

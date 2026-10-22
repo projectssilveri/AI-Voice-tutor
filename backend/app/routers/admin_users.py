@@ -22,7 +22,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, or_, select
 
 from app.core import passwords
-from app.core.users import password_helper
+from app.core.users import password_helper, send_account_invite
 from app.deps import DbSession, RequireAdmin
 from app.models.approval import ApprovalKind
 from app.models.assignment import Assignment, AssignmentSubmission
@@ -51,6 +51,7 @@ from app.services import (
     concurrency,
     conflicts,
     deletions,
+    notifications,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -285,9 +286,11 @@ async def _assert_org_floor_holds(session, target: User) -> None:
 class PlatformUserCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     email: EmailStr
-    # Set by whoever creates the account and given to the person. There is no
-    # mail provider (decision 36), so an invite email is not an option and
-    # pretending otherwise would create accounts nobody can sign in to.
+    # A password set by whoever creates the account. When email is configured
+    # the new person also gets an invite with a set-password link, so they
+    # choose their own (`core.users.send_account_invite`); with no SMTP it stays
+    # the password the admin hands over. Required either way, so an account is
+    # never left with none.
     password: str = Field(min_length=8, max_length=128)
     role: UserRole = UserRole.STUDENT
     phone: str | None = Field(default=None, max_length=40)
@@ -489,6 +492,14 @@ async def create_platform_user(
     ):
         await session.commit()
 
+    # Email the new person their login and a set-password link, instead of the
+    # admin handing a password over. Dormant without SMTP, best-effort.
+    await send_account_invite(user)
+    if waits and organization_id is not None:
+        # A platform admin's new organisation admin waits for the super admin.
+        await notifications.account_approval_requested(
+            session, subject_name=user.name
+        )
     return CreatedUser(
         id=user.id,
         name=user.name,

@@ -77,6 +77,12 @@ function url(path: string): string {
  * here. Matched by substring because the code arrives sometimes as a bare
  * string and sometimes nested under `detail.code`.
  */
+// Shown when an account exists but has not confirmed its email yet. Exported
+// so the sign-up form can recognise it as "go check your email", a next step
+// rather than a failure, without re-matching the server's error code itself.
+export const EMAIL_NOT_VERIFIED_MESSAGE =
+  "Please verify your email before signing in";
+
 const ERROR_MESSAGES: ReadonlyArray<[string, string]> = [
   // NOT "no account with that email", however much more helpful that sounds.
   // The server already answers identically whether the account exists or the
@@ -88,10 +94,17 @@ const ERROR_MESSAGES: ReadonlyArray<[string, string]> = [
   // The genuine new arrival is helped by the SIGN-UP LINK the form renders
   // beside this, which points somewhere useful without confirming anything.
   ["LOGIN_BAD_CREDENTIALS", "Incorrect email or password"],
-  ["LOGIN_USER_NOT_VERIFIED", "Please verify your email before signing in"],
+  ["LOGIN_USER_NOT_VERIFIED", EMAIL_NOT_VERIFIED_MESSAGE],
   ["REGISTER_USER_ALREADY_EXISTS", "An account with that email already exists"],
   ["REGISTER_INVALID_PASSWORD", "That password is not strong enough"],
   ["UPDATE_USER_EMAIL_ALREADY_EXISTS", "That email is already in use"],
+  // The reset link is single-use and expires in about an hour; a weak new
+  // password comes back as a {code, reason} and the reason is shown instead,
+  // so only the bad-token case is mapped here.
+  [
+    "RESET_PASSWORD_BAD_TOKEN",
+    "This reset link is invalid or has expired. Ask for a new one.",
+  ],
 ];
 
 function humanise(raw: string): string | null {
@@ -262,4 +275,68 @@ export async function logout(): Promise<void> {
     method: "POST",
     credentials: "include",
   });
+}
+
+/** Confirm an email with the token from the link in the verification email. */
+export async function verifyEmail(token: string): Promise<void> {
+  const response = await post(url("/auth/verify"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!response.ok) {
+    throw new AuthError(
+      response.status,
+      await readError(
+        response,
+        "This confirmation link is invalid or has expired. Ask for a new one.",
+      ),
+    );
+  }
+}
+
+/**
+ * Ask for a fresh verification email. The server answers the same whether or
+ * not the address has an account, so this never reveals who is registered.
+ */
+export async function requestVerify(email: string): Promise<void> {
+  await post(url("/auth/request-verify-token"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+/**
+ * Start a password reset. Resolves either way: the server answers 202 whether
+ * or not the address has an account, so this never reveals who is registered
+ * and the page shows the same "check your email" message regardless.
+ */
+export async function forgotPassword(email: string): Promise<void> {
+  await post(url("/auth/forgot-password"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+/** Finish a reset with the token from the email and the new password. */
+export async function resetPassword(
+  token: string,
+  password: string,
+): Promise<void> {
+  const response = await post(url("/auth/reset-password"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
+  });
+  if (!response.ok) {
+    throw new AuthError(
+      response.status,
+      await readError(
+        response,
+        "Could not reset your password. The link may have expired.",
+      ),
+    );
+  }
 }

@@ -1,10 +1,14 @@
 """Auth: register, login, logout, and "who am I".
 
-fastapi-users supplies register/login/logout; `/me` is ours because the
+fastapi-users supplies register/login/logout/verify; `/me` is ours because the
 frontend needs a signed-out answer that is not an error.
 
-Password reset and email verification are deliberately not mounted yet — both
-need an email transport, which does not exist.
+Email verification is mounted. It only bites once SMTP is configured: login
+requires a verified email when `settings.require_email_verification` is on,
+which follows `email_enabled`, so with no transport sign-up and sign-in behave
+exactly as before. Password reset is mounted on the same transport: with no
+SMTP the forgot-password route still answers 202 (it must, to avoid revealing
+who has an account) but no mail is sent, so there is nothing to click.
 """
 
 from __future__ import annotations
@@ -51,7 +55,16 @@ async def _audit_logout(
 
 
 # POST /auth/login, POST /auth/logout
-_auth_router = fastapi_users.get_auth_router(auth_backend)
+#
+# `requires_verification` follows email being configured. Off (the default with
+# no SMTP): login works for everyone, as before. On: an unverified account is
+# refused at login until it confirms its email, which is the whole of "verify
+# before activating" at one chokepoint rather than on every route. Existing
+# accounts are backfilled verified by migration 0033, and admin/org-created
+# accounts are made verified, so only new self-sign-ups ever have to confirm.
+_auth_router = fastapi_users.get_auth_router(
+    auth_backend, requires_verification=settings.require_email_verification
+)
 for _route in _auth_router.routes:
     # Attach only to logout. Login is audited in `core/users.py`, where
     # fastapi-users has resolved the credentials and the actor is known;
@@ -62,6 +75,10 @@ for _route in _auth_router.routes:
 router.include_router(_auth_router)
 # POST /auth/register
 router.include_router(fastapi_users.get_register_router(UserRead, UserCreate))
+# POST /auth/request-verify-token, POST /auth/verify
+router.include_router(fastapi_users.get_verify_router(UserRead))
+# POST /auth/forgot-password, POST /auth/reset-password
+router.include_router(fastapi_users.get_reset_password_router())
 
 users_router = APIRouter(prefix="/users", tags=["users"])
 

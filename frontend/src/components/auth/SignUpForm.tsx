@@ -16,7 +16,12 @@ import {
   validateNewPassword,
 } from "@/lib/validate";
 import { ChevronLeftIcon, EyeCloseIcon, EyeIcon } from "@/icons";
-import { login, register } from "@/lib/auth";
+import {
+  EMAIL_NOT_VERIFIED_MESSAGE,
+  login,
+  register,
+  requestVerify,
+} from "@/lib/auth";
 
 // fastapi-users rejects anything shorter than 8, but failing here avoids a
 // pointless round trip. Server-side validation remains the real gate.
@@ -47,6 +52,11 @@ export default function SignUpForm() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Set when email verification is on: the account was created, and now it
+  // waits for the person to confirm their address. Not an error, a next step.
+  const [verifySent, setVerifySent] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resent, setResent] = useState(false);
   // Which fields the person has finished with. An error shown before somebody
   // has left the box is a form arguing with them mid-word.
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -114,6 +124,18 @@ export default function SignUpForm() {
       router.push(safeNext(next, "/"));
       router.refresh();
     } catch (caught) {
+      // Email verification is switched on: the account was created, the login
+      // step just cannot complete until the email is confirmed. Registration
+      // errors (an address already taken, a weak password) carry a different
+      // message and fall through to the banner below.
+      if (
+        caught instanceof Error &&
+        caught.message === EMAIL_NOT_VERIFIED_MESSAGE
+      ) {
+        setVerifySent(true);
+        setSubmitting(false);
+        return;
+      }
       setError(
         caught instanceof Error
           ? caught.message
@@ -121,6 +143,64 @@ export default function SignUpForm() {
       );
       setSubmitting(false);
     }
+  }
+
+  async function handleResend() {
+    setResending(true);
+    try {
+      await requestVerify(email);
+      setResent(true);
+    } finally {
+      setResending(false);
+    }
+  }
+
+  if (verifySent) {
+    return (
+      <div className="flex flex-col flex-1 w-full overflow-y-auto lg:w-1/2 no-scrollbar">
+        <div className="w-full max-w-md mx-auto mb-5 sm:pt-10">
+          <Link
+            href="/"
+            className="inline-flex items-center text-sm text-[var(--mk-muted)] transition-colors hover:text-[var(--mk-text)]"
+          >
+            <ChevronLeftIcon />
+            Back to home
+          </Link>
+        </div>
+        <div className="flex flex-col justify-center flex-1 w-full max-w-md mx-auto">
+          <h1 className="mb-2 font-semibold text-[var(--mk-text)] text-title-sm sm:text-title-md">
+            Check your email
+          </h1>
+          <p className="text-sm text-[var(--mk-muted)]">
+            We sent a confirmation link to{" "}
+            <span className="font-medium text-[var(--mk-text)]">{email}</span>.
+            Open it to activate your account, then sign in.
+          </p>
+          <p className="mt-4 text-sm text-[var(--mk-muted)]">
+            No email after a minute? Check your spam folder, or send it again.
+          </p>
+          <div className="mt-5 flex items-center gap-4">
+            <Button
+              size="sm"
+              onClick={handleResend}
+              disabled={resending || resent}
+            >
+              {resent
+                ? "Sent again"
+                : resending
+                  ? "Sending…"
+                  : "Resend email"}
+            </Button>
+            <Link
+              href="/signin"
+              className="text-sm text-[var(--mk-brand-lit)] hover:text-[var(--mk-brand-lit)]"
+            >
+              Go to sign in
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

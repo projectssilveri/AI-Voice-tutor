@@ -339,15 +339,25 @@ def module_system_instruction(
         f"are stuck. Then go straight back to the lecture from where you were "
         f"cut off, without announcing that you are doing so and without "
         f"asking whether you may.\n\n"
-        f"If what they said is not a question ('yes', 'okay', 'go on', a "
-        f"noise, or something the transcription clearly garbled), do not treat "
-        f"it as a conversation. Simply carry on teaching.\n\n"
+        f"If you could not make out what they said, or the words look garbled "
+        f"or half-heard, ask them once, warmly, to say it again in a few "
+        f"words, then carry on teaching. Do not guess at a garbled question, "
+        f"and do not tell them it is outside the module just because it was "
+        f"unclear.\n\n"
+        f"If what they said is not really a question ('yes', 'okay', 'go on', "
+        f"a cough or a short noise, or a stray fragment that reads like an "
+        f"echo of your own words), do not treat it as a conversation and do "
+        f"not answer it. Simply carry on teaching from where you were, and "
+        f"never let the same stray fragment stop you over and over.\n\n"
         f"SCOPE\n"
-        f"Teach ONLY from the material below. If the student asks about "
-        f"something outside it, say in one sentence that it is outside this "
-        f"module, then return to the lecture. Never offer to teach something "
-        f"outside the material. You cannot, and offering it then refusing it "
-        f"a moment later is worse than not offering.\n\n"
+        f"Your subject is the material below, but be generous about what "
+        f"counts as part of it: if a question is reasonably connected to what "
+        f"you are teaching, or helps them understand it, just answer it well "
+        f"and return to the lecture. Only when a question is clearly about a "
+        f"different topic, say once, in a single friendly sentence, that it is "
+        f"outside this module and you will keep to the lesson, then move on. "
+        f"Do not repeat that sentence, do not say it more than once for the "
+        f"same question, and when you are unsure, help rather than refuse.\n\n"
         f"VOICE\n"
         f"You are speaking aloud. Use plain conversational sentences. No "
         f"markdown, no bullet points, no headings, no code blocks, no emoji, "
@@ -408,6 +418,38 @@ async def continue_lecture(session: genai.live.AsyncSession) -> None:
     )
 
 
+#: Closing lines that mean the lesson is over, matched loosely. The model is
+#: asked to say LESSON_COMPLETE_PHRASE, but out loud it paraphrases its own
+#: ending, and a miss used to leave the bridge nudging it to carry on, so it
+#: produced one closing sentence after another. These are the paraphrases real
+#: sessions produced; all are genuinely terminal, so a match can safely end the
+#: lesson rather than only stop the nudging. Full phrases, not bare fragments,
+#: so a mid-lecture "the whole of this module in three parts" is not an ending.
+_CLOSING_PHRASES: tuple[str, ...] = (
+    "that is the whole of this module",
+    "that's the whole of this module",
+    "that is the end of this module",
+    "that's the end of this module",
+    "that is it for this session",
+    "that's it for this session",
+    "that is it for this module",
+    "that's it for this module",
+    "that is all for this session",
+    "that's all for this session",
+    "that is all for this module",
+    "that's all for this module",
+    "that concludes this module",
+    "that concludes this session",
+    "that wraps up this module",
+    "that wraps up this session",
+    "that brings us to the end",
+    "that is everything for this module",
+    "that's everything for this module",
+    "you have reached the end of this module",
+    "you've reached the end of this module",
+)
+
+
 def sounds_finished(spoken: str) -> bool:
     """Whether the tutor just said the lesson is over.
 
@@ -416,12 +458,16 @@ def sounds_finished(spoken: str) -> bool:
     that is the whole of this module", "so, that's the whole of this module!".
     Apostrophes and spacing are flattened before comparing.
 
-    A miss costs one more nudge, and the model then says it again. A false
-    positive ends the nudging early and the student can still speak. Neither is
-    worth a stricter rule that breaks on a contraction.
+    The caller passes the whole accumulated closing turn, not one fragment:
+    Gemini streams the tutor's transcription in pieces, so the sentinel it is
+    asked for ("that is the whole of this module") arrives split across several
+    and often comes out paraphrased ("that's it for this session"). Matching
+    only the sentinel, on one fragment, left those unrecognised, so the nudge
+    loop never stopped and the ending repeated. The lesson now ends on a match,
+    so the phrases above are kept to genuinely terminal ones.
     """
     flattened = " ".join(spoken.lower().replace("\u2019", "'").split())
-    return LESSON_COMPLETE_PHRASE in flattened or "that's the whole of this module" in flattened
+    return any(phrase in flattened for phrase in _CLOSING_PHRASES)
 
 
 async def stream_from_gemini(

@@ -145,7 +145,7 @@ function OrgLogin() {
           >
             Password
           </label>
-          <div className="relative mb-6">
+          <div className="relative mb-2">
             <input
               id="org-password"
               type={showPassword ? "text" : "password"}
@@ -168,6 +168,20 @@ function OrgLogin() {
                 <EyeCloseIcon className="fill-gray-500" />
               )}
             </button>
+          </div>
+
+          {/* The same reset flow as the main sign-in. Membership is granted by
+              an admin, not claimed, so there is still no sign-up link here, but
+              someone who forgot their password must have a way back in. The
+              reset is global (one account, one password), so it points at the
+              shared `/forgot-password`. */}
+          <div className="mb-6 text-right">
+            <Link
+              href="/forgot-password"
+              className="text-sm font-medium text-brand-500 hover:text-brand-600 dark:text-brand-400"
+            >
+              Forgot password?
+            </Link>
           </div>
 
           <button

@@ -37,7 +37,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal, get_session
 from app.models.audit import AuditAction
 from app.models.user import User
-from app.services import audit, revocation
+from app.services import audit, email, email_messages, revocation
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,57 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         # Log the id, never the email or any credential.
         logger.info("User registered: %s (role=%s)", user.id, user.role.value)
         await _audit(AuditAction.REGISTER, user, request)
+        # Ask them to confirm their email. Only when mail is configured: with no
+        # transport there is no link to send and verification is not enforced,
+        # so a sign-up still completes exactly as before. This path runs for
+        # self-registration only; admin and org-created accounts are made
+        # verified and never reach here.
+        if settings.email_enabled and not user.is_verified:
+            try:
+                await self.request_verify(user, request)
+            except Exception:
+                # A mail or token hiccup must not undo a completed registration.
+                logger.exception("Could not start email verification for %s", user.id)
+
+    async def on_after_request_verify(
+        self, user: User, token: str, request: Request | None = None
+    ) -> None:
+        """Send the confirm-your-email link. Called by `request_verify`."""
+        base = settings.frontend_base_url.rstrip("/")
+        verify_url = f"{base}/verify-email?token={token}"
+        subject, text, html = email_messages.verification_email(user.name, verify_url)
+        await email.send_email(to=user.email, subject=subject, text=text, html=html)
+
+    async def on_after_verify(
+        self, user: User, request: Request | None = None
+    ) -> None:
+        """Their email is confirmed: send the short 'you are all set' welcome."""
+        subject, text, html = email_messages.welcome_email(
+            user.name, settings.frontend_base_url
+        )
+        await email.send_email(to=user.email, subject=subject, text=text, html=html)
+
+    async def on_after_forgot_password(
+        self, user: User, token: str, request: Request | None = None
+    ) -> None:
+        """Send the reset link. Called by `forgot_password`.
+
+        The route answers the same whether or not an account exists, so this
+        only runs for a real one and never confirms an address to a stranger.
+        With no SMTP the send is a no-op, and the person simply gets no mail.
+        """
+        base = settings.frontend_base_url.rstrip("/")
+        reset_url = f"{base}/reset-password?token={token}"
+        subject, text, html = email_messages.reset_password_email(user.name, reset_url)
+        await email.send_email(to=user.email, subject=subject, text=text, html=html)
+
+    async def on_after_reset_password(
+        self, user: User, request: Request | None = None
+    ) -> None:
+        """The password was changed: log it and tell the owner it happened."""
+        logger.info("Password reset for user: %s", user.id)
+        subject, text, html = email_messages.password_changed_email(user.name)
+        await email.send_email(to=user.email, subject=subject, text=text, html=html)
 
     async def on_after_login(
         self, user: User, request: Request | None = None, response=None
@@ -141,6 +192,47 @@ async def _audit(action: str, user: User, request: Request | None) -> None:
             metadata={"role": user.role.value},
         )
         await session.commit()
+
+
+# The account-invite link reuses the password-reset token (same audience and
+# secret), so the /auth/reset-password route and the /reset-password page handle
+# it with no new machinery. Longer-lived than a reset, because an invite may sit
+# unopened for a few days.
+_RESET_TOKEN_AUDIENCE = "fastapi-users:reset"
+_INVITE_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+
+
+async def send_account_invite(user: User) -> None:
+    """Email a staff-created user a link to set their own password.
+
+    Admin and org-admin created accounts used to show the password once on
+    screen for the admin to hand over. This emails the person their login and a
+    set-password link instead, so no password is ever put in an email and the
+    admin never has to invent one.
+
+    Dormant without SMTP and best-effort: it never raises and never undoes the
+    account, so callers invoke it AFTER the account is committed.
+    """
+    if not settings.email_enabled or not user.email:
+        return
+    try:
+        token = generate_jwt(
+            {
+                "sub": str(user.id),
+                "password_fgpt": password_helper.hash(user.hashed_password),
+                "aud": _RESET_TOKEN_AUDIENCE,
+            },
+            settings.jwt_secret or "",
+            _INVITE_LIFETIME_SECONDS,
+        )
+        base = settings.frontend_base_url.rstrip("/")
+        link = f"{base}/reset-password?token={token}"
+        subject, text, html = email_messages.account_invite_email(
+            user.name, user.email, link
+        )
+        await email.send_email(to=user.email, subject=subject, text=text, html=html)
+    except Exception:
+        logger.exception("Could not send account invite to %s", user.id)
 
 
 async def get_user_manager(

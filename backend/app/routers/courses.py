@@ -40,6 +40,7 @@ from app.services import (
     course_review,
     deletions,
     limits,
+    notifications,
     plans,
 )
 from app.services import courses as course_service
@@ -574,6 +575,8 @@ async def submit_course_for_review(
     )
     await session.commit()
     await session.refresh(course)
+    # The super admins own Course approvals; tell them one is waiting.
+    await notifications.course_review_requested(session, course_title=course.title)
     return CourseRead.model_validate(course)
 
 

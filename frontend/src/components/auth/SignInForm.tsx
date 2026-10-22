@@ -219,6 +219,14 @@ export default function SignInForm() {
                   {passwordProblem}
                 </p>
               ) : null}
+              <div className="mt-2 text-right">
+                <Link
+                  href="/forgot-password"
+                  className="text-sm text-[var(--mk-brand-lit)] hover:text-[var(--mk-brand-lit)]"
+                >
+                  Forgot password?
+                </Link>
+              </div>
             </div>
 
             {/* A "Keep me logged in" checkbox used to sit here. It was never

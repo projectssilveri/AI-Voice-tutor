@@ -423,6 +423,14 @@ async def confirm_payment(
             order.currency,
             user.id,
         )
+    # A receipt to the buyer. After the commit above, dormant without SMTP, and
+    # best-effort, so it can never affect the payment. Reachable only once
+    # Razorpay is configured, so it is untested while payments are off.
+    from app.services import notifications
+
+    await notifications.purchase_receipt_for_orders(
+        session, user=user, orders=list(orders)
+    )
     return orders
 
 

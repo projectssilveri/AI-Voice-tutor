@@ -126,6 +126,21 @@ async def request(
             "Somebody has already asked for this, and the organisation "
             "administrator has not decided yet."
         ) from exc
+
+    # Tell the organisation's admins there is something to approve. One place
+    # for every request route (members, courses, documents, modules). Imported
+    # here, not at module scope, to keep the service layer clear of import
+    # cycles. Best-effort and dormant without SMTP, so it never raises and never
+    # undoes the request; the caller commits it immediately after this returns.
+    from app.services import notifications
+
+    await notifications.org_change_requested(
+        session,
+        organization_id=organization_id,
+        actor_name=actor.name,
+        action=action.value,
+        label=row.label,
+    )
     return row
 
 

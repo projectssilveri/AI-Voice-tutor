@@ -162,6 +162,16 @@ class _BridgeState:
         self.student_spoke_at: float = 0.0
         #: The tutor said the module was finished. Stops the nudging.
         self.lecture_finished = False
+        #: The lesson was ended because the tutor finished teaching, as opposed
+        #: to the student stopping or the time running out. Stops the bridge
+        #: opening another leg, and is not an error: the student already heard
+        #: the closing line, so nothing extra is shown.
+        self.lecture_ended = False
+        #: The tutor's current turn, joined across transcript fragments. Gemini
+        #: streams output transcription in pieces, so the closing line is only
+        #: recognisable once they are joined. Reset when a turn ends or the
+        #: student speaks.
+        self.model_line = ""
         #: Consecutive nudges with no student speech. A runaway guard only —
         #: the real limit on a lesson is the time allowance.
         self.nudges = 0
@@ -226,6 +236,11 @@ async def _run_bridge(
     #: `create_task` keeps only a weak reference, and a dropped task is a
     #: lecture that silently stops again.
     _nudge_tasks: set[asyncio.Task] = set()
+    #: Set when the tutor has finished teaching and the lesson should end on its
+    #: own. Watched alongside the pumps so completion tears the leg down the same
+    #: way the student pressing stop does, instead of leaving the connection open
+    #: until the time cap or a click on Stop.
+    end_event = asyncio.Event()
 
     async def nudge_onward(session) -> None:
         """Push the tutor into its next turn, unless the student has the floor.
@@ -241,11 +256,31 @@ async def _run_bridge(
         stopped_at = asyncio.get_running_loop().time()
         await asyncio.sleep(NUDGE_GRACE_SECONDS)
 
-        if state.lecture_finished or state.student_stopped:
+        if state.student_stopped or state.lecture_ended:
             return
         if state.student_spoke_at >= stopped_at:
             # They spoke in the gap. Their turn now; Gemini will answer, and
-            # the turn that ends THAT answer gets its own nudge.
+            # the turn that ends THAT answer gets its own nudge. Checked before
+            # the finish below, so a last question always wins over ending.
+            return
+        if state.lecture_finished:
+            # Teaching is done and the student did not speak into the grace
+            # window, so end the lesson rather than sit on an open connection
+            # until the time cap or a click on Stop. The closing audio has
+            # already been sent; the browser is told plainly it is over.
+            state.lecture_ended = True
+            await _send_json_safe(
+                websocket,
+                {
+                    "type": "lesson_complete",
+                    "message": (
+                        "That is the end of this lesson. Your transcript is "
+                        "saved below. Take the practice quiz and the "
+                        "assignment next."
+                    ),
+                },
+            )
+            end_event.set()
             return
         if state.nudges >= MAX_CONSECUTIVE_NUDGES:
             logger.warning(
@@ -366,6 +401,10 @@ async def _run_bridge(
                                     asyncio.get_running_loop().time()
                                 )
                                 state.nudges = 0
+                                # The tutor's line was cut off part-said; drop
+                                # it so a half-finished earlier sentence cannot
+                                # later join with a new one into a false ending.
+                                state.model_line = ""
                                 if on_interrupted is not None:
                                     await on_interrupted()
 
@@ -379,17 +418,33 @@ async def _run_bridge(
                                         asyncio.get_running_loop().time()
                                     )
                                     state.nudges = 0
-                                elif gemini_live.sounds_finished(
-                                    str(event.payload.get("text", ""))
-                                ):
-                                    # The tutor said its closing line. Stop
-                                    # pushing it — there is nothing left to
-                                    # teach and the rest would be padding.
-                                    state.lecture_finished = True
+                                    # Their turn now; drop the tutor's partial
+                                    # line so it cannot later read as an ending.
+                                    state.model_line = ""
+                                else:
+                                    # Join the tutor's fragments: the closing
+                                    # line arrives split across several, so a
+                                    # single fragment rarely contains the whole
+                                    # phrase and checking one missed it, which
+                                    # is why the ending looped. Checked on the
+                                    # accumulation instead.
+                                    state.model_line += str(
+                                        event.payload.get("text", "")
+                                    )
+                                    if gemini_live.sounds_finished(
+                                        state.model_line
+                                    ):
+                                        # The tutor said its closing line. There
+                                        # is nothing left to teach; the next
+                                        # turn boundary ends the lesson itself.
+                                        state.lecture_finished = True
                                 if on_transcript is not None:
                                     await on_transcript(event.payload)
 
                             if event.type == "turn_complete":
+                                # A new turn starts clean: the closing line is
+                                # judged per turn, not across the whole lesson.
+                                state.model_line = ""
                                 if on_turn_complete is not None:
                                     await on_turn_complete()
                                 # KEEP THE LECTURE GOING. Gemini ends a turn
@@ -434,9 +489,13 @@ async def _run_bridge(
                         asyncio.create_task(pump_mic()),
                         asyncio.create_task(write_to_browser()),
                     ]
+                    # Completes the moment the tutor finishes teaching, so a
+                    # done lesson tears this leg down here the same way a
+                    # dropped browser or a closed Gemini leg does.
+                    end_task = asyncio.create_task(end_event.wait())
                     try:
                         done, _ = await asyncio.wait(
-                            [*tasks, browser_task],
+                            [*tasks, browser_task, end_task],
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                     finally:
@@ -459,6 +518,9 @@ async def _run_bridge(
                         # await below, but never the cancel above it.
                         for task in tasks:
                             task.cancel()
+                        # Cancelled with the pumps, before any await, for the
+                        # same reason. Draining it below disposes the watcher.
+                        end_task.cancel()
                         for task in tasks:
                             # ONE CHUNK MAY BE LOST HERE — the frame `pump_mic`
                             # had already taken from the queue and was sending
@@ -467,6 +529,7 @@ async def _run_bridge(
                             # needed; a fraction of a second at the handover is
                             # the price of not holding a dead session open.
                             await gemini_live.drain_with_timeout(task)
+                        await gemini_live.drain_with_timeout(end_task)
                     # The browser side is checked FIRST and on its own. Its
                     # failures are not Gemini's: letting one fall through to
                     # the handler below would log "Gemini leg failed" for a
@@ -522,6 +585,12 @@ async def _run_bridge(
                 for pending in list(_nudge_tasks):
                     pending.cancel()
                 _nudge_tasks.clear()
+
+            if state.lecture_ended:
+                # The tutor finished teaching and the lesson ended on its own.
+                # Nothing to resume, and the student already heard it end, so
+                # no closing message is owed beyond the one already sent.
+                break
 
             decision = gemini_live.should_resume(
                 handle=state.handle,

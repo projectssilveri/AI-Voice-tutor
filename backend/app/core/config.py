@@ -168,6 +168,50 @@ class Settings(BaseSettings):
         """
         return bool(self.razorpay_key_id and self.razorpay_key_secret)
 
+    # --- Email (SMTP) ----------------------------------------------------
+    # No vendor lock-in: any provider that speaks SMTP works (a company
+    # mailbox, Gmail, Zoho, Outlook, Mailgun, SendGrid, SES). Leave the host
+    # blank and the app runs exactly as before: no mail is sent and email
+    # verification is not enforced, so sign-up still works. Fill these in and
+    # restart, and verification turns itself on.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    # The From address. Falls back to the SMTP user, which most providers
+    # require to match the authenticated mailbox anyway.
+    smtp_from: str | None = None
+    smtp_from_name: str = "Voice Tutor"
+    # STARTTLS on 587 (the default). Set SMTP_SSL=true instead for implicit TLS
+    # on 465. One or the other, never both.
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+
+    # Where the frontend lives, for links inside an email (the verify link).
+    # Defaults to local dev; set it to the real site before mail goes out.
+    frontend_base_url: str = "http://localhost:3000"
+
+    @property
+    def email_enabled(self) -> bool:
+        """Whether mail can actually be sent.
+
+        Host plus a usable From (an explicit one or the SMTP user). With none
+        of it, every send is a no-op and verification is not enforced, so the
+        product runs exactly as it did before any of this existed.
+        """
+        return bool(self.smtp_host and (self.smtp_from or self.smtp_user))
+
+    @property
+    def require_email_verification(self) -> bool:
+        """New sign-ups must confirm their email before they can sign in.
+
+        Tied to email being configured: enforcing it with no way to send the
+        link would lock out everyone who registers. It switches on the moment
+        SMTP is set, and migration 0033 backfills everyone who came before as
+        already verified so they are unaffected.
+        """
+        return self.email_enabled
+
     # --- CORS ------------------------------------------------------------
     # NoDecode is required, not stylistic: pydantic-settings tries to JSON-parse
     # any complex-typed field coming from a .env file *before* validators run,

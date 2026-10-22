@@ -29,7 +29,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import exists, func, select
 
 from app.core import passwords
-from app.core.users import password_helper
+from app.core.users import password_helper, send_account_invite
 from app.deps import (
     CurrentUser,
     DbSession,
@@ -58,6 +58,7 @@ from app.services import (
     conflicts,
     deletions,
     limits,
+    notifications,
     org_changes,
 )
 from app.services import organizations as org_service
@@ -209,9 +210,11 @@ class OrgMember(BaseModel):
 class MemberCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     email: EmailStr
-    # Set by the admin because there is no email transport to send an invite
-    # through (password reset and verification are not mounted).
-    # The person changes it from their profile afterwards.
+    # A password set by the admin. When email is configured the new member also
+    # gets an invite with a set-password link so they choose their own
+    # (`core.users.send_account_invite`); with no SMTP it is the password the
+    # admin hands over. Required either way, so an account is never left with
+    # none.
     password: str = Field(min_length=8, max_length=128)
     role: UserRole = UserRole.STUDENT
     branch_id: uuid.UUID | None = None
@@ -714,6 +717,13 @@ async def create_member(
     ):
         await session.commit()
     await session.refresh(member)
+    # Email the new colleague their login and a set-password link.
+    await send_account_invite(member)
+    if waits:
+        # A platform admin's new organisation admin waits for the super admin.
+        await notifications.account_approval_requested(
+            session, subject_name=member.name
+        )
     return MemberCreateResult(requested=False, member=await _member_row(session, member))
 
 
@@ -1540,6 +1550,24 @@ async def approve_change(
         metadata={"action": r.action.value, "label": r.label, "outcome": r.outcome},
     )
     await session.commit()
+    # After commit, tell the person who asked. Best-effort and dormant without
+    # SMTP, so it never holds up or undoes the decision.
+    await notifications.org_change_decided(
+        session,
+        requested_by=r.requested_by,
+        approved=True,
+        label=r.label,
+        note=payload.note,
+    )
+    # If this approval created a new member, email them a set-password link too.
+    if r.kind is ChangeKind.MEMBER and r.action is ChangeAction.CREATE and r.payload:
+        created = await session.scalar(
+            select(User).where(
+                User.email == str(r.payload.get("email", "")).lower().strip()
+            )
+        )
+        if created is not None:
+            await send_account_invite(created)
     return (await _change_rows(session, [r], scope.user))[0]
 
 
@@ -1570,4 +1598,11 @@ async def decline_change(
         metadata={"action": r.action.value, "label": r.label},
     )
     await session.commit()
+    await notifications.org_change_decided(
+        session,
+        requested_by=r.requested_by,
+        approved=False,
+        label=r.label,
+        note=payload.note,
+    )
     return (await _change_rows(session, [r], scope.user))[0]
