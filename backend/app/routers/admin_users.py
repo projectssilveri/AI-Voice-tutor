@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import func, or_, select
 
 from app.core import passwords
@@ -318,9 +318,15 @@ class PlatformUserUpdate(BaseModel):
 
     IS_ACTIVE IS GONE from here. Suspending an account is not an editing
     decision: platform staff do it with a reason at `POST
-    /admin/users/{id}/active`, which keeps the history and the floors. Absent
-    from this schema, so the route drops the field even if it is in the body.
+    /admin/users/{id}/active`, which keeps the history and the floors.
+
+    EXTRA FIELDS ARE REFUSED (422), not dropped. A caller sending `role` used to
+    get a 200 with the role unchanged, which reads as "the change applied" when
+    it did not. Role changes go through `/admin/users/{id}/role`, suspension
+    through `/active`; anything else here is a mistake worth saying so.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     phone: str | None = Field(default=None, max_length=40)

@@ -181,11 +181,25 @@ def build_config(
                 )
             )
         ),
-        # Automatic VAD is what makes barge-in work; it is on by default and is
-        # deliberately not disabled here.
+        # Automatic VAD is what makes barge-in work, TUNED AGAINST ECHO. On a
+        # laptop speaker the tutor's own voice comes back into the mic, and at
+        # the default sensitivity that echo tripped the interrupt detector: a
+        # single student question cancelled the answer, the answer restarted,
+        # its echo cancelled it again, and the transcript filled with the same
+        # half-sentence marked "cut off" over and over.
+        #
+        # LOW start sensitivity means only clear, deliberate speech interrupts,
+        # not quiet echo; LOW end sensitivity plus a wider silence window stops
+        # a brief blip ending a turn mid-sentence. Deliberate interruption still
+        # works; echo mostly does not. Headphones remove the echo entirely, so
+        # this is a floor for the speaker case, not a substitute for them.
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
                 disabled=False,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                prefix_padding_ms=settings.gemini_vad_prefix_padding_ms,
+                silence_duration_ms=settings.gemini_vad_silence_ms,
             ),
         ),
         # A connection lasts ~10 minutes. Passing a handle (or an empty config

@@ -146,7 +146,11 @@ async def _exam_questions(
 
 
 async def _standing(
-    session: DbSession, user_id: uuid.UUID, exam_id: uuid.UUID
+    session: DbSession,
+    user_id: uuid.UUID,
+    exam_id: uuid.UUID,
+    *,
+    unlocked: bool = True,
 ) -> AttemptStanding:
     allowance = await certification.get_allowance(session, user_id, exam_id)
     certificate = await certification.get_certificate(session, user_id, exam_id)
@@ -158,7 +162,11 @@ async def _standing(
         allowed_attempts=allowance.allowed_attempts,
         used_attempts=allowance.used_attempts,
         remaining_attempts=allowance.remaining_attempts,
-        can_attempt=allowance.can_attempt,
+        # BOTH gates, not just the attempt count. Having attempts left does not
+        # mean they may start one while the course is still locked. The two used
+        # to disagree, can_attempt=true under a "finish the course first" lock,
+        # which reads as a bug even though the paper and submit routes refused.
+        can_attempt=allowance.can_attempt and unlocked,
         base_attempts=allowance.base_attempts,
         granted_attempts=allowance.granted_attempts,
         passed=certificate is not None,
@@ -253,7 +261,9 @@ async def get_exam(
         modules_completed=course_progress.modules_completed,
         unlocked=course_progress.unlocked,
         locked_reason=course_progress.reason,
-        standing=await _standing(session, user.id, exam_id),
+        standing=await _standing(
+            session, user.id, exam_id, unlocked=course_progress.unlocked
+        ),
         question_count=len(questions),
     )
 

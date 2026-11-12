@@ -1421,7 +1421,10 @@ async def org_audit(
                 actor_name=actor.name if actor else None,
                 actor_email=actor.email if actor else None,
                 target_type=event.target_type,
-                ip_address=event.ip_address,
+                # The actor's IP is a platform-support detail, not something a
+                # customer's own admins need about their colleagues. Shown only
+                # to platform staff looking in; masked for org and dept admins.
+                ip_address=event.ip_address if scope.is_platform_staff else None,
                 metadata=event.meta,
             )
             for event, actor in rows

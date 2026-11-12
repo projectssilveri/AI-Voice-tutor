@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # leaves somebody watching a page that will never speak again.
     gemini_max_resume_failures: int = 2
 
+    # VOICE ACTIVITY DETECTION, tuned against speaker echo. The tutor's own
+    # voice coming back through a laptop speaker tripped the interrupt detector,
+    # so one student question chopped the answer into fragments that each cut
+    # off again. `gemini_live.build_config` sets LOW start sensitivity so only
+    # clear, deliberate speech interrupts; these two widen the windows so a
+    # brief echo blip does not start or end a turn. Raise them if real
+    # interruptions start to feel sluggish.
+    gemini_vad_prefix_padding_ms: int = 300
+    gemini_vad_silence_ms: int = 700
+
     # --- Business rules --------------------------------------------------
     # Certification exams only. Quizzes are unlimited retakes and content
     # reading is unlimited — neither reads this value.
