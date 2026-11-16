@@ -17,7 +17,7 @@ interface CertificateCheck {
 
 export const metadata: Metadata = {
   title: "Verify a certificate",
-  description: "Check whether a Voice Tutor LMS certificate is genuine.",
+  description: "Check whether a Silveri Tutor certificate is genuine.",
 };
 
 /**

@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Voice Tutor LMS API",
+        title="Silveri Tutor API",
         version="0.1.0",
         description=(
             "Unified backend for the voice-first AI tutor LMS: auth, courses, "

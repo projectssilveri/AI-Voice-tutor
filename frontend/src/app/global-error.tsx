@@ -42,7 +42,7 @@ export default function GlobalError({
         >
           <div style={{ maxWidth: "32rem" }}>
             <h1 style={{ fontSize: "1.5rem", marginBottom: "0.75rem" }}>
-              Voice Tutor LMS is temporarily unavailable
+              Silveri Tutor is temporarily unavailable
             </h1>
             <p style={{ color: "#667085", marginBottom: "1.5rem" }}>
               Something failed while starting the application. Please try again

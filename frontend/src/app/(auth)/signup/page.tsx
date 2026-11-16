@@ -6,7 +6,7 @@ import SignUpForm from "@/components/auth/SignUpForm";
 
 export const metadata: Metadata = {
   title: "Sign up",
-  description: "Create a Voice Tutor LMS account.",
+  description: "Create a Silveri Tutor account.",
 };
 
 export default function SignUpPage() {

@@ -6,7 +6,7 @@ import SignInForm from "@/components/auth/SignInForm";
 
 export const metadata: Metadata = {
   title: "Sign in",
-  description: "Sign in to your Voice Tutor LMS account.",
+  description: "Sign in to your Silveri Tutor account.",
 };
 
 export default function SignInPage() {

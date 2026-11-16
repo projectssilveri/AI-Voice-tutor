@@ -40,7 +40,7 @@ export default function AuthLayout({
         <div className="relative hidden h-full w-full items-center overflow-hidden border-l border-[var(--mk-line)] lg:grid lg:w-1/2">
           <GlowBackdrop placement="center" />
           <div className="relative z-1 flex flex-col items-center justify-center">
-            <Link href="/" className="mb-6 block" aria-label="Voice Tutor, home">
+            <Link href="/" className="mb-6 block" aria-label="Silveri Tutor, home">
               <Logo />
             </Link>
             <p className="max-w-xs text-center text-[15px] leading-relaxed text-[var(--mk-muted)]">

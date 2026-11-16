@@ -17,7 +17,7 @@ def verification_email(name: str, verify_url: str) -> tuple[str, str, str]:
     subject = "Confirm your email to start learning"
     text = (
         f"Hi {name or 'there'},\n\n"
-        "Welcome to Voice Tutor. One quick step before you start: confirm this "
+        "Welcome to Silveri Tutor. One quick step before you start: confirm this "
         "is your email by opening the link below.\n\n"
         f"{verify_url}\n\n"
         "If you did not create this account, you can ignore this message and "
@@ -25,7 +25,7 @@ def verification_email(name: str, verify_url: str) -> tuple[str, str, str]:
     )
     html = (
         f"<p>Hi {safe_name},</p>"
-        "<p>Welcome to Voice Tutor. One quick step before you start: confirm "
+        "<p>Welcome to Silveri Tutor. One quick step before you start: confirm "
         "this is your email.</p>"
         f'<p><a href="{escape(verify_url)}">Confirm my email</a></p>'
         f"<p>Or paste this link into your browser:<br>{escape(verify_url)}</p>"
@@ -43,10 +43,10 @@ def account_invite_email(
     own, so the admin never has to invent or hand one over.
     """
     safe_name = escape(name or "there")
-    subject = "You have been added to Voice Tutor"
+    subject = "You have been added to Silveri Tutor"
     text = (
         f"Hi {name or 'there'},\n\n"
-        "An account has been created for you on Voice Tutor. Your sign-in "
+        "An account has been created for you on Silveri Tutor. Your sign-in "
         f"email is {login_email}.\n\n"
         "Set your password with the link below, then sign in. The link works "
         "for 7 days.\n\n"
@@ -55,7 +55,7 @@ def account_invite_email(
     )
     html = (
         f"<p>Hi {safe_name},</p>"
-        "<p>An account has been created for you on Voice Tutor. Your sign-in "
+        "<p>An account has been created for you on Silveri Tutor. Your sign-in "
         f"email is <strong>{escape(login_email)}</strong>.</p>"
         "<p>Set your password with the link below, then sign in. It works for "
         "7 days.</p>"
@@ -69,7 +69,7 @@ def account_invite_email(
 def reset_password_email(name: str, reset_url: str) -> tuple[str, str, str]:
     """Sent on a forgot-password request: the link to choose a new password."""
     safe_name = escape(name or "there")
-    subject = "Reset your Voice Tutor password"
+    subject = "Reset your Silveri Tutor password"
     text = (
         f"Hi {name or 'there'},\n\n"
         "We got a request to reset your password. Open the link below to "
@@ -93,7 +93,7 @@ def reset_password_email(name: str, reset_url: str) -> tuple[str, str, str]:
 def password_changed_email(name: str) -> tuple[str, str, str]:
     """Sent after a successful reset: a plain heads-up that it happened."""
     safe_name = escape(name or "there")
-    subject = "Your Voice Tutor password was changed"
+    subject = "Your Silveri Tutor password was changed"
     text = (
         f"Hi {name or 'there'},\n\n"
         "Your password was just changed. If this was you, there is nothing to "
@@ -156,7 +156,7 @@ def purchase_receipt_email(
     """To the buyer: what they just bought."""
     safe_name = escape(name or "there")
     items_text = "\n".join(f"  - {line}" for line in lines)
-    subject = "Your Voice Tutor receipt"
+    subject = "Your Silveri Tutor receipt"
     text = (
         f"Hi {name or 'there'},\n\n"
         "Thank you for your purchase. Here is what you bought:\n\n"
@@ -178,7 +178,7 @@ def purchase_receipt_email(
 def welcome_email(name: str, app_url: str) -> tuple[str, str, str]:
     """Sent once the email is confirmed: the account is ready."""
     safe_name = escape(name or "there")
-    subject = "You are all set on Voice Tutor"
+    subject = "You are all set on Silveri Tutor"
     text = (
         f"Hi {name or 'there'},\n\n"
         "Your email is confirmed and your account is ready. Sign in and open "
@@ -189,6 +189,6 @@ def welcome_email(name: str, app_url: str) -> tuple[str, str, str]:
         f"<p>Hi {safe_name},</p>"
         "<p>Your email is confirmed and your account is ready. Sign in and open "
         "any course to start learning with the voice tutor.</p>"
-        f'<p><a href="{escape(app_url)}">Go to Voice Tutor</a></p>'
+        f'<p><a href="{escape(app_url)}">Go to Silveri Tutor</a></p>'
     )
     return subject, text, html

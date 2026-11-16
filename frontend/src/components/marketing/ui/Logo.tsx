@@ -92,7 +92,7 @@ export default function Logo({
         // Every caller sits inside something that has a colour, and the two
         // that need a specific one say so at the call site.
         <span className="text-[19px] font-semibold tracking-[-0.02em]">
-          Voice Tutor
+          Silveri Tutor
         </span>
       )}
     </span>

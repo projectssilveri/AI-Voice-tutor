@@ -138,7 +138,7 @@ export default function Header() {
       >
         <Link
           href="/"
-          aria-label="Voice Tutor, home"
+          aria-label="Silveri Tutor, home"
           className="rounded-lg transition-transform hover:scale-105"
         >
           <Logo />

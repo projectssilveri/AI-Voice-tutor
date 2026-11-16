@@ -68,7 +68,7 @@ export default function Footer() {
               Training a whole team?
             </p>
             <p className="mt-1 text-[14.5px] text-[var(--mk-muted)]">
-              Voice Tutor for Business covers 2 to 50 people on one plan, and
+              Silveri Tutor for Business covers 2 to 50 people on one plan, and
               loads your own curriculum and knowledge base.
             </p>
           </div>
@@ -118,7 +118,7 @@ export default function Footer() {
               what it says on the tin today, and nobody has to remember to
               change a legal line every January. */}
           <p className="text-xs text-[var(--mk-muted)]">
-            &copy; {new Date().getFullYear()} AI Voice Tutor Platform Inc -
+            &copy; {new Date().getFullYear()} Silveri Tutor Platform Inc -
             Silveri Consulting Services Pvt Ltd. All rights reserved.
           </p>
           <p className="text-xs text-[var(--mk-muted)]">

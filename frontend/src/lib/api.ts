@@ -191,7 +191,7 @@ export async function apiFetch<T>(
     // "could not load X" would be less true than that.
     throw new ApiError(
       0,
-      "We could not reach Voice Tutor just now. Check your connection and try again in a moment.",
+      "We could not reach Silveri Tutor just now. Check your connection and try again in a moment.",
     );
   }
 

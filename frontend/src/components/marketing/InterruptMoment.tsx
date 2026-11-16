@@ -111,7 +111,7 @@ export default function InterruptMoment() {
                             {isTutor ? "AI" : "YOU"}
                           </span>
                           <span className="text-[12px] font-semibold text-slate-200">
-                            {isTutor ? "Voice Tutor" : "Learner"}
+                            {isTutor ? "Silveri Tutor" : "Learner"}
                           </span>
                         </div>
                         {turn.cut && (

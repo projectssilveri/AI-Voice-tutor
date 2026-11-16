@@ -87,7 +87,7 @@ export default async function BusinessPage() {
   return (
     <>
       <Breadcrumb
-        pageName="Voice Tutor for Business"
+        pageName="Silveri Tutor for Business"
         description="Train your team with a tutor that talks, and lets them talk back. Pick the plan that fits your headcount."
       />
 

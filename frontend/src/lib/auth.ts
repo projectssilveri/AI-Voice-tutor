@@ -195,7 +195,7 @@ async function post(input: string, init: RequestInit): Promise<Response> {
     );
     throw new AuthError(
       0,
-      "We could not reach Voice Tutor just now. Check your connection and try again in a moment.",
+      "We could not reach Silveri Tutor just now. Check your connection and try again in a moment.",
     );
   }
 }

@@ -5,7 +5,7 @@ import VerifyEmailForm from "@/components/auth/VerifyEmailForm";
 
 export const metadata: Metadata = {
   title: "Confirm your email",
-  description: "Confirm your email address for Voice Tutor LMS.",
+  description: "Confirm your email address for Silveri Tutor.",
 };
 
 export default function VerifyEmailPage() {

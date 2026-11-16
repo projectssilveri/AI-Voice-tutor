@@ -5,7 +5,7 @@ import ResetPasswordForm from "@/components/auth/ResetPasswordForm";
 
 export const metadata: Metadata = {
   title: "Reset password",
-  description: "Choose a new password for your Voice Tutor LMS account.",
+  description: "Choose a new password for your Silveri Tutor account.",
 };
 
 export default function ResetPasswordPage() {

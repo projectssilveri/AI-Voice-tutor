@@ -3,7 +3,7 @@
     Full lockup for DARK backgrounds. Only the wordmark changes — the badge is
     identical, so the brand reads the same in both themes.
   -->
-  <title>VoiceTutor</title>
+  <title>Silveri Tutor</title>
   <rect width="32" height="32" rx="8" fill="url(#vt-d)"/>
   <g fill="#fff">
     <rect x="4.8" y="11.5" width="3.2" height="9" rx="1.6"/>

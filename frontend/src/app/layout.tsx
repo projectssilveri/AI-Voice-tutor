@@ -17,8 +17,8 @@ const outfit = Outfit({
 
 export const metadata: Metadata = {
   title: {
-    default: "Voice Tutor LMS",
-    template: "%s | Voice Tutor LMS",
+    default: "Silveri Tutor",
+    template: "%s | Silveri Tutor",
   },
   description:
     "A voice-first learning platform where an AI tutor delivers spoken " +

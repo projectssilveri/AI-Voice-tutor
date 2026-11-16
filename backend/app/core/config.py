@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # The From address. Falls back to the SMTP user, which most providers
     # require to match the authenticated mailbox anyway.
     smtp_from: str | None = None
-    smtp_from_name: str = "Voice Tutor"
+    smtp_from_name: str = "Silveri Tutor"
     # STARTTLS on 587 (the default). Set SMTP_SSL=true instead for implicit TLS
     # on 465. One or the other, never both.
     smtp_starttls: bool = True
