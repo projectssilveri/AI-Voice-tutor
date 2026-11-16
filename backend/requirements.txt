@@ -24,7 +24,9 @@ pwdlib[argon2]>=0.3.0
 pyjwt>=2.10.0
 
 # --- AI providers ---
-google-genai>=1.72.0              # Gemini Live (voice). Live sessions only.
+google-genai==1.72.0              # PINNED. 3.x rejects the gemini-3.1-flash-live-preview
+                                  # model with HTTP 404; 1.72.0 serves it. Do not loosen
+                                  # without re-testing a live voice session on the new version.
 
 # --- Documents ---
 reportlab>=4.5.0                  # renders certificate PDFs
