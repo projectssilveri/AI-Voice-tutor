@@ -621,8 +621,9 @@ def should_resume(
         # lecture a second time and bill for it. Ending is the honest outcome.
         return ResumeDecision(
             False,
-            "The tutor could not carry on from where it left off. "
-            "Your transcript is saved. Start the module again to carry on.",
+            "The tutor had to stop and could not pick up again, usually a busy "
+            "moment on the server. Your transcript is saved. Give it a minute, "
+            "then start the module again.",
         )
 
     if consecutive_failures >= limit:
@@ -631,8 +632,9 @@ def should_resume(
         # a page that will never speak again.
         return ResumeDecision(
             False,
-            "The tutor lost its connection and could not get it back. "
-            "Your transcript is saved. Start the module again to carry on.",
+            "The tutor kept losing its connection, usually because the service "
+            "is busy. Your transcript is saved. Give it a minute, then start "
+            "the module again.",
         )
 
     return ResumeDecision(True)

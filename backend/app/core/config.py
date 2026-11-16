@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # leaves somebody watching a page that will never speak again.
     gemini_max_resume_failures: int = 2
 
+    # HOW MANY TUTOR SESSIONS MAY RUN AT ONCE, across everyone. The Gemini Live
+    # free tier allows only a few concurrent streams; past that it aborts
+    # sessions mid-lecture (a 1008), which looks like "the tutor is broken for
+    # everyone" rather than "the tutor is busy". Capping here turns that into an
+    # honest "busy, try again shortly" for the people over the line, and keeps
+    # it working for the ones under it. Raise it on a paid key, or lower it if a
+    # free key still aborts under load. Counted in-process, which is exact while
+    # the app runs a single worker (see services/live_sessions).
+    max_concurrent_voice_sessions: int = 3
+
     # VOICE ACTIVITY DETECTION, tuned against speaker echo. The tutor's own
     # voice coming back through a laptop speaker tripped the interrupt detector,
     # so one student question chopped the answer into fragments that each cut

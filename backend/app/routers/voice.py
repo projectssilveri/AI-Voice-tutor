@@ -889,6 +889,33 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
                 voice=user.tutor_voice,
             )
 
+        # THE FREE-TIER CEILING, checked before anything is dialled. Gemini Live
+        # allows only a few concurrent streams on a free key, and past that it
+        # aborts sessions mid-lecture (a 1008) which reads as "the tutor is
+        # broken for everyone". Refusing the ones over the line with an honest
+        # "busy" keeps it working for the ones under it. A student who already
+        # holds a session is reconnecting or taking over their own tab, not
+        # adding a stream, so they are let through. See `settings` and
+        # `services/live_sessions`.
+        already_holding = live_sessions.holder(user.id) is not None
+        if (
+            not already_holding
+            and live_sessions.count() >= settings.max_concurrent_voice_sessions
+        ):
+            await _send_json_safe(
+                websocket,
+                {
+                    "type": "error",
+                    "message": (
+                        "The tutor is busy right now, as only so many lessons "
+                        "can run at the same time. Please try again in a few "
+                        "minutes."
+                    ),
+                },
+            )
+            await websocket.close(code=1008)
+            return
+
         # ONE LIVE SESSION PER STUDENT, and the newest tab wins.
         #
         # Five tabs on the same module used to open five Gemini sessions, each
