@@ -941,6 +941,15 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
         )
         await enrollment_service.mark_module_started(db, user.id, module.id)
 
+        # Teardown reads the student and session ids after the lesson, when an
+        # aborted session can have left `db` mid-failed-transaction and every ORM
+        # attribute expired. Reading `user.id` or `record.id` there fires a SELECT
+        # on the broken session and raises PendingRollbackError, which crashed the
+        # handler before the row was ever closed. Capture them as plain UUIDs here,
+        # while the session is healthy; `module_id` is already the route argument.
+        user_id = user.id
+        record_id = record.id
+
         buffer = voice_sessions.TranscriptBuffer()
 
         async def flush() -> None:
@@ -1042,7 +1051,7 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
             logger.info(
                 "Voice session hit its %d minute cap (session=%s)",
                 allowance.minutes_per_session,
-                record.id,
+                record_id,
             )
             await _send_json_safe(
                 websocket,
@@ -1055,9 +1064,9 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
                 },
             )
         except WebSocketDisconnect:
-            logger.info("Voice client disconnected (session=%s)", record.id)
+            logger.info("Voice client disconnected (session=%s)", record_id)
         except Exception:
-            logger.exception("Voice session failed (session=%s)", record.id)
+            logger.exception("Voice session failed (session=%s)", record_id)
             await _send_json_safe(
                 websocket,
                 {
@@ -1070,7 +1079,7 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
             # below, this student must not be left holding a slot. `release`
             # checks identity, so a tab that was already displaced does not
             # remove the claim belonging to the tab that displaced it.
-            await live_sessions.release(user.id, websocket)
+            await live_sessions.release(user_id, websocket)
 
             # EVERY STEP OF TEARDOWN STANDS ALONE. These two ran bare, one after
             # the other, so a failure in `flush` — a transcript write against a
@@ -1086,12 +1095,12 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
             try:
                 await flush()
             except Exception:
-                logger.exception("Could not flush the last turn (session=%s)", record.id)
+                logger.exception("Could not flush the last turn (session=%s)", record_id)
 
             try:
-                await voice_sessions.end_session(db, record.id)
+                await voice_sessions.end_session(db, record_id)
             except Exception:
-                logger.exception("Could not close the session row (session=%s)", record.id)
+                logger.exception("Could not close the session row (session=%s)", record_id)
 
             # Nothing used to move a module past "in progress", so every module
             # a student ever opened stayed there and course percentages never
@@ -1101,20 +1110,20 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
             try:
                 if await enrollment_service.complete_module_if_earned(
                     db,
-                    user.id,
-                    module.id,
+                    user_id,
+                    module_id,
                     seconds_listened=seconds,
                     tutor_turns=tutor_turns,
                 ):
                     logger.info(
                         "Module completed (user=%s module=%s after %.0fs, %d turns)",
-                        user.id,
-                        module.id,
+                        user_id,
+                        module_id,
                         seconds,
                         tutor_turns,
                     )
             except Exception:
                 # Progress bookkeeping must never take the session down with it.
-                logger.exception("Could not update progress (session=%s)", record.id)
+                logger.exception("Could not update progress (session=%s)", record_id)
             if websocket.client_state is WebSocketState.CONNECTED:
                 await websocket.close()
