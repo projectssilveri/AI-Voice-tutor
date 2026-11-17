@@ -15,6 +15,7 @@ import {
   MicCapture,
   PcmPlayer,
   readAmplitude,
+  rms16,
 } from "@/components/voice-session/audio";
 import { env } from "@/lib/env";
 
@@ -72,6 +73,29 @@ const INTERRUPT_FLASH_MS = 400;
  * Subtitles that trail the audio read as lag; a small lead reads as in-sync.
  */
 const CAPTION_LEAD_S = 0.4;
+
+/**
+ * Microphone loudness (RMS, 0..1) below which audio is treated as the tutor's
+ * own echo and NOT sent to Gemini WHILE THE TUTOR IS SPEAKING.
+ *
+ * On laptop speakers the tutor's voice comes back into the microphone. The
+ * browser's echo canceller removes most of it, but the residue that leaks
+ * through used to reach Gemini's interrupt detector and read as the student
+ * speaking, which cancelled the tutor's turn — its echo then cancelled the
+ * restart, and the transcript filled with the same half-sentence marked "cut
+ * off" over and over. Holding back mic audio no louder than that residue keeps
+ * it off the wire.
+ *
+ * Kept deliberately low. It is not here to decide whether the student is
+ * talking — that is Gemini's job, already tuned to LOW sensitivity server-side
+ * — only to drop the quiet leak the canceller missed. Normal speech sits well
+ * above this, so a genuine interruption still gets through and barge-in is
+ * unchanged; when the tutor is silent the mic is never gated at all. Raise it
+ * if echo still trips interruptions on speakers, lower it if a quiet real
+ * question is being swallowed. Headphones remove the echo at the source and
+ * make the gate moot.
+ */
+const ECHO_GATE_RMS = 0.025;
 
 export interface VoiceSessionOptions {
   /**
@@ -533,7 +557,16 @@ export function useVoiceSession({ moduleId }: VoiceSessionOptions = {}) {
       const mic = new MicCapture();
       micRef.current = mic;
       await mic.start((pcm) => {
-        if (socket.readyState === WebSocket.OPEN) socket.send(pcm);
+        if (socket.readyState !== WebSocket.OPEN) return;
+        // Echo gate. While the tutor's audio is playing, the microphone is also
+        // hearing it off the speakers; forwarding that residue made Gemini
+        // think the student was interrupting and chopped the lecture into "cut
+        // off" fragments. Anything no louder than the leftover echo is held
+        // back. Real speech is louder and still goes through, so talking over
+        // the tutor keeps working; when nothing is playing the mic is never
+        // gated. See ECHO_GATE_RMS.
+        if (playerRef.current?.isPlaying && rms16(pcm) < ECHO_GATE_RMS) return;
+        socket.send(pcm);
       });
       // Read back rather than assumed — the constraint we asked for is not
       // necessarily the one the device gave us.

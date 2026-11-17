@@ -38,6 +38,27 @@ export function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
 }
 
 /**
+ * Root-mean-square loudness of a PCM16 chunk, 0..1.
+ *
+ * Reads the bytes straight through a DataView rather than allocating a Float32
+ * copy: this runs on every captured microphone frame, on the latency path, and
+ * the echo gate that calls it only needs one number. RMS rather than peak,
+ * because a single click would send a peak measure over any threshold while
+ * the chunk is, on average, near silent.
+ */
+export function rms16(buffer: ArrayBuffer): number {
+  const view = new DataView(buffer);
+  const count = Math.floor(buffer.byteLength / 2);
+  if (count === 0) return 0;
+  let sumSquares = 0;
+  for (let i = 0; i < count; i++) {
+    const sample = view.getInt16(i * 2, true) / 0x8000;
+    sumSquares += sample * sample;
+  }
+  return Math.sqrt(sumSquares / count);
+}
+
+/**
  * Plays a stream of PCM16 chunks in order, and can drop everything on demand.
  *
  * Chunks are scheduled back-to-back against the AudioContext clock rather than
