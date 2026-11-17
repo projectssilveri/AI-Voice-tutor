@@ -953,10 +953,17 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
         buffer = voice_sessions.TranscriptBuffer()
 
         async def flush() -> None:
+            # `record_id`, not `record.id`: flush() is also the last write in
+            # teardown, where an aborted lesson has left `db` mid-failed
+            # transaction with every ORM attribute expired. Reading `record.id`
+            # there would fire a SELECT on the broken session and raise before a
+            # single buffered turn was saved — so the final thing the student
+            # heard would be the thing most likely to be lost. The plain UUID
+            # touches no ORM state.
             for turn in buffer.take_all():
                 await voice_sessions.append_turn(
                     db,
-                    voice_session_id=record.id,
+                    voice_session_id=record_id,
                     role=turn.role,
                     text=turn.text,
                     is_interruption=turn.is_interruption,
@@ -1080,6 +1087,27 @@ async def voice_module_session(websocket: WebSocket, module_id: uuid.UUID) -> No
             # checks identity, so a tab that was already displaced does not
             # remove the claim belonging to the tab that displaced it.
             await live_sessions.release(user_id, websocket)
+
+            # CLEAR ANY OPEN TRANSACTION BEFORE WRITING. A lesson that ended
+            # badly leaves one behind in a state where the next statement
+            # raises: a failed ORM flush sets SQLAlchemy's pending-rollback flag
+            # (is_active False, PendingRollbackError), while a failed raw
+            # statement instead aborts the Postgres transaction with is_active
+            # still True — both make the next write fail until a rollback. So
+            # the condition is simply "a transaction is still open", not the
+            # narrower is_active check `end_session` uses: `flush()` below is
+            # that next write — the final buffered turn, the last thing the
+            # student actually heard — and without this it was silently dropped.
+            # Every completed turn was already committed on its own, so the
+            # rollback discards nothing that was meant to be kept.
+            if db.in_transaction():
+                try:
+                    await db.rollback()
+                except Exception:
+                    logger.exception(
+                        "Could not reset the session before teardown (session=%s)",
+                        record_id,
+                    )
 
             # EVERY STEP OF TEARDOWN STANDS ALONE. These two ran bare, one after
             # the other, so a failure in `flush` — a transcript write against a
