@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 
 from app.core import passwords
 from app.core.users import password_helper, send_account_invite
@@ -868,6 +868,10 @@ class CertificationRecord(BaseModel):
 
 class SessionRecord(BaseModel):
     id: uuid.UUID
+    #: The module this session was on. Always set (the column is NOT NULL); the
+    #: TITLE can still be null when the module row itself was later deleted. The
+    #: id is what the reset action below targets.
+    module_id: uuid.UUID
     module_title: str | None
     course_title: str | None
     started_at: datetime
@@ -1293,6 +1297,7 @@ async def user_dossier(
     sessions = [
         SessionRecord(
             id=row[0].id,
+            module_id=row[0].module_id,
             module_title=row[1],
             course_title=row[2],
             started_at=row[0].started_at,
@@ -1550,3 +1555,74 @@ async def list_extensions(
         )
         for extension, course_title, plan_name, granted_by_name in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Giving a student their tutor back
+# ---------------------------------------------------------------------------
+
+
+class TutorResetRequest(BaseModel):
+    """Which module to clear the student's used tutor sessions on."""
+
+    module_id: uuid.UUID
+
+
+class TutorResetResult(BaseModel):
+    deleted: int
+
+
+@router.post("/users/{user_id}/tutor-sessions/reset", response_model=TutorResetResult)
+async def reset_tutor_sessions(
+    user_id: uuid.UUID,
+    payload: TutorResetRequest,
+    session: DbSession,
+    admin: RequireAdmin,
+) -> TutorResetResult:
+    """Clear a student's used tutor plays on ONE module, so they can start again.
+
+    Platform staff, both platform admin and super admin: it is a support action,
+    not a privileged one, and `_manageable` already answers 404 for the one
+    thing a platform admin may not touch, the staff ladder above them.
+
+    A free course allows a single tutor session per module
+    (`services/limits.tutor_plays_used`), so a glitchy or abandoned lecture can
+    use up the only play and lock the student out of the tutor on that module.
+    This deletes their `voice_sessions` rows for the module, which is what the
+    count is taken from, so the next open starts fresh. The transcripts of those
+    sessions go with the rows (the FK cascades); the audit trail recording that
+    the sessions happened is separate and stays, so the history is not lost.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found."
+        )
+    _manageable(admin, user)
+
+    # The rows to remove, gathered first so the action can report and log how
+    # many plays it actually freed rather than guessing from a rowcount.
+    ids = (
+        await session.scalars(
+            select(VoiceSession.id).where(
+                VoiceSession.user_id == user_id,
+                VoiceSession.module_id == payload.module_id,
+            )
+        )
+    ).all()
+    if ids:
+        await session.execute(delete(VoiceSession).where(VoiceSession.id.in_(ids)))
+
+    # `record`, not `record_safely`: this hands back access the student had run
+    # out of, so the change and its record share the transaction and land
+    # together or not at all.
+    await audit.record(
+        session,
+        action="admin.tutor_sessions_reset",
+        actor=admin,
+        target_type="user",
+        target_id=user_id,
+        metadata={"module": str(payload.module_id), "deleted": len(ids)},
+    )
+    await session.commit()
+    return TutorResetResult(deleted=len(ids))

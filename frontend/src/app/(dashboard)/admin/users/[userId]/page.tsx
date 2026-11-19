@@ -9,7 +9,11 @@ import { useAuth } from "@/context/AuthContext";
 import RequireAuth from "@/components/auth/RequireAuth";
 import EmptyState from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
-import { type UserDossier, getUserDossier } from "@/lib/admin";
+import {
+  type UserDossier,
+  getUserDossier,
+  resetTutorSessions,
+} from "@/lib/admin";
 import { eventDetails, eventLabel } from "@/lib/audit";
 import { tutorTime } from "@/lib/duration";
 import { roleLabel } from "@/lib/roles";
@@ -155,6 +159,11 @@ function Dossier() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openExam, setOpenExam] = useState<string | null>(null);
+  // Which module's tutor sessions are being reset right now, and the result or
+  // error of the last reset. Kept apart from `error` above, which would replace
+  // the whole page with its error view.
+  const [resettingModule, setResettingModule] = useState<string | null>(null);
+  const [resetNote, setResetNote] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -171,9 +180,46 @@ function Dossier() {
     }
   }, [userId]);
 
+  const resetTutor = useCallback(
+    async (moduleId: string, label: string) => {
+      if (
+        !window.confirm(
+          `Reset tutor sessions for ${label}?\n\nThis deletes this student's ` +
+            `voice session(s) for that module, including their transcript, and ` +
+            `lets them use the tutor again. It cannot be undone.`,
+        )
+      )
+        return;
+      setResettingModule(moduleId);
+      setResetNote(null);
+      try {
+        const { deleted } = await resetTutorSessions(userId, moduleId);
+        setResetNote(
+          `Reset ${label}: removed ${deleted} session${
+            deleted === 1 ? "" : "s"
+          }. They can use the tutor again.`,
+        );
+        await load();
+      } catch (caught) {
+        setResetNote(
+          caught instanceof Error
+            ? caught.message
+            : "Could not reset the tutor sessions.",
+        );
+      } finally {
+        setResettingModule(null);
+      }
+    },
+    [userId, load],
+  );
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Platform admin and super admin both: the same gate the access-extension
+  // action on this page uses. The endpoint enforces it again server-side.
+  const canReset = me?.role === "admin" || me?.role === "super_admin";
 
   if (loading) return <SkeletonRows rows={10} />;
 
@@ -657,6 +703,11 @@ function Dossier() {
         title="AI tutor sessions"
         note="Every voice lecture they have opened, and how long it ran."
       >
+        {resetNote ? (
+          <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:bg-gray-800/60 dark:text-gray-300">
+            {resetNote}
+          </p>
+        ) : null}
         {data.sessions.length === 0 ? (
           <EmptyState
             icon="🎙️"
@@ -674,6 +725,9 @@ function Dossier() {
                     <th className="px-4 py-3">Course</th>
                     <th className="px-4 py-3">Length</th>
                     <th className="px-4 py-3">Ended</th>
+                    {canReset ? (
+                      <th className="px-4 py-3 text-right">Reset</th>
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -704,6 +758,26 @@ function Dossier() {
                       >
                         {stamp(row.ended_at)}
                       </td>
+                      {canReset ? (
+                        <td className={`${CELL} text-right`}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void resetTutor(
+                                row.module_id,
+                                row.module_title ?? "this module",
+                              )
+                            }
+                            disabled={resettingModule === row.module_id}
+                            className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
+                            title="Delete this student's sessions for this module so they can use the tutor again"
+                          >
+                            {resettingModule === row.module_id
+                              ? "Resetting…"
+                              : "Reset"}
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>

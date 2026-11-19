@@ -444,6 +444,8 @@ export interface DossierCertification {
 
 export interface DossierSession {
   id: string;
+  /** Always set; the title can still be null if the module was later deleted. */
+  module_id: string;
   module_title: string | null;
   course_title: string | null;
   started_at: string;
@@ -546,4 +548,25 @@ export function listExtensions(userId: string): Promise<AccessExtension[]> {
     withCredentials: true,
     cache: "no-store",
   });
+}
+
+/**
+ * Clear a student's used tutor sessions on one module, so they can use the
+ * tutor again. A free course allows one session per module, and a glitchy or
+ * abandoned lecture can use it up; this deletes those session rows (and their
+ * transcripts) for the module and frees the play. Platform admin and super
+ * admin both. Returns how many sessions were removed.
+ */
+export function resetTutorSessions(
+  userId: string,
+  moduleId: string,
+): Promise<{ deleted: number }> {
+  return apiFetch<{ deleted: number }>(
+    `/admin/users/${userId}/tutor-sessions/reset`,
+    {
+      withCredentials: true,
+      method: "POST",
+      body: { module_id: moduleId },
+    },
+  );
 }
