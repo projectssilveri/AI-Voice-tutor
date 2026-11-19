@@ -172,9 +172,18 @@ class _BridgeState:
         #: recognisable once they are joined. Reset when a turn ends or the
         #: student speaks.
         self.model_line = ""
+        #: The tutor's PREVIOUS completed turn, kept so a turn that merely
+        #: repeats it can be spotted. A tutor nudged after it has run out of
+        #: material resays its ending almost verbatim; that near-duplicate is
+        #: the surest end signal there is. See `gemini_live.looks_repeated`.
+        self.prev_model_line = ""
         #: Consecutive nudges with no student speech. A runaway guard only —
         #: the real limit on a lesson is the time allowance.
         self.nudges = 0
+        #: The end-of-lesson "any questions?" invitation has been sent. Sent at
+        #: most once, and it switches the wait before ending to the longer
+        #: window that gives the student time to actually ask something.
+        self.wrap_invited = False
 
 
 #: How long to wait after the tutor stops before pushing it onward.
@@ -184,6 +193,13 @@ class _BridgeState:
 #: talk over them. Long enough for a person to start a sentence, short enough
 #: that a lecture does not feel like it keeps stalling.
 NUDGE_GRACE_SECONDS = 1.5
+
+#: How long to wait, AFTER the tutor has invited questions, before ending the
+#: lesson on its own. Long enough that a student has time to gather a question
+#: and start asking, short enough that a finished lesson is not left billing on
+#: an open connection. Any speech in this window resets it, so a student who
+#: keeps asking keeps the tutor; silence through it ends the lesson.
+WRAP_IDLE_SECONDS = 15.0
 
 #: Hard stop on consecutive nudges, in case the tutor never says the closing
 #: line. Comfortably more turns than the longest allowance can fit, so it never
@@ -243,7 +259,8 @@ async def _run_bridge(
     end_event = asyncio.Event()
 
     async def nudge_onward(session) -> None:
-        """Push the tutor into its next turn, unless the student has the floor.
+        """Carry the lesson forward after a tutor turn ends: teach on, take
+        questions, or finish.
 
         Runs OFF the relay loop, because it sleeps. Blocking the loop for the
         grace window would hold up the student's own audio, which is the one
@@ -252,9 +269,23 @@ async def _run_bridge(
         The checks are all made AFTER the sleep, deliberately: the whole point
         of the pause is to let the student change the answer by speaking into
         it.
+
+        WHILE TEACHING it nudges the tutor into the next paragraph. ONCE
+        TEACHING IS DONE it does not nudge again — nudging a tutor with nothing
+        left to say is exactly what made it resay its closing line on a loop —
+        but invites questions once and keeps the line open, then ends the lesson
+        after a longer silent window.
         """
         stopped_at = asyncio.get_running_loop().time()
-        await asyncio.sleep(NUDGE_GRACE_SECONDS)
+        # The longer wait applies only after questions have been invited: that
+        # is the window the student gets to actually ask one. Everywhere else
+        # the short grace keeps the lecture moving.
+        pause = (
+            WRAP_IDLE_SECONDS
+            if state.lecture_finished and state.wrap_invited
+            else NUDGE_GRACE_SECONDS
+        )
+        await asyncio.sleep(pause)
 
         if state.student_stopped or state.lecture_ended:
             return
@@ -263,11 +294,26 @@ async def _run_bridge(
             # the turn that ends THAT answer gets its own nudge. Checked before
             # the finish below, so a last question always wins over ending.
             return
+        if current[0] is not session:
+            # The leg was swapped while we slept. The new one resumes from the
+            # handle and will produce its own turn boundaries.
+            return
+
         if state.lecture_finished:
-            # Teaching is done and the student did not speak into the grace
-            # window, so end the lesson rather than sit on an open connection
-            # until the time cap or a click on Stop. The closing audio has
-            # already been sent; the browser is told plainly it is over.
+            if not state.wrap_invited:
+                # Teaching is done. Do NOT end flat and do NOT nudge it onward:
+                # nudging a tutor with nothing left to teach is what made it
+                # resay its close over and over. Offer to take questions once,
+                # and keep the line open so the student can ask.
+                state.wrap_invited = True
+                try:
+                    await gemini_live.invite_questions(session)
+                except Exception:
+                    logger.debug("Could not invite questions", exc_info=True)
+                return
+            # Questions were invited and the window above passed with no speech,
+            # so the lesson is genuinely over. Tell the browser and tear the leg
+            # down the same way pressing Stop does.
             state.lecture_ended = True
             await _send_json_safe(
                 websocket,
@@ -282,16 +328,13 @@ async def _run_bridge(
             )
             end_event.set()
             return
+
         if state.nudges >= MAX_CONSECUTIVE_NUDGES:
             logger.warning(
                 "Stopped nudging the tutor after %s consecutive turns with no "
                 "student speech and no closing line",
                 state.nudges,
             )
-            return
-        if current[0] is not session:
-            # The leg was swapped while we slept. The new one resumes from the
-            # handle and will produce its own turn boundaries.
             return
 
         state.nudges += 1
@@ -433,15 +476,33 @@ async def _run_bridge(
                                     )
                                     if gemini_live.sounds_finished(
                                         state.model_line
+                                    ) or gemini_live.points_to_next_steps(
+                                        state.model_line
                                     ):
-                                        # The tutor said its closing line. There
-                                        # is nothing left to teach; the next
-                                        # turn boundary ends the lesson itself.
+                                        # The tutor reached its ending, either
+                                        # the exact closing line or a wrap-up
+                                        # that points at the quiz and assignment.
+                                        # Nothing left to teach; the next turn
+                                        # boundary moves on to taking questions.
                                         state.lecture_finished = True
                                 if on_transcript is not None:
                                     await on_transcript(event.payload)
 
                             if event.type == "turn_complete":
+                                # Before clearing the turn, judge it whole. A
+                                # tutor that has run out of material and been
+                                # nudged on anyway resays its ending almost word
+                                # for word, so a turn that repeats the one before
+                                # it is the end too, whatever the wording. This
+                                # is the signal that needs no phrase list and is
+                                # what finally stops the closing looping.
+                                completed = state.model_line
+                                if completed.strip():
+                                    if gemini_live.looks_repeated(
+                                        completed, state.prev_model_line
+                                    ):
+                                        state.lecture_finished = True
+                                    state.prev_model_line = completed
                                 # A new turn starts clean: the closing line is
                                 # judged per turn, not across the whole lesson.
                                 state.model_line = ""

@@ -20,6 +20,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from google import genai
 from google.genai import types
@@ -69,6 +70,22 @@ LECTURE_CONTINUE = (
     "it out or repeat yourself. Instead say, in one or two sentences, that "
     f"{LESSON_COMPLETE_PHRASE}, tell me what to do next: the practice quiz "
     "and the assignment. Then stop."
+)
+
+#: Sent ONCE, after the tutor has finished teaching, instead of another nudge.
+#: Turns the end of the lecture into an invitation rather than a dead stop: the
+#: lesson offers to take questions before it closes.
+#:
+#: Written so the tutor ASKS and then STOPS. It must not teach any more, must
+#: not resay its closing line (resaying it is the loop this whole mechanism
+#: removes), and must not list the topics again — only ask, warmly, once, and
+#: wait for the student.
+QUESTIONS_INVITE = (
+    "You have now taught the whole of this module. Do not teach any more of it "
+    "and do not repeat your closing line. In one or two short sentences, warmly "
+    "ask whether I have any questions about what you covered, and tell me you "
+    "are happy to go back over anything that was not clear. Ask once, then stop "
+    "and wait for me. Do not list the topics again."
 )
 
 
@@ -331,18 +348,22 @@ def module_system_instruction(
         f"idea to the next by yourself, in your own time, until the module is "
         f"covered. The student can hear you and can interrupt you whenever "
         f"they want, so you never need their permission to continue.\n\n"
-        f"NEVER ASK TO CONTINUE. Do not end your turns with 'Does that make "
-        f"sense?', 'Ready to move on?', 'Shall we?', 'Want to try?', 'Any "
-        f"questions?' or anything else that hands the decision back to the "
-        f"student. Do not offer to teach a later topic and wait to be told "
-        f"yes. Just teach the next part.\n\n"
+        f"NEVER ASK TO CONTINUE WHILE YOU ARE STILL TEACHING. Do not end a "
+        f"teaching turn with 'Does that make sense?', 'Ready to move on?', "
+        f"'Shall we?', 'Want to try?', 'Any questions?' or anything else that "
+        f"hands the decision back to the student. Do not offer to teach a later "
+        f"topic and wait to be told yes. Just teach the next part. (Only at the "
+        f"very end, once the whole module is taught, will you be asked to check "
+        f"whether they have any questions.)\n\n"
         f"HOW TO FINISH\n"
         f"When you have taught the whole of the material below and there is "
         f"genuinely nothing left to cover, do not start again and do not "
         f"stretch it out. Say in a sentence or two that "
         f"{LESSON_COMPLETE_PHRASE}, point them at the practice quiz and the "
         f"assignment, and stop there. Say those words plainly, because they are how "
-        f"the lesson knows it has ended.\n\n"
+        f"the lesson knows it has ended. After that you may be asked whether the "
+        f"student has any questions; if they ask one, answer it warmly and "
+        f"briefly, and then you are finished.\n\n"
         f"Ask a question only when it is a real teaching question, one where "
         f"working out the answer is how the student learns the point, and "
         f"then only occasionally. A question you already know they will "
@@ -432,6 +453,21 @@ async def continue_lecture(session: genai.live.AsyncSession) -> None:
     )
 
 
+async def invite_questions(session: genai.live.AsyncSession) -> None:
+    """Ask the student, once, whether they have any questions.
+
+    The same text-turn mechanism as `continue_lecture`, for the same reason: it
+    is the only way to make the model speak without the student having to. Sent
+    ONCE the lecture is done, in place of another `continue_lecture`, so the
+    tutor offers to take questions rather than being pushed into resaying its
+    ending — which, with nothing left to teach, is the loop this replaces.
+    """
+    await session.send_client_content(
+        turns=types.Content(role="user", parts=[types.Part(text=QUESTIONS_INVITE)]),
+        turn_complete=True,
+    )
+
+
 #: Closing lines that mean the lesson is over, matched loosely. The model is
 #: asked to say LESSON_COMPLETE_PHRASE, but out loud it paraphrases its own
 #: ending, and a miss used to leave the bridge nudging it to carry on, so it
@@ -463,6 +499,75 @@ _CLOSING_PHRASES: tuple[str, ...] = (
     "you've reached the end of this module",
 )
 
+#: Spoken cues that frame the end of a lesson. Looser than the sentinels above,
+#: and used only PAIRED with the next-steps pointer in `points_to_next_steps`,
+#: because on their own several of them ("that covers", "that is all") turn up
+#: mid-lecture too.
+_WRAP_CUES: tuple[str, ...] = (
+    "that covers",
+    "that is the whole",
+    "that's the whole",
+    "that is the end",
+    "that's the end",
+    "that is it",
+    "that's it",
+    "that is all",
+    "that's all",
+    "that is everything",
+    "that's everything",
+    "that concludes",
+    "that wraps up",
+    "that brings us",
+    "go ahead and try",
+    "go ahead and take",
+    "try the practice",
+    "take the practice",
+    "you have reached the end",
+    "you've reached the end",
+)
+
+
+def _flatten(spoken: str) -> str:
+    """Lowercase, straighten the apostrophe, collapse whitespace, for matching."""
+    straightened = "".join("'" if ord(ch) == 0x2019 else ch for ch in spoken)
+    return " ".join(straightened.lower().split())
+
+
+def points_to_next_steps(spoken: str) -> bool:
+    """Whether the tutor is closing by pointing at what comes next.
+
+    The exact sentinel `sounds_finished` wants is rarely said verbatim, but the
+    instruction makes the tutor end by pointing the student at the practice quiz
+    and the assignment. A turn that mentions BOTH of those and wraps up is that
+    ending, however it was worded ("that covers the basics... go ahead and try
+    the practice quiz and the assignment"). Requiring all three keeps it off a
+    mid-lecture sentence that merely happens to say "quiz".
+    """
+    flat = _flatten(spoken)
+    if "quiz" not in flat or "assignment" not in flat:
+        return False
+    return any(cue in flat for cue in _WRAP_CUES)
+
+
+def looks_repeated(current: str, previous: str) -> bool:
+    """Whether a turn essentially repeats the one before it.
+
+    THE END SIGNAL THAT NEEDS NO PHRASE LIST. When the tutor has taught
+    everything and the bridge nudges it onward anyway, it has nothing new to say
+    and resays its ending almost word for word -- the loop the student sees.
+    Catching a near-duplicate turn ends the lesson whatever the wording,
+    language or topic, which is what makes this robust rather than a guess at how
+    the model phrases its goodbye.
+
+    Guarded by a minimum length so two short conversational replies ("Yes,
+    exactly." / "Yes, exactly!") cannot read as the lecture finishing.
+    """
+    a = _flatten(current)
+    b = _flatten(previous)
+    if len(a) < 60 or len(b) < 60:
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= 0.8
+
 
 def sounds_finished(spoken: str) -> bool:
     """Whether the tutor just said the lesson is over.
@@ -480,7 +585,7 @@ def sounds_finished(spoken: str) -> bool:
     loop never stopped and the ending repeated. The lesson now ends on a match,
     so the phrases above are kept to genuinely terminal ones.
     """
-    flattened = " ".join(spoken.lower().replace("\u2019", "'").split())
+    flattened = " ".join(spoken.lower().replace(chr(0x2019), "'").split())
     return any(phrase in flattened for phrase in _CLOSING_PHRASES)
 
 
